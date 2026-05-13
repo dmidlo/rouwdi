@@ -72,6 +72,7 @@ pub enum RustCompilerStage {
     Mir,
     Monomorphization,
     Codegen,
+    Linking,
     ArtifactEmission,
 }
 
@@ -86,6 +87,7 @@ impl RustCompilerStage {
             Self::Mir => "mir",
             Self::Monomorphization => "monomorphization",
             Self::Codegen => "codegen",
+            Self::Linking => "linking",
             Self::ArtifactEmission => "artifact_emission",
         }
     }
@@ -97,6 +99,53 @@ impl fmt::Display for RustCompilerStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustCompilerStageErrorCode {
+    RustcParseNotEmbedded,
+    MacroExpansionNotEmbedded,
+    NameResolutionNotEmbedded,
+    TypeckNotEmbedded,
+    BorrowckNotEmbedded,
+    MirNotEmbedded,
+    MonomorphizationNotEmbedded,
+    CodegenNotEmbedded,
+    LinkerNotEmbedded,
+    ArtifactWriterNotEmbedded,
+}
+
+impl RustCompilerStageErrorCode {
+    pub fn for_stage(stage: RustCompilerStage) -> Self {
+        match stage {
+            RustCompilerStage::Parse => Self::RustcParseNotEmbedded,
+            RustCompilerStage::MacroExpansion => Self::MacroExpansionNotEmbedded,
+            RustCompilerStage::NameResolution => Self::NameResolutionNotEmbedded,
+            RustCompilerStage::TypeChecking => Self::TypeckNotEmbedded,
+            RustCompilerStage::BorrowChecking => Self::BorrowckNotEmbedded,
+            RustCompilerStage::Mir => Self::MirNotEmbedded,
+            RustCompilerStage::Monomorphization => Self::MonomorphizationNotEmbedded,
+            RustCompilerStage::Codegen => Self::CodegenNotEmbedded,
+            RustCompilerStage::Linking => Self::LinkerNotEmbedded,
+            RustCompilerStage::ArtifactEmission => Self::ArtifactWriterNotEmbedded,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RustcParseNotEmbedded => "rustc_parse_not_embedded",
+            Self::MacroExpansionNotEmbedded => "macro_expansion_not_embedded",
+            Self::NameResolutionNotEmbedded => "name_resolution_not_embedded",
+            Self::TypeckNotEmbedded => "typeck_not_embedded",
+            Self::BorrowckNotEmbedded => "borrowck_not_embedded",
+            Self::MirNotEmbedded => "mir_not_embedded",
+            Self::MonomorphizationNotEmbedded => "monomorphization_not_embedded",
+            Self::CodegenNotEmbedded => "codegen_not_embedded",
+            Self::LinkerNotEmbedded => "linker_not_embedded",
+            Self::ArtifactWriterNotEmbedded => "artifact_writer_not_embedded",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissingRustCompilerStage {
     pub unit_id: String,
@@ -104,6 +153,7 @@ pub struct MissingRustCompilerStage {
     pub target: String,
     pub triple: String,
     pub stage: RustCompilerStage,
+    pub error_code: RustCompilerStageErrorCode,
     pub required_component: String,
     pub component_role: String,
     pub reason: String,
@@ -122,7 +172,9 @@ impl MissingRustCompilerStage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RustCompilerPipelineError {
-    MissingStage { missing: MissingRustCompilerStage },
+    MissingStage {
+        missing: Box<MissingRustCompilerStage>,
+    },
 }
 
 impl fmt::Display for RustCompilerPipelineError {
@@ -223,20 +275,23 @@ pub fn run_rust_compiler_pipeline(
 ) -> Result<RustCompileArtifactRecord, RustCompilerPipelineError> {
     let _lex = lex_rust_source_with_diagnostics(&request.source_path, source);
     if let Some(missing) = first_missing_compiler_stage(request) {
-        return Err(RustCompilerPipelineError::MissingStage { missing });
+        return Err(RustCompilerPipelineError::MissingStage {
+            missing: Box::new(missing),
+        });
     }
 
     Err(RustCompilerPipelineError::MissingStage {
-        missing: MissingRustCompilerStage {
+        missing: Box::new(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
             target: request.target.clone(),
             triple: request.triple.clone(),
             stage: RustCompilerStage::ArtifactEmission,
+            error_code: RustCompilerStageErrorCode::ArtifactWriterNotEmbedded,
             required_component: "rouwdi-rustc-artifact-writer".to_owned(),
             component_role: "internal compiler artifact emission".to_owned(),
             reason: "the internal compiler boundary has no artifact writer wired yet".to_owned(),
-        },
+        }),
     })
 }
 
@@ -267,7 +322,7 @@ pub fn run_rust_compiler_pipeline_record(
             profile: request.profile.clone(),
             status: RustCompilerPipelineStatus::MissingStage,
             artifact: None,
-            missing_stage: Some(missing),
+            missing_stage: Some(*missing),
         },
     }
 }
@@ -376,6 +431,7 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
                 target: request.target.clone(),
                 triple: request.triple.clone(),
                 stage,
+                error_code: RustCompilerStageErrorCode::for_stage(stage),
                 required_component: component.name.clone(),
                 component_role: component.role.clone(),
                 reason: format!(
@@ -388,7 +444,7 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
     None
 }
 
-fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 8] {
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 9] {
     [
         (RustCompilerStage::Parse, "rustc_parse"),
         (RustCompilerStage::MacroExpansion, "rustc_expand"),
@@ -398,6 +454,7 @@ fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 8] {
         (RustCompilerStage::Mir, "rustc_middle"),
         (RustCompilerStage::Monomorphization, "rustc_monomorphize"),
         (RustCompilerStage::Codegen, "rustc_codegen_llvm"),
+        (RustCompilerStage::Linking, "lld"),
     ]
 }
 
@@ -475,16 +532,33 @@ mod tests {
 
         let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
 
-        assert!(matches!(
-            error,
-            RustCompilerPipelineError::MissingStage {
-                missing: MissingRustCompilerStage {
-                    stage: RustCompilerStage::Parse,
-                    ref required_component,
-                    ..
-                },
-            } if required_component == "rustc_parse"
-        ));
+        let RustCompilerPipelineError::MissingStage { missing } = error;
+        assert_eq!(missing.stage, RustCompilerStage::Parse);
+        assert_eq!(
+            missing.error_code,
+            RustCompilerStageErrorCode::RustcParseNotEmbedded
+        );
+        assert_eq!(missing.required_component, "rustc_parse");
+    }
+
+    #[test]
+    fn compiler_stage_error_codes_are_stable_boundary_values() {
+        assert_eq!(
+            RustCompilerStageErrorCode::for_stage(RustCompilerStage::Parse).as_str(),
+            "rustc_parse_not_embedded"
+        );
+        assert_eq!(
+            RustCompilerStageErrorCode::for_stage(RustCompilerStage::TypeChecking).as_str(),
+            "typeck_not_embedded"
+        );
+        assert_eq!(
+            RustCompilerStageErrorCode::for_stage(RustCompilerStage::Codegen).as_str(),
+            "codegen_not_embedded"
+        );
+        assert_eq!(
+            RustCompilerStageErrorCode::for_stage(RustCompilerStage::Linking).as_str(),
+            "linker_not_embedded"
+        );
     }
 
     #[test]
@@ -505,6 +579,10 @@ mod tests {
         assert_eq!(
             record.missing_stage.as_ref().unwrap().required_component,
             "rustc_parse"
+        );
+        assert_eq!(
+            record.missing_stage.as_ref().unwrap().error_code,
+            RustCompilerStageErrorCode::RustcParseNotEmbedded
         );
         assert_eq!(record.artifact, None);
     }
