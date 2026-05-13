@@ -71,7 +71,10 @@ pub fn plan_compile_time(build_plan: &CargoBuildPlan) -> CompileTimePlan {
                 build_scripts.push(BuildScriptSandboxPlan {
                     unit_id: unit.id.clone(),
                     package: unit.package.clone(),
-                    source_path: unit.target.clone(),
+                    source_path: unit
+                        .source_path
+                        .clone()
+                        .unwrap_or_else(|| unit.target.clone()),
                     host: COMPILE_TIME_HOST_TRIPLE.to_owned(),
                     target: unit.triple.clone(),
                     profile: unit.profile.clone(),
@@ -303,6 +306,7 @@ mod tests {
                     package: "app".to_owned(),
                     manifest_path: "crates/app/Cargo.toml".to_owned(),
                     target: "crates/app/build.rs".to_owned(),
+                    source_path: Some("crates/app/build.rs".to_owned()),
                     target_kind: CargoTargetKind::Bin,
                     phase: CompilePhase::BuildScript,
                     triple: "wasm32-wasip1".to_owned(),
@@ -313,6 +317,7 @@ mod tests {
                     package: "derive".to_owned(),
                     manifest_path: "derive/Cargo.toml".to_owned(),
                     target: "derive".to_owned(),
+                    source_path: Some("derive/src/lib.rs".to_owned()),
                     target_kind: CargoTargetKind::Lib,
                     phase: CompilePhase::ProcMacro,
                     triple: COMPILE_TIME_HOST_TRIPLE.to_owned(),

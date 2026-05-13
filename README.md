@@ -12,9 +12,11 @@ Current implementation status: the root engine parses and validates
 Cargo workspace model without invoking host Cargo, handles virtual workspaces,
 path/git/registry dependency source planning, contract-selected feature
 resolution, frozen lockfile enforcement, build scripts, proc-macro targets,
-compile-time sandbox planning, build graph planning, per-target
-interface/runtime proof records, and proof bundle verification. The native
-runner is a thin Wasmtime/WASI substrate runner around `dist/rouwdi.wasm`; it
+compile-time sandbox planning, build graph planning, manifest-relative Rust
+source paths, upstream `rustc_lexer` preflight proof records, computed embedded
+target spec/ABI pack identities, per-target interface/runtime proof records, and
+proof bundle verification. The native runner is a thin Wasmtime/WASI substrate
+runner around `dist/rouwdi.wasm`; it
 does not provide Cargo, rustc, a linker, target policy, validation, or proof
 logic.
 

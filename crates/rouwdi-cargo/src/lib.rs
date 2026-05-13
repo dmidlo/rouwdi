@@ -171,6 +171,7 @@ pub struct CompileUnit {
     pub package: String,
     pub manifest_path: String,
     pub target: String,
+    pub source_path: Option<String>,
     pub target_kind: CargoTargetKind,
     pub phase: CompilePhase,
     pub triple: String,
@@ -400,6 +401,7 @@ pub fn plan_build(
                         .build_script
                         .clone()
                         .unwrap_or_else(|| "build.rs".to_owned()),
+                    source_path: package.build_script.clone(),
                     target_kind: CargoTargetKind::Bin,
                     phase: CompilePhase::BuildScript,
                     triple: triple.clone(),
@@ -423,6 +425,7 @@ pub fn plan_build(
                 package: package.name.clone(),
                 manifest_path: package.manifest_path.clone(),
                 target: target.name.clone(),
+                source_path: target.path.clone(),
                 target_kind: target.kind.clone(),
                 phase: CompilePhase::ProcMacro,
                 triple: "compile-time-wasm".to_owned(),
@@ -444,6 +447,7 @@ pub fn plan_build(
                     package: package.name.clone(),
                     manifest_path: package.manifest_path.clone(),
                     target: target.name.clone(),
+                    source_path: target.path.clone(),
                     target_kind: target.kind.clone(),
                     phase: CompilePhase::Rust,
                     triple: triple.clone(),
@@ -550,6 +554,7 @@ pub fn plan_build(
             package: selected_package.to_owned(),
             manifest_path: root.manifest_path.clone(),
             target: selected_target.to_owned(),
+            source_path: None,
             target_kind: selected_target_kind.clone(),
             phase: CompilePhase::Link,
             triple: triple.clone(),
@@ -1381,11 +1386,14 @@ fn collect_targets(
             .and_then(toml::Value::as_str)
             .unwrap_or(package_name)
             .to_owned();
-        let path = value
+        let path = match value
             .get("lib")
             .and_then(|lib| lib.get("path"))
             .and_then(toml::Value::as_str)
-            .map(str::to_owned);
+        {
+            Some(path) => Some(join_path(base, path)?),
+            None => Some(join_path(base, "src/lib.rs")?),
+        };
         let proc_macro = lib_table
             .and_then(|lib| lib.get("proc-macro"))
             .and_then(toml::Value::as_bool)
@@ -1402,18 +1410,20 @@ fn collect_targets(
         targets.push(CargoTarget {
             name: package_name.to_owned(),
             kind: CargoTargetKind::Lib,
-            path: Some("src/lib.rs".to_owned()),
+            path: Some(join_path(base, "src/lib.rs")?),
             proc_macro: false,
         });
     }
     let explicit_bins = targets.len();
     collect_array_targets(
+        storage,
         value,
         "bin",
         CargoTargetKind::Bin,
         package_name,
+        base,
         &mut targets,
-    );
+    )?;
     if targets.len() == explicit_bins
         && package_auto_target_enabled(value, "autobins")
         && storage_has_file(storage, &join_path(base, "src/main.rs")?)?
@@ -1421,22 +1431,24 @@ fn collect_targets(
         targets.push(CargoTarget {
             name: package_name.to_owned(),
             kind: CargoTargetKind::Bin,
-            path: Some("src/main.rs".to_owned()),
+            path: Some(join_path(base, "src/main.rs")?),
             proc_macro: false,
         });
     }
     collect_array_targets(
+        storage,
         value,
         "example",
         CargoTargetKind::Example,
         package_name,
+        base,
         &mut targets,
-    );
+    )?;
     if targets.is_empty() {
         targets.push(CargoTarget {
             name: package_name.to_owned(),
             kind: CargoTargetKind::Bin,
-            path: Some("src/main.rs".to_owned()),
+            path: Some(join_path(base, "src/main.rs")?),
             proc_macro: false,
         });
     }
@@ -1460,22 +1472,61 @@ fn storage_has_file(storage: &dyn Storage, path: &str) -> Result<bool, CargoMode
 }
 
 fn collect_array_targets(
+    storage: &dyn Storage,
     value: &toml::Value,
     key: &str,
     kind: CargoTargetKind,
     fallback_name: &str,
+    base: &str,
     targets: &mut Vec<CargoTarget>,
-) {
+) -> Result<(), CargoModelError> {
     if let Some(array) = value.get(key).and_then(toml::Value::as_array) {
         for item in array.iter().filter_map(toml::Value::as_table) {
+            let name = string_field(item, "name").unwrap_or_else(|| fallback_name.to_owned());
+            let path = match string_field(item, "path") {
+                Some(path) => Some(join_path(base, &path)?),
+                None => inferred_explicit_target_path(storage, base, &kind, &name, fallback_name)?,
+            };
             targets.push(CargoTarget {
-                name: string_field(item, "name").unwrap_or_else(|| fallback_name.to_owned()),
+                name,
                 kind: kind.clone(),
-                path: string_field(item, "path"),
+                path,
                 proc_macro: false,
             });
         }
     }
+    Ok(())
+}
+
+fn inferred_explicit_target_path(
+    storage: &dyn Storage,
+    base: &str,
+    kind: &CargoTargetKind,
+    name: &str,
+    fallback_name: &str,
+) -> Result<Option<String>, CargoModelError> {
+    let candidates = match kind {
+        CargoTargetKind::Bin => {
+            let mut candidates = Vec::new();
+            if name == fallback_name {
+                candidates.push(join_path(base, "src/main.rs")?);
+            }
+            candidates.push(join_path(base, &format!("src/bin/{name}.rs"))?);
+            candidates.push(join_path(base, &format!("src/bin/{name}/main.rs"))?);
+            candidates
+        }
+        CargoTargetKind::Example => vec![
+            join_path(base, &format!("examples/{name}.rs"))?,
+            join_path(base, &format!("examples/{name}/main.rs"))?,
+        ],
+        CargoTargetKind::Lib | CargoTargetKind::Test | CargoTargetKind::Bench => Vec::new(),
+    };
+    for candidate in &candidates {
+        if storage_has_file(storage, candidate)? {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+    Ok(candidates.into_iter().next())
 }
 
 fn collect_features(value: &toml::Value) -> Vec<CargoFeature> {
@@ -1787,11 +1838,15 @@ proc-macro = true
             app.build_script.as_deref(),
             Some("crates/app/build/build.rs")
         );
+        assert!(app.targets.iter().any(|target| {
+            target.name == "app" && target.path.as_deref() == Some("crates/app/src/main.rs")
+        }));
         assert_eq!(app.features[0].name, "default");
         assert!(workspace.packages[1]
             .targets
             .iter()
-            .any(|target| target.proc_macro));
+            .any(|target| target.proc_macro
+                && target.path.as_deref() == Some("crates/macro-crate/src/lib.rs")));
     }
 
     #[test]
@@ -2013,6 +2068,11 @@ checksum = "abc123"
             .units
             .iter()
             .any(|unit| unit.phase == CompilePhase::BuildScript));
+        assert!(plan.units.iter().any(|unit| {
+            unit.phase == CompilePhase::Rust
+                && unit.package == "app"
+                && unit.source_path.as_deref() == Some("src/main.rs")
+        }));
         assert!(plan
             .units
             .iter()
@@ -2029,6 +2089,48 @@ checksum = "abc123"
             .edges
             .iter()
             .any(|edge| edge.reason == "proc macro dependency macro-crate"));
+    }
+
+    #[test]
+    fn normalizes_explicit_target_paths_relative_to_package_manifest() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write(
+                "crates/app/Cargo.toml",
+                br#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tool"
+path = "tools/tool.rs"
+
+[[example]]
+name = "demo"
+"#,
+            )
+            .unwrap();
+        storage
+            .write("crates/app/tools/tool.rs", b"fn main() {}\n")
+            .unwrap();
+        storage
+            .write("crates/app/examples/demo.rs", b"fn main() {}\n")
+            .unwrap();
+
+        let package = parse_manifest(&storage, "crates/app/Cargo.toml").unwrap();
+
+        assert!(package.targets.iter().any(|target| {
+            target.kind == CargoTargetKind::Bin
+                && target.name == "tool"
+                && target.path.as_deref() == Some("crates/app/tools/tool.rs")
+        }));
+        assert!(package.targets.iter().any(|target| {
+            target.kind == CargoTargetKind::Example
+                && target.name == "demo"
+                && target.path.as_deref() == Some("crates/app/examples/demo.rs")
+        }));
     }
 
     #[test]

@@ -3,6 +3,7 @@ use rouwdi_cargo::{
 };
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
+use rouwdi_rustc::RustSourceLexProof;
 use rouwdi_source::SourceSnapshot;
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
 use rouwdi_vfs::{Storage, VfsError};
@@ -139,6 +140,7 @@ pub struct ProofBundle {
     pub source_fetch_plan: CargoSourceFetchPlan,
     pub build_plan: CargoBuildPlan,
     pub compile_time_plan: CompileTimePlan,
+    pub rust_source_lex: Vec<RustSourceLexProof>,
     pub cargo_lockfile: Option<CargoLockfile>,
     pub interface_proofs: Vec<ArtifactInterfaceProof>,
     pub runtime_proofs: Vec<RuntimeProof>,
@@ -184,6 +186,10 @@ impl ProofBundle {
             (
                 "graph/compiletime-plan.json",
                 serde_json::to_vec_pretty(&self.compile_time_plan)?,
+            ),
+            (
+                "graph/rust-source-lex.json",
+                serde_json::to_vec_pretty(&self.rust_source_lex)?,
             ),
             (
                 "toolchain/rouwdi-engine.json",

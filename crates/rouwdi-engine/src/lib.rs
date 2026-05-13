@@ -9,10 +9,12 @@ use rouwdi_proof::{
     ArtifactManifestEntry, HashEntry, ProofBundle, ProofError, ProofStatus, RouwdiRunManifest,
     RunStatus, RuntimeProof, UnsupportedCapability,
 };
+use rouwdi_rustc::{lex_rust_source_with_diagnostics, RustSourceLexProof};
 use rouwdi_source::{snapshot_source, source_relative_path, SourceError};
 use rouwdi_targets::{TargetError, TargetPackRegistry};
 use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -114,6 +116,7 @@ impl RouwdiEngine {
             &target_triples,
         )?;
         let compile_time_plan = plan_compile_time(&build_plan);
+        let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -174,6 +177,19 @@ impl RouwdiEngine {
                 capability: "linker".to_owned(),
                 required_by: "final native/WASI artifact emission".to_owned(),
                 reason: "no native or WASM linker is embedded in this assembly".to_owned(),
+            });
+        }
+        let lexical_diagnostic_count = rust_source_lex
+            .iter()
+            .map(|proof| proof.diagnostics.len())
+            .sum::<usize>();
+        if lexical_diagnostic_count > 0 {
+            internal_blockers.push(UnsupportedCapability {
+                capability: "valid Rust lexical source".to_owned(),
+                required_by: "compile Rust crate graph".to_owned(),
+                reason: format!(
+                    "upstream rustc_lexer reported {lexical_diagnostic_count} lexical diagnostic(s)"
+                ),
             });
         }
         if build_plan
@@ -310,6 +326,7 @@ impl RouwdiEngine {
             source_fetch_plan,
             build_plan,
             compile_time_plan,
+            rust_source_lex,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -350,6 +367,26 @@ impl RouwdiEngine {
             checked_hashes: hashes.len(),
         })
     }
+}
+
+fn lex_build_plan_sources(
+    storage: &dyn Storage,
+    build_plan: &rouwdi_cargo::CargoBuildPlan,
+) -> Result<Vec<RustSourceLexProof>, EngineError> {
+    let mut paths = BTreeSet::new();
+    for unit in &build_plan.units {
+        if let Some(path) = &unit.source_path {
+            paths.insert(path.clone());
+        }
+    }
+
+    let mut proofs = Vec::new();
+    for path in paths {
+        let bytes = storage.read(&path)?;
+        let source = String::from_utf8_lossy(&bytes);
+        proofs.push(lex_rust_source_with_diagnostics(&path, &source));
+    }
+    Ok(proofs)
 }
 
 impl Default for RouwdiEngine {
@@ -475,6 +512,10 @@ version = "0.1.0"
             .unwrap()
             .starts_with(b"{"));
         assert!(storage
+            .read(&format!("{}/graph/rust-source-lex.json", report.run_root))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
             .read(&format!("{}/proofs/interface-wasi.json", report.run_root))
             .unwrap()
             .starts_with(b"{"));
@@ -597,5 +638,36 @@ version = "0.1.0"
             .read(&format!("{}/graph/cargo-lock.json", report.run_root))
             .unwrap()
             .starts_with(b"{"));
+    }
+
+    #[test]
+    fn build_records_rust_lexer_diagnostics_inside_the_proof_bundle() {
+        let mut storage = fixture_storage();
+        storage
+            .write("src/main.rs", b"fn main() { \"open\n")
+            .unwrap();
+
+        let report = RouwdiEngine::default()
+            .build(&mut storage, BuildRequest::default())
+            .unwrap();
+        let lex_proofs: Vec<RustSourceLexProof> = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/graph/rust-source-lex.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(report.status, RunStatus::Failed);
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "valid Rust lexical source"));
+        assert!(lex_proofs.iter().any(|proof| {
+            proof.path == "src/main.rs"
+                && proof
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == "unterminated string literal")
+        }));
     }
 }

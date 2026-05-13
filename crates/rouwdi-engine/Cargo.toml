@@ -14,6 +14,7 @@ rouwdi-cargo = { path = "../rouwdi-cargo" }
 rouwdi-compiletime = { path = "../rouwdi-compiletime" }
 rouwdi-contract = { path = "../rouwdi-contract" }
 rouwdi-proof = { path = "../rouwdi-proof" }
+rouwdi-rustc = { path = "../rouwdi-rustc" }
 rouwdi-source = { path = "../rouwdi-source" }
 rouwdi-targets = { path = "../rouwdi-targets" }
 rouwdi-vfs = { path = "../rouwdi-vfs" }

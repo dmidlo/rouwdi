@@ -23,8 +23,9 @@ pub struct TargetPack {
     pub target_pack_hash: String,
     pub target_spec_bundle_hash: String,
     pub target_spec_sources: Vec<EmbeddedSourceFile>,
-    pub std_pack_hash: String,
-    pub linker_pack_hash: String,
+    pub target_abi: TargetAbiModel,
+    pub std_pack_hash: Option<String>,
+    pub linker_pack_hash: Option<String>,
     pub target_pack_embedded: bool,
     pub std_pack_embedded: bool,
     pub linker_pack_embedded: bool,
@@ -37,6 +38,15 @@ pub struct EmbeddedSourceFile {
     pub path: String,
     pub sha256: String,
     pub len: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetAbiModel {
+    pub family: String,
+    pub pointer_widths: Vec<u16>,
+    pub object_formats: Vec<String>,
+    pub operating_systems: Vec<String>,
+    pub environments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +139,7 @@ impl TargetPackRegistry {
             target_pack(
                 "wasm32-wasip1",
                 wasm32_wasip1_target_specs(),
+                TargetAbiModel::wasm32_wasi("p1"),
                 vec![ArtifactKind::Module, ArtifactKind::Component],
                 RuntimeExecutionCapability::Wasi,
             ),
@@ -138,6 +149,7 @@ impl TargetPackRegistry {
             target_pack(
                 "wasm32-wasip2",
                 wasm32_wasip2_target_specs(),
+                TargetAbiModel::wasm32_wasi("p2"),
                 vec![ArtifactKind::Module, ArtifactKind::Component],
                 RuntimeExecutionCapability::Wasi,
             ),
@@ -147,6 +159,7 @@ impl TargetPackRegistry {
             target_pack(
                 "native_host",
                 native_host_family_target_specs(),
+                TargetAbiModel::native_host_family(),
                 vec![
                     ArtifactKind::Executable,
                     ArtifactKind::Staticlib,
@@ -187,21 +200,53 @@ impl TargetPackRegistry {
 fn target_pack(
     triple: &str,
     target_spec_sources: Vec<EmbeddedSourceFile>,
+    target_abi: TargetAbiModel,
     artifact_kinds: Vec<ArtifactKind>,
     runtime_execution: RuntimeExecutionCapability,
 ) -> TargetPack {
+    let target_spec_bundle_hash = embedded_source_bundle_hash(&target_spec_sources);
+    let target_pack_hash = target_pack_hash(
+        triple,
+        &target_spec_bundle_hash,
+        &target_abi,
+        &artifact_kinds,
+        runtime_execution,
+    );
     TargetPack {
         triple: triple.to_owned(),
-        target_pack_hash: "embedded-target-pack-pending".to_owned(),
-        target_spec_bundle_hash: embedded_source_bundle_hash(&target_spec_sources),
+        target_pack_hash,
+        target_spec_bundle_hash,
         target_spec_sources,
-        std_pack_hash: "embedded-std-pack-pending".to_owned(),
-        linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
-        target_pack_embedded: false,
+        target_abi,
+        std_pack_hash: None,
+        linker_pack_hash: None,
+        target_pack_embedded: true,
         std_pack_embedded: false,
         linker_pack_embedded: false,
         artifact_kinds,
         runtime_execution,
+    }
+}
+
+impl TargetAbiModel {
+    fn wasm32_wasi(variant: &str) -> Self {
+        Self {
+            family: "wasm32-wasi".to_owned(),
+            pointer_widths: vec![32],
+            object_formats: vec!["wasm".to_owned()],
+            operating_systems: vec!["wasi".to_owned()],
+            environments: vec![variant.to_owned()],
+        }
+    }
+
+    fn native_host_family() -> Self {
+        Self {
+            family: "native-host-family".to_owned(),
+            pointer_widths: vec![64],
+            object_formats: vec!["elf".to_owned(), "mach-o".to_owned(), "pe-coff".to_owned()],
+            operating_systems: vec!["linux".to_owned(), "macos".to_owned(), "windows".to_owned()],
+            environments: vec!["gnu".to_owned(), "msvc".to_owned(), "darwin".to_owned()],
+        }
     }
 }
 
@@ -290,6 +335,44 @@ fn embedded_source_bundle_hash(files: &[EmbeddedSourceFile]) -> String {
     hex::encode(digest.finalize())
 }
 
+fn target_pack_hash(
+    triple: &str,
+    target_spec_bundle_hash: &str,
+    target_abi: &TargetAbiModel,
+    artifact_kinds: &[ArtifactKind],
+    runtime_execution: RuntimeExecutionCapability,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(triple.as_bytes());
+    digest.update(b"\0");
+    digest.update(target_spec_bundle_hash.as_bytes());
+    digest.update(b"\0");
+    digest.update(target_abi.family.as_bytes());
+    digest.update(b"\0");
+    for pointer_width in &target_abi.pointer_widths {
+        digest.update(pointer_width.to_le_bytes());
+        digest.update(b"\0");
+    }
+    for object_format in &target_abi.object_formats {
+        digest.update(object_format.as_bytes());
+        digest.update(b"\0");
+    }
+    for os in &target_abi.operating_systems {
+        digest.update(os.as_bytes());
+        digest.update(b"\0");
+    }
+    for env in &target_abi.environments {
+        digest.update(env.as_bytes());
+        digest.update(b"\0");
+    }
+    for artifact_kind in artifact_kinds {
+        digest.update(format!("{artifact_kind:?}").as_bytes());
+        digest.update(b"\0");
+    }
+    digest.update(format!("{runtime_execution:?}").as_bytes());
+    hex::encode(digest.finalize())
+}
+
 fn hash_bytes(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(bytes);
@@ -327,9 +410,16 @@ mod tests {
             registry.compiler.source_custody[2].commit,
             "eaab4d9841b9a8a12783d927b2df2291c1c79269"
         );
-        assert!(!registry.packs["wasm32-wasip1"].target_pack_embedded);
+        assert!(registry.packs["wasm32-wasip1"].target_pack_embedded);
         assert!(!registry.packs["wasm32-wasip1"].std_pack_embedded);
         assert!(!registry.packs["wasm32-wasip1"].linker_pack_embedded);
+        assert_eq!(registry.packs["wasm32-wasip1"].target_pack_hash.len(), 64);
+        assert_eq!(
+            registry.packs["wasm32-wasip1"].target_abi.object_formats,
+            vec!["wasm".to_owned()]
+        );
+        assert!(registry.packs["wasm32-wasip1"].std_pack_hash.is_none());
+        assert!(registry.packs["wasm32-wasip1"].linker_pack_hash.is_none());
         assert_eq!(
             registry.packs["wasm32-wasip1"]
                 .target_spec_bundle_hash
