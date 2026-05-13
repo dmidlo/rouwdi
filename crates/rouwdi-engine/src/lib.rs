@@ -11,7 +11,7 @@ use rouwdi_proof::{
 };
 use rouwdi_source::{snapshot_source, source_relative_path, SourceError};
 use rouwdi_targets::{TargetError, TargetPackRegistry};
-use rouwdi_vfs::{Storage, VfsError};
+use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -81,9 +81,10 @@ impl RouwdiEngine {
         let contract_text = String::from_utf8_lossy(&contract_bytes);
         let contract = RouwdiContract::parse(&contract_text)?;
         let normalized = contract.normalize()?;
-        let source_snapshot = snapshot_source(storage, &contract.source.root)?;
-        let manifest_path =
-            source_relative_path(&contract.source.root, &contract.project.manifest_path)?;
+        let contract_root = parent_path(&request.contract_path)?;
+        let source_root = join_path(&contract_root, &contract.source.root)?;
+        let source_snapshot = snapshot_source(storage, &source_root)?;
+        let manifest_path = source_relative_path(&source_root, &contract.project.manifest_path)?;
         let cargo_workspace = resolve_workspace(storage, &manifest_path)?;
         let source_fetch_plan = plan_source_fetches(&cargo_workspace);
         let (selected_target, selected_target_kind) =
@@ -113,14 +114,12 @@ impl RouwdiEngine {
             &target_triples,
         )?;
         let compile_time_plan = plan_compile_time(&build_plan);
-        let cargo_lockfile = match parse_lockfile(storage, &contract.resolver.lockfile) {
+        let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
+        let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
             Err(CargoModelError::Vfs(VfsError::NotFound(_))) if !contract.resolver.frozen => None,
             Err(CargoModelError::Vfs(VfsError::NotFound(_))) => {
-                return Err(CargoModelError::MissingFrozenLockfile(
-                    contract.resolver.lockfile.clone(),
-                )
-                .into());
+                return Err(CargoModelError::MissingFrozenLockfile(lockfile_path.clone()).into());
             }
             Err(err) => return Err(err.into()),
         };
@@ -276,7 +275,7 @@ impl RouwdiEngine {
             })
             .collect::<Vec<_>>();
         let run_id = deterministic_run_id(&normalized.sha256, &source_snapshot.tree_sha256);
-        let run_root = format!(".rouwdi/runs/{run_id}");
+        let run_root = source_relative_path(&source_root, &format!(".rouwdi/runs/{run_id}"))?;
         let mut hashes = Vec::new();
         hashes.push(HashEntry {
             label: "contract".to_owned(),
@@ -357,6 +356,14 @@ impl Default for RouwdiEngine {
     fn default() -> Self {
         Self::new(TargetPackRegistry::strict_embedded())
     }
+}
+
+fn parent_path(path: &str) -> Result<String, VfsError> {
+    let path = normalize_path(path)?;
+    Ok(path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.to_owned())
+        .unwrap_or_default())
 }
 
 pub fn deterministic_run_id(contract_sha256: &str, source_tree_sha256: &str) -> String {
@@ -499,5 +506,96 @@ version = "0.1.0"
             .unwrap_err();
 
         assert!(err.to_string().contains("resolver is frozen"));
+    }
+
+    #[test]
+    fn contract_paths_are_resolved_relative_to_contract_file() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write(
+                "project/rouwdi.toml",
+                br#"
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "app"
+bin = "app"
+profile = "release"
+
+[source]
+mode = "snapshot"
+root = "."
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "project/Cargo.toml",
+                br#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "project/Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+"#,
+            )
+            .unwrap();
+        storage
+            .write("project/src/main.rs", b"fn main() {}\n")
+            .unwrap();
+        storage
+            .write(
+                "Cargo.toml",
+                br#"
+[package]
+name = "wrong-root"
+version = "0.1.0"
+"#,
+            )
+            .unwrap();
+
+        let report = RouwdiEngine::default()
+            .build(
+                &mut storage,
+                BuildRequest {
+                    contract_path: "project/rouwdi.toml".to_owned(),
+                },
+            )
+            .unwrap();
+        let snapshot: rouwdi_source::SourceSnapshot = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/source/source-snapshot.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert!(report.run_root.starts_with("project/.rouwdi/runs/"));
+        assert_eq!(snapshot.root, "project");
+        assert!(snapshot
+            .files
+            .iter()
+            .any(|file| file.path == "project/src/main.rs"));
+        assert!(!snapshot.files.iter().any(|file| file.path == "Cargo.toml"));
+        assert!(storage
+            .read(&format!("{}/graph/cargo-lock.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
     }
 }

@@ -2212,6 +2212,660 @@ These are the rules of the room:
 
 **rouwdi is a single, full-featured `rouwdi.wasm` that contains the Rust build chain itself — Cargo resolution, compiler, compile-time execution, codegen, linker, target packs, and proof engine — so native, browser, CI, and desktop hosts merely provide storage/network/runtime substrate while the same assembly builds and proves real Rust applications anywhere.**
 
+Yes. Bootstrapping is the answer.
+
+And one correction: Rust’s first compiler was **not C**; Rust’s compiler dev guide says Rust’s first compiler was written in **OCaml**, then modern `rustc` became self-hosting through staged bootstrapping. The current bootstrap model uses an older compiler to compile a newer compiler; `x.py` downloads a recent beta `rustc`, builds stage1 from the current source, then stage2 is the “truly current” compiler built using stage1. ([Rust Compiler Development Guide][1])
+
+For **rouwdi**, the equivalent is:
+
+```text
+stage0 = host Rust + existing wasm tooling
+stage1 = first rouwdi.wasm built by host Rust
+stage2 = rouwdi.wasm rebuilds rouwdi.wasm
+stage3 = rouwdi.wasm rebuilds rouwdi.wasm again and proves same-result / same-behavior
+```
+
+The final truth is not “never use host tools.” The truth is:
+
+> **Host tools are allowed only as the bootstrap parent. They are not allowed as the final dependency.**
+
+That is exactly how self-hosted compilers work.
+
+---
+
+# The rouwdi bootstrap ladder
+
+## Stage 0: external seed
+
+You start with the existing world:
+
+```text
+host cargo
+host rustc
+host linker
+wasmtime / wasmer
+your wasm-rust-builder prototype
+```
+
+This is allowed.
+
+This produces the first real artifact:
+
+```text
+rouwdi.stage1.wasm
+```
+
+At this point, `rouwdi.stage1.wasm` does not have to be self-built yet. It only has to contain the architecture and enough internal machinery to start absorbing the build chain.
+
+## Stage 1: rouwdi as build/proof kernel
+
+First `rouwdi.wasm` owns:
+
+```text
+rouwdi.toml parsing
+VFS/cache model
+source snapshot proof
+build graph proof schema
+artifact proof schema
+target pack identity schema
+proof bundle writer
+proof verifier
+```
+
+It may still be **compiled by host Rust**, but when it runs, it owns the rouwdi semantics.
+
+This is the first non-negotiable milestone:
+
+```bash
+cargo build -p rouwdi-wasm --target wasm32-wasip2
+wasmtime run rouwdi.wasm build examples/hello/rouwdi.toml
+wasmtime run rouwdi.wasm verify .rouwdi/runs/<run-id>
+```
+
+## Stage 2: internal Cargo-compatible resolver
+
+Next, move Cargo behavior inside `rouwdi.wasm`:
+
+```text
+Cargo.toml parser
+workspace graph
+package graph
+feature resolver
+lockfile reader/writer
+registry/git dependency model
+build plan emission
+```
+
+Still okay if host Rust built `rouwdi.wasm`.
+
+But `rouwdi.wasm` must no longer ask the wrapper to run `cargo metadata`.
+
+## Stage 3: internal compile-time sandbox
+
+Then absorb the compile-time execution layer:
+
+```text
+build.rs model
+OUT_DIR model
+Cargo env model
+cargo: directives parser
+proc-macro ABI design
+proc-macro sandbox
+```
+
+This is one of the true “compiler bootstrap” walls. Real Rust projects depend on `build.rs` and proc macros, so rouwdi cannot be full-featured without them.
+
+## Stage 4: internal compiler payload
+
+Now the build chain starts becoming self-hosting.
+
+You need an internal Rust compiler payload inside `rouwdi.wasm`. There are two conceptual routes:
+
+```text
+A. Package rustc/cargo/compiler crates into rouwdi.wasm
+B. Build a rouwdi-owned compiler pipeline compatible with Rust semantics
+```
+
+Given your ambition, the sane route is **A first**: package the real Rust compiler/build chain into the assembly, then progressively replace or specialize pieces only when necessary.
+
+## Stage 5: internal codegen/linker/target packs
+
+At this stage, `rouwdi.wasm` must own:
+
+```text
+std/core/alloc/proc_macro packs
+target specs
+WASI linker
+native object writer
+native linker packs
+archive writer
+artifact finalization
+```
+
+No host linker.
+
+No host rustc.
+
+No host cargo.
+
+## Stage 6: first self-host
+
+Now the critical command becomes:
+
+```bash
+wasmtime run rouwdi.stage1.wasm build rouwdi/rouwdi.toml
+```
+
+Output:
+
+```text
+.rouwdi/runs/<run-id>/artifacts/rouwdi.stage2.wasm
+```
+
+This is the moment rouwdi becomes real.
+
+## Stage 7: fixed-point proof
+
+Then run:
+
+```bash
+wasmtime run rouwdi.stage2.wasm build rouwdi/rouwdi.toml
+```
+
+Output:
+
+```text
+rouwdi.stage3.wasm
+```
+
+Now compare:
+
+```text
+stage2 behavior == stage3 behavior
+stage2 proof schema == stage3 proof schema
+stage2 compiler identity chain valid
+stage2 target packs valid
+stage2 artifact hash recorded
+stage3 artifact hash recorded
+```
+
+Byte-for-byte identity may be too strict early. Rust’s own bootstrap has a stage3 same-result sanity test, and the rustc dev guide describes stage3 as optional, used to check that building again gives the expected same result unless something broke. ([Rust Compiler Development Guide][1])
+
+So rouwdi should define levels:
+
+```text
+level 1: self-builds successfully
+level 2: self-build proof verifies
+level 3: deterministic normalized outputs
+level 4: byte-identical fixed point
+```
+
+---
+
+# How to get Codex to bootstrap it
+
+Do **not** give Codex one giant prompt like:
+
+```text
+Build rouwdi, a full Rust compiler in WASM.
+```
+
+That will create mush.
+
+Instead, make Codex operate against a repo-local bootstrap constitution.
+
+OpenAI’s Codex docs say Codex works best with explicit context and a clear definition of done; they recommend giving goal, context, constraints, and “done when” criteria. They also recommend planning first for complex work and using `AGENTS.md` for durable repo guidance. ([OpenAI Developers][2])
+
+So give Codex three files before asking for code:
+
+```text
+AGENTS.md
+BOOTSTRAP.md
+PLANS.md
+```
+
+## 1. `AGENTS.md`
+
+This is the repo law. Codex automatically reads `AGENTS.md` files before work, and OpenAI’s docs describe using it for repo expectations, build/test commands, engineering conventions, constraints, and what “done” means. ([OpenAI Developers][3])
+
+Put this in `AGENTS.md`:
+
+```markdown
+# AGENTS.md
+
+## Project identity
+
+rouwdi is a complete Rust build chain packaged as a single WebAssembly assembly:
+`rouwdi.wasm`.
+
+The native CLI, browser host, CI integration, and desktop shell are wrappers.
+They must not contain build policy.
+
+## Non-negotiable boundaries
+
+Inside `rouwdi.wasm`:
+- rouwdi.toml parsing
+- source snapshot model
+- Cargo-compatible resolver
+- build graph planner
+- build.rs sandbox model
+- proc-macro sandbox model
+- compiler payload interface
+- codegen/linker abstraction
+- target pack model
+- artifact/proof bundle generation
+- proof verification
+
+Outside `rouwdi.wasm`:
+- storage
+- network
+- clock/entropy
+- worker/thread substrate
+- stdout/stderr/event display
+- artifact import/export
+
+Forbidden in host wrappers:
+- parsing rouwdi.toml
+- deciding build targets
+- invoking host cargo as the default build engine
+- invoking host rustc as the default build engine
+- invoking host linker as the default build engine
+- generating proof semantics outside rouwdi.wasm
+
+## Bootstrap rule
+
+Host Rust/cargo may be used only to build stage1 `rouwdi.wasm`.
+
+The project is not considered self-hosted until:
+
+1. host Rust builds `rouwdi.stage1.wasm`
+2. `rouwdi.stage1.wasm` builds `rouwdi.stage2.wasm`
+3. `rouwdi.stage2.wasm` builds `rouwdi.stage3.wasm`
+4. stage2 and stage3 proof bundles verify under rouwdi's verifier
+
+## Done means
+
+Every change must include:
+- tests
+- proof fixture updates if schemas change
+- `cargo fmt`
+- `cargo test`
+- a note explaining how it moves rouwdi closer to self-hosting
+
+Do not add Temporal, REST, MCP, admin servers, peer governance, or orchestration systems.
+```
+
+## 2. `BOOTSTRAP.md`
+
+This is the staged compiler ladder.
+
+````markdown
+# BOOTSTRAP.md
+
+## Goal
+
+Reach a self-hosting fixed point:
+
+```text
+host rustc -> rouwdi.stage1.wasm
+rouwdi.stage1.wasm -> rouwdi.stage2.wasm
+rouwdi.stage2.wasm -> rouwdi.stage3.wasm
+````
+
+## Stages
+
+### B0: Host-built seed
+
+Use host Rust only to build the initial rouwdi assembly.
+
+Output:
+
+* `dist/rouwdi.stage1.wasm`
+
+### B1: Proof kernel
+
+`rouwdi.wasm` can:
+
+* parse `rouwdi.toml`
+* create a run directory
+* emit normalized contract JSON
+* emit source snapshot proof
+* emit empty build graph proof
+* verify its own proof bundle
+
+### B2: Cargo graph kernel
+
+`rouwdi.wasm` can:
+
+* parse Cargo.toml
+* discover workspace packages
+* resolve path dependencies
+* resolve features
+* emit build graph proof
+
+### B3: Crate source kernel
+
+`rouwdi.wasm` can:
+
+* read Cargo.lock
+* fetch registry/git/path sources through host network/storage primitives
+* cache crates internally
+* hash source inputs
+
+### B4: Compile-time sandbox
+
+`rouwdi.wasm` can:
+
+* model build.rs
+* parse cargo directives
+* run compile-time WASM build scripts
+* model proc-macro execution ABI
+
+### B5: Compiler payload
+
+`rouwdi.wasm` contains the Rust compiler/build-chain payload needed to compile Rust crates.
+
+### B6: Link/target packs
+
+`rouwdi.wasm` contains target packs and can emit final WASI/native artifacts.
+
+### B7: Self-host
+
+`rouwdi.stage1.wasm` builds `rouwdi.stage2.wasm`.
+
+### B8: Fixed-point proof
+
+`rouwdi.stage2.wasm` builds `rouwdi.stage3.wasm`.
+Both proof bundles verify.
+
+````
+
+## 3. `PLANS.md`
+
+This forces Codex into milestone PRs.
+
+```markdown
+# PLANS.md
+
+Codex must work in small bootstrap milestones.
+
+Each milestone must include:
+- goal
+- files changed
+- tests added
+- commands run
+- proof of completion
+- next milestone unlocked
+
+Never skip ahead to compiler payload work before the proof kernel and Cargo graph kernel exist.
+````
+
+---
+
+# The exact Codex prompt pattern
+
+Use Codex like a bootstrapping worker, not a magician. Codex’s workflow docs explicitly recommend giving concrete context, constraints, and verification, and they show using planning for larger refactors before delegating implementation. ([OpenAI Developers][4])
+
+Start with this:
+
+```text
+Read AGENTS.md, BOOTSTRAP.md, and PLANS.md.
+
+We are bootstrapping rouwdi.
+
+Task: implement Bootstrap Milestone B1 only.
+
+Goal:
+- create a Rust workspace for rouwdi
+- create crates:
+  - rouwdi-contract
+  - rouwdi-proof
+  - rouwdi-engine
+  - rouwdi-wasm
+  - rouwdi-runner-wasmtime
+- implement rouwdi.toml parsing
+- implement normalized contract output
+- implement proof bundle skeleton
+- implement proof verification for the skeleton
+- build rouwdi-wasm to wasm32-wasip2 or wasm32-wasip1, whichever is currently practical
+- add tests
+
+Constraints:
+- Do not invoke host cargo/rustc from inside rouwdi.wasm.
+- Host cargo is allowed only to build the stage1 assembly.
+- Do not add server/control-plane/orchestration code.
+- Keep wrappers dumb.
+
+Done when:
+- cargo fmt passes
+- cargo test passes
+- a host-built rouwdi.wasm can parse examples/hello/rouwdi.toml
+- it emits .rouwdi/runs/<run-id>/manifest.json
+- it verifies that proof bundle
+```
+
+Then for B2:
+
+```text
+Implement Bootstrap Milestone B2 only.
+
+Add Cargo.toml parsing and workspace/package graph proof inside rouwdi.wasm.
+
+Do not call cargo metadata.
+Do not shell out to cargo.
+Do not implement compilation yet.
+
+Done when:
+- rouwdi.wasm reads examples/workspace/Cargo.toml
+- discovers workspace members
+- emits graph/build-plan.json
+- verifies graph proof
+- tests cover path dependencies and feature flags
+```
+
+Then B3:
+
+```text
+Implement Bootstrap Milestone B3 only.
+
+Add crate source and cache model inside rouwdi.wasm.
+
+No compilation yet.
+
+Done when:
+- rouwdi.wasm can represent registry, git, and path sources
+- it can hash source trees
+- it can store/reload cached source blobs through the host storage abstraction
+- proof bundle records source hashes
+```
+
+This pattern matters.
+
+Codex should never be asked to “finish rouwdi.” It should be asked to advance the bootstrap state machine.
+
+---
+
+# The bootstrap state machine
+
+Put this in the repo as `bootstrap/state.toml`:
+
+```toml
+current = "B1"
+
+[stages.B1]
+name = "proof-kernel"
+done = false
+requires = []
+
+[stages.B2]
+name = "cargo-graph-kernel"
+done = false
+requires = ["B1"]
+
+[stages.B3]
+name = "crate-source-kernel"
+done = false
+requires = ["B2"]
+
+[stages.B4]
+name = "compiletime-sandbox"
+done = false
+requires = ["B3"]
+
+[stages.B5]
+name = "compiler-payload"
+done = false
+requires = ["B4"]
+
+[stages.B6]
+name = "target-packs-linker"
+done = false
+requires = ["B5"]
+
+[stages.B7]
+name = "self-host"
+done = false
+requires = ["B6"]
+
+[stages.B8]
+name = "fixed-point"
+done = false
+requires = ["B7"]
+```
+
+Then make Codex update the state only when tests prove it.
+
+---
+
+# The self-hosting test harness
+
+Eventually the entire repo revolves around one command:
+
+```bash
+make bootstrap-proof
+```
+
+It should run:
+
+```bash
+# Stage 1: seed with host toolchain
+cargo build -p rouwdi-wasm --release --target wasm32-wasip2
+cp target/wasm32-wasip2/release/rouwdi_wasm.wasm dist/rouwdi.stage1.wasm
+
+# Stage 2: rouwdi builds itself
+wasmtime run dist/rouwdi.stage1.wasm build rouwdi.toml \
+  --out dist/stage2
+
+# Stage 3: rouwdi-built rouwdi builds itself again
+wasmtime run dist/stage2/rouwdi.wasm build rouwdi.toml \
+  --out dist/stage3
+
+# Verify
+wasmtime run dist/stage3/rouwdi.wasm verify dist/stage2/.rouwdi/runs/latest
+wasmtime run dist/stage3/rouwdi.wasm verify dist/stage3/.rouwdi/runs/latest
+```
+
+And report:
+
+```text
+stage1 source: host rustc
+stage2 source: rouwdi.stage1.wasm
+stage3 source: rouwdi.stage2.wasm
+stage2 hash: ...
+stage3 hash: ...
+proof status: verified
+fixed-point level: behavior-identical | normalized-identical | byte-identical
+```
+
+---
+
+# What Codex should build first
+
+Not the compiler.
+
+First build the **bootstrap rails**.
+
+The correct first PR is:
+
+```text
+PR 1: repo constitution + proof kernel
+```
+
+Files:
+
+```text
+AGENTS.md
+BOOTSTRAP.md
+PLANS.md
+Cargo.toml
+crates/rouwdi-contract
+crates/rouwdi-proof
+crates/rouwdi-engine
+crates/rouwdi-wasm
+examples/hello/rouwdi.toml
+tests/proof_kernel.rs
+```
+
+Second PR:
+
+```text
+PR 2: host abstraction + dumb runner
+```
+
+Third PR:
+
+```text
+PR 3: Cargo manifest/workspace graph, no host cargo
+```
+
+Fourth PR:
+
+```text
+PR 4: source snapshot/cache model
+```
+
+Fifth PR:
+
+```text
+PR 5: compile-time sandbox ABI
+```
+
+Then you start the truly hard compiler payload work.
+
+That ordering is not backing off. It prevents Codex from spraying code in the wrong places.
+
+---
+
+# The core trick
+
+You bootstrap rouwdi the same way Rust bootstraps rustc:
+
+```text
+old compiler builds new compiler
+new compiler rebuilds itself
+rebuilt compiler proves the chain
+```
+
+For Rust, the rustc dev guide says stage0 is a precompiled compiler and standard library; stage1 is built from current code by an earlier compiler; stage2 is the truly current compiler; stage3 is a same-result test. ([Rust Compiler Development Guide][1])
+
+For rouwdi:
+
+```text
+stage0 = host Rust toolchain
+stage1 = host-built rouwdi.wasm
+stage2 = rouwdi-built rouwdi.wasm
+stage3 = fixed-point proof rouwdi.wasm
+```
+
+That is the bootstrap.
+
+And the way to get Codex to help is to make it operate inside that ladder, with `AGENTS.md` enforcing the law and every task having a precise “done when.” OpenAI’s Codex docs specifically recommend durable guidance through `AGENTS.md`, clear task context, planning for difficult tasks, and test/review loops; that is exactly the structure this project needs. ([OpenAI Developers][2])
+
+[1]: https://rustc-dev-guide.rust-lang.org/building/bootstrapping/what-bootstrapping-does.html "What Bootstrapping does - Rust Compiler Development Guide"
+[2]: https://developers.openai.com/codex/learn/best-practices "Best practices – Codex | OpenAI Developers"
+[3]: https://developers.openai.com/codex/guides/agents-md "Custom instructions with AGENTS.md – Codex | OpenAI Developers"
+[4]: https://developers.openai.com/codex/workflows "Workflows – Codex | OpenAI Developers"
+
 
 BUILD IT.
 YOU ARE NOT AUTHORIZED TO REDUCE THE DEFINITION OF DONE

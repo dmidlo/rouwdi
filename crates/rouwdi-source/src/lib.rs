@@ -70,11 +70,8 @@ fn visit(
 }
 
 fn should_skip(path: &str) -> bool {
-    path == ".git"
-        || path.starts_with(".git/")
-        || path == ".rouwdi"
-        || path.starts_with(".rouwdi/")
-        || path.split('/').any(|part| part == "target")
+    path.split('/')
+        .any(|part| matches!(part, ".git" | ".rouwdi" | "target"))
 }
 
 pub fn source_relative_path(root: &str, child: &str) -> Result<String, SourceError> {
@@ -103,5 +100,33 @@ mod tests {
         assert_eq!(snapshot.files.len(), 2);
         assert_eq!(snapshot.files[0].path, "Cargo.toml");
         assert_eq!(snapshot.tree_sha256.len(), 64);
+    }
+
+    #[test]
+    fn source_snapshot_excludes_generated_state_inside_nested_project_root() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write("examples/app/Cargo.toml", b"[package]\nname='app'\n")
+            .unwrap();
+        storage
+            .write("examples/app/src/main.rs", b"fn main() {}\n")
+            .unwrap();
+        storage
+            .write("examples/app/.rouwdi/runs/old/manifest.json", b"ignore")
+            .unwrap();
+        storage
+            .write("examples/app/target/wasm32-wasip1/app.wasm", b"ignore")
+            .unwrap();
+
+        let snapshot = snapshot_source(&storage, "examples/app").unwrap();
+
+        assert_eq!(
+            snapshot
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["examples/app/Cargo.toml", "examples/app/src/main.rs"]
+        );
     }
 }
