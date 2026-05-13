@@ -13,7 +13,7 @@ members = [
     "runners/rouwdi",
 ]
 resolver = "2"
-exclude = ["examples/hello-dual"]
+exclude = ["examples/hello-dual", "third_party/rust/src/tools/rust-analyzer"]
 
 [workspace.package]
 edition = "2021"
@@ -29,4 +29,5 @@ sha2 = "0.10"
 thiserror = "1"
 toml = "0.8"
 rustc_lexer = { path = "third_party/rust/compiler/rustc_lexer" }
+ra_parser = { package = "parser", path = "third_party/rust/src/tools/rust-analyzer/crates/parser" }
 wasmi = { version = "2.0.0-beta.2", default-features = false, features = ["stable", "std", "prefer-btree-collections"] }

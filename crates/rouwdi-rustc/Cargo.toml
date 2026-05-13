@@ -7,5 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ra_parser.workspace = true
 rustc_lexer.workspace = true
 serde.workspace = true

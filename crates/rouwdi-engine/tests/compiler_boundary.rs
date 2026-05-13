@@ -1,7 +1,10 @@
 use rouwdi_cargo::{CargoBuildPlan, CompilePhase};
 use rouwdi_engine::{BuildRequest, RouwdiEngine};
 use rouwdi_proof::{RouwdiRunManifest, RunStatus};
-use rouwdi_rustc::{RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode};
+use rouwdi_rustc::{
+    RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode,
+    RustParseStageRecord, RustParseStageStatus,
+};
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
 
@@ -83,15 +86,19 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(record.unit_id, "app:rust:app:wasm32-wasip1");
     assert_eq!(record.source_path, "src/main.rs");
     assert_eq!(record.status, RustCompilerPipelineStatus::MissingStage);
+    assert_eq!(
+        record.parse_stage.as_ref().unwrap().status,
+        RustParseStageStatus::Succeeded
+    );
     let missing_stage = record.missing_stage.as_ref().unwrap();
-    assert_eq!(missing_stage.stage, RustCompilerStage::Parse);
+    assert_eq!(missing_stage.stage, RustCompilerStage::MacroExpansion);
     assert_eq!(
         missing_stage.error_code,
-        RustCompilerStageErrorCode::RustcParseNotEmbedded
+        RustCompilerStageErrorCode::MacroExpansionNotEmbedded
     );
-    assert_eq!(missing_stage.required_component, "rustc_parse");
+    assert_eq!(missing_stage.required_component, "rustc_expand");
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_parse"
+        item.component == "compiler stage rustc_expand"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report
@@ -208,9 +215,68 @@ edition = "2021"
     assert!(pipeline_unit_ids.contains("helper:rust:helper:wasm32-wasip1"));
     assert!(manifest.compiler_pipeline.iter().all(|record| {
         record.status == RustCompilerPipelineStatus::MissingStage
-            && record.missing_stage.as_ref().is_some_and(|missing| {
-                missing.stage == RustCompilerStage::Parse
-                    && missing.error_code == RustCompilerStageErrorCode::RustcParseNotEmbedded
+            && record.parse_stage.as_ref().is_some_and(|parse| {
+                parse.status == RustParseStageStatus::Succeeded
+                    && parse.stage == RustCompilerStage::Parse
             })
+            && record.missing_stage.as_ref().is_some_and(|missing| {
+                missing.stage == RustCompilerStage::MacroExpansion
+                    && missing.error_code == RustCompilerStageErrorCode::MacroExpansionNotEmbedded
+            })
+    }));
+    let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/graph/rust-source-parse.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+    let parse_unit_ids = parse_records
+        .iter()
+        .map(|record| record.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(parse_unit_ids, rust_unit_ids);
+    assert!(parse_records
+        .iter()
+        .all(|record| record.status == RustParseStageStatus::Succeeded));
+}
+
+#[test]
+fn invalid_rust_syntax_stops_at_parse_stage() {
+    let mut storage = no_deps_wasi_binary_storage();
+    storage
+        .write("src/main.rs", b"fn main( { let = ; }\n")
+        .unwrap();
+
+    let report = RouwdiEngine::default()
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/graph/rust-source-parse.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(manifest.compiler_pipeline.len(), 1);
+    let record = &manifest.compiler_pipeline[0];
+    assert_eq!(record.status, RustCompilerPipelineStatus::ParseError);
+    assert!(record.missing_stage.is_none());
+    assert_eq!(
+        record.parse_stage.as_ref().unwrap().status,
+        RustParseStageStatus::Failed
+    );
+    assert!(record.parse_stage.as_ref().unwrap().diagnostic_count > 0);
+    assert_eq!(parse_records.len(), 1);
+    assert_eq!(parse_records[0].status, RustParseStageStatus::Failed);
+    assert!(report
+        .bootstrap_diagnostics
+        .iter()
+        .any(|item| item.component == "Rust parse stage"));
+    assert!(!report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "compiler stage rustc_parse"
+            || item.reason.contains("rustc_parse_not_embedded")
     }));
 }

@@ -32,6 +32,41 @@ pub struct RustSourceLexProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustParseDiagnostic {
+    pub offset: u64,
+    pub len: u32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustParseStageStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustParseStageRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+    pub stage: RustCompilerStage,
+    pub status: RustParseStageStatus,
+    pub parser_engine: String,
+    pub parser_source: String,
+    pub entrypoint: String,
+    pub edition: String,
+    pub token_count: usize,
+    pub node_count: usize,
+    pub diagnostic_count: usize,
+    pub diagnostics: Vec<RustParseDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCompileRequest {
     pub unit_id: String,
     pub package: String,
@@ -175,6 +210,9 @@ pub enum RustCompilerPipelineError {
     MissingStage {
         missing: Box<MissingRustCompilerStage>,
     },
+    ParseStage {
+        parse: Box<RustParseStageRecord>,
+    },
 }
 
 impl fmt::Display for RustCompilerPipelineError {
@@ -187,6 +225,11 @@ impl fmt::Display for RustCompilerPipelineError {
                 missing.required_by(),
                 missing.reason
             ),
+            Self::ParseStage { parse } => write!(
+                formatter,
+                "compiler stage parse failed for compile unit {}: {} diagnostic(s)",
+                parse.unit_id, parse.diagnostic_count
+            ),
         }
     }
 }
@@ -198,6 +241,7 @@ impl std::error::Error for RustCompilerPipelineError {}
 pub enum RustCompilerPipelineStatus {
     Artifact,
     MissingStage,
+    ParseError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +255,7 @@ pub struct RustCompilerPipelineRecord {
     pub profile: String,
     pub status: RustCompilerPipelineStatus,
     pub artifact: Option<RustCompileArtifactRecord>,
+    pub parse_stage: Option<RustParseStageRecord>,
     pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
@@ -224,7 +269,7 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
         pending_component(
             "rustc_parse",
             "third_party/rust/compiler/rustc_parse",
-            "Rust parser and AST construction",
+            "full rustc AST construction and parser integration",
         ),
         pending_component(
             "rustc_expand",
@@ -273,15 +318,78 @@ pub fn run_rust_compiler_pipeline(
     request: &RustCompileRequest,
     source: &str,
 ) -> Result<RustCompileArtifactRecord, RustCompilerPipelineError> {
-    let _lex = lex_rust_source_with_diagnostics(&request.source_path, source);
-    if let Some(missing) = first_missing_compiler_stage(request) {
-        return Err(RustCompilerPipelineError::MissingStage {
-            missing: Box::new(missing),
-        });
+    let record = run_rust_compiler_pipeline_record(request, source);
+    if let Some(artifact) = record.artifact {
+        return Ok(artifact);
+    }
+    match record.status {
+        RustCompilerPipelineStatus::ParseError => Err(RustCompilerPipelineError::ParseStage {
+            parse: Box::new(
+                record
+                    .parse_stage
+                    .expect("parse error pipeline record includes parse stage"),
+            ),
+        }),
+        RustCompilerPipelineStatus::MissingStage => Err(RustCompilerPipelineError::MissingStage {
+            missing: Box::new(
+                record
+                    .missing_stage
+                    .expect("missing-stage pipeline record includes missing stage"),
+            ),
+        }),
+        RustCompilerPipelineStatus::Artifact => unreachable!("artifact records return above"),
+    }
+}
+
+pub fn run_rust_compiler_pipeline_record(
+    request: &RustCompileRequest,
+    source: &str,
+) -> RustCompilerPipelineRecord {
+    let parse_stage = parse_rust_source_for_compile_unit(request, source);
+    if parse_stage.status == RustParseStageStatus::Failed {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::ParseError,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            missing_stage: None,
+        };
     }
 
-    Err(RustCompilerPipelineError::MissingStage {
-        missing: Box::new(MissingRustCompilerStage {
+    if let Some(missing) = first_missing_compiler_stage(request) {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::MissingStage,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            missing_stage: Some(missing),
+        };
+    }
+
+    RustCompilerPipelineRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        status: RustCompilerPipelineStatus::MissingStage,
+        artifact: None,
+        parse_stage: Some(parse_stage),
+        missing_stage: Some(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
             target: request.target.clone(),
@@ -292,38 +400,6 @@ pub fn run_rust_compiler_pipeline(
             component_role: "internal compiler artifact emission".to_owned(),
             reason: "the internal compiler boundary has no artifact writer wired yet".to_owned(),
         }),
-    })
-}
-
-pub fn run_rust_compiler_pipeline_record(
-    request: &RustCompileRequest,
-    source: &str,
-) -> RustCompilerPipelineRecord {
-    match run_rust_compiler_pipeline(request, source) {
-        Ok(artifact) => RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::Artifact,
-            artifact: Some(artifact),
-            missing_stage: None,
-        },
-        Err(RustCompilerPipelineError::MissingStage { missing }) => RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::MissingStage,
-            artifact: None,
-            missing_stage: Some(*missing),
-        },
     }
 }
 
@@ -368,6 +444,71 @@ pub fn lex_rust_source_with_diagnostics(path: &str, source: &str) -> RustSourceL
         path: path.to_owned(),
         token_count: tokens.len(),
         tokens,
+        diagnostics,
+    }
+}
+
+pub fn parse_rust_source_for_compile_unit(
+    request: &RustCompileRequest,
+    source: &str,
+) -> RustParseStageRecord {
+    let edition = ra_parser::Edition::CURRENT;
+    let lexed = ra_parser::LexedStr::new(edition, source);
+    let input = lexed.to_input(edition);
+    let output = ra_parser::TopEntryPoint::SourceFile.parse(&input);
+    let mut token_count = 0usize;
+    let mut node_count = 0usize;
+    let mut diagnostics = Vec::new();
+    let reached_eof = lexed.intersperse_trivia(&output, &mut |step| match step {
+        ra_parser::StrStep::Token { .. } => token_count += 1,
+        ra_parser::StrStep::Enter { .. } => node_count += 1,
+        ra_parser::StrStep::Exit => {}
+        ra_parser::StrStep::Error { msg, pos } => {
+            diagnostics.push(RustParseDiagnostic {
+                offset: pos as u64,
+                len: 0,
+                message: msg.to_owned(),
+            });
+        }
+    });
+
+    for (token_index, message) in lexed.errors() {
+        let range = lexed.text_range(token_index);
+        diagnostics.push(RustParseDiagnostic {
+            offset: range.start as u64,
+            len: (range.end - range.start) as u32,
+            message: message.to_owned(),
+        });
+    }
+    if !reached_eof {
+        diagnostics.push(RustParseDiagnostic {
+            offset: source.len() as u64,
+            len: 0,
+            message: "parser did not consume the full source file".to_owned(),
+        });
+    }
+
+    RustParseStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::Parse,
+        status: if diagnostics.is_empty() {
+            RustParseStageStatus::Succeeded
+        } else {
+            RustParseStageStatus::Failed
+        },
+        parser_engine: "rust-analyzer-parser".to_owned(),
+        parser_source: "third_party/rust/src/tools/rust-analyzer/crates/parser".to_owned(),
+        entrypoint: "source_file".to_owned(),
+        edition: edition.to_string(),
+        token_count,
+        node_count,
+        diagnostic_count: diagnostics.len(),
         diagnostics,
     }
 }
@@ -444,9 +585,8 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
     None
 }
 
-fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 9] {
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 8] {
     [
-        (RustCompilerStage::Parse, "rustc_parse"),
         (RustCompilerStage::MacroExpansion, "rustc_expand"),
         (RustCompilerStage::NameResolution, "rustc_resolve"),
         (RustCompilerStage::TypeChecking, "rustc_hir_analysis"),
@@ -481,6 +621,18 @@ fn pending_component(name: &str, upstream_path: &str, role: &str) -> RustcCompon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compile_request() -> RustCompileRequest {
+        RustCompileRequest {
+            unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            triple: "wasm32-wasip1".to_owned(),
+            profile: "release".to_owned(),
+        }
+    }
 
     #[test]
     fn embeds_real_upstream_rustc_lexer() {
@@ -519,26 +671,48 @@ mod tests {
     }
 
     #[test]
-    fn compiler_pipeline_returns_typed_missing_stage_for_first_unembedded_stage() {
-        let request = RustCompileRequest {
-            unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
-            package: "app".to_owned(),
-            target: "app".to_owned(),
-            target_kind: "bin".to_owned(),
-            source_path: "src/main.rs".to_owned(),
-            triple: "wasm32-wasip1".to_owned(),
-            profile: "release".to_owned(),
-        };
+    fn parser_stage_accepts_valid_rust_source() {
+        let request = compile_request();
+
+        let parse = parse_rust_source_for_compile_unit(&request, "fn main() {}\n");
+
+        assert_eq!(parse.stage, RustCompilerStage::Parse);
+        assert_eq!(parse.status, RustParseStageStatus::Succeeded);
+        assert!(parse.token_count > 0);
+        assert!(parse.node_count > 0);
+        assert_eq!(parse.diagnostic_count, 0);
+        assert!(parse.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn compiler_pipeline_returns_typed_missing_stage_after_parser_success() {
+        let request = compile_request();
 
         let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
 
-        let RustCompilerPipelineError::MissingStage { missing } = error;
-        assert_eq!(missing.stage, RustCompilerStage::Parse);
+        let RustCompilerPipelineError::MissingStage { missing } = error else {
+            panic!("valid Rust source must advance to the next missing compiler stage");
+        };
+        assert_eq!(missing.stage, RustCompilerStage::MacroExpansion);
         assert_eq!(
             missing.error_code,
-            RustCompilerStageErrorCode::RustcParseNotEmbedded
+            RustCompilerStageErrorCode::MacroExpansionNotEmbedded
         );
-        assert_eq!(missing.required_component, "rustc_parse");
+        assert_eq!(missing.required_component, "rustc_expand");
+    }
+
+    #[test]
+    fn compiler_pipeline_returns_parse_stage_error_for_invalid_syntax() {
+        let request = compile_request();
+
+        let error = run_rust_compiler_pipeline(&request, "fn main( { let = ; }\n").unwrap_err();
+
+        let RustCompilerPipelineError::ParseStage { parse } = error else {
+            panic!("invalid Rust syntax must fail in the parse stage");
+        };
+        assert_eq!(parse.status, RustParseStageStatus::Failed);
+        assert!(parse.diagnostic_count > 0);
+        assert!(!parse.diagnostics.is_empty());
     }
 
     #[test]
@@ -563,26 +737,22 @@ mod tests {
 
     #[test]
     fn compiler_pipeline_record_preserves_missing_stage_identity() {
-        let request = RustCompileRequest {
-            unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
-            package: "app".to_owned(),
-            target: "app".to_owned(),
-            target_kind: "bin".to_owned(),
-            source_path: "src/main.rs".to_owned(),
-            triple: "wasm32-wasip1".to_owned(),
-            profile: "release".to_owned(),
-        };
+        let request = compile_request();
 
         let record = run_rust_compiler_pipeline_record(&request, "fn main() {}\n");
 
         assert_eq!(record.status, RustCompilerPipelineStatus::MissingStage);
         assert_eq!(
+            record.parse_stage.as_ref().unwrap().status,
+            RustParseStageStatus::Succeeded
+        );
+        assert_eq!(
             record.missing_stage.as_ref().unwrap().required_component,
-            "rustc_parse"
+            "rustc_expand"
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().error_code,
-            RustCompilerStageErrorCode::RustcParseNotEmbedded
+            RustCompilerStageErrorCode::MacroExpansionNotEmbedded
         );
         assert_eq!(record.artifact, None);
     }

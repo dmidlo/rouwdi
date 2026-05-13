@@ -12,7 +12,7 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
-    RustCompilerPipelineRecord, RustSourceLexProof,
+    RustCompilerPipelineRecord, RustParseStageStatus, RustSourceLexProof,
 };
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
@@ -155,6 +155,10 @@ impl RouwdiEngine {
         let compile_time_plan = plan_compile_time(&build_plan);
         let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
         let compiler_pipeline = run_compiler_pipeline(storage, &build_plan)?;
+        let rust_source_parse = compiler_pipeline
+            .iter()
+            .filter_map(|record| record.parse_stage.clone())
+            .collect::<Vec<_>>();
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -222,6 +226,20 @@ impl RouwdiEngine {
                     "upstream rustc_lexer reported {lexical_diagnostic_count} lexical diagnostic(s)"
                 ),
             });
+        }
+        for record in &compiler_pipeline {
+            if let Some(parse_stage) = &record.parse_stage {
+                if parse_stage.status == RustParseStageStatus::Failed {
+                    assembly_diagnostics.push(BootstrapDiagnostic {
+                        component: "Rust parse stage".to_owned(),
+                        required_by: format!("compile unit {}", parse_stage.unit_id),
+                        reason: format!(
+                            "internal Rust parser reported {} diagnostic(s) for {}",
+                            parse_stage.diagnostic_count, parse_stage.source_path
+                        ),
+                    });
+                }
+            }
         }
         for record in &compiler_pipeline {
             if let Some(missing_stage) = &record.missing_stage {
@@ -381,6 +399,7 @@ impl RouwdiEngine {
             build_plan,
             compile_time_plan,
             rust_source_lex,
+            rust_source_parse,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -569,7 +588,7 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "compiler stage rustc_parse"
+            .any(|item| item.component == "compiler stage rustc_expand"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
             .bootstrap_diagnostics
@@ -582,13 +601,14 @@ version = "0.1.0"
         let manifest: RouwdiRunManifest =
             serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.compiler_pipeline.len(), 1);
+        assert!(manifest.compiler_pipeline[0].parse_stage.is_some());
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .missing_stage
                 .as_ref()
                 .unwrap()
                 .required_component,
-            "rustc_parse"
+            "rustc_expand"
         );
         assert!(storage
             .read(&format!("{}/source/source-cache.json", report.run_root))
@@ -616,6 +636,10 @@ version = "0.1.0"
             .starts_with(b"{"));
         assert!(storage
             .read(&format!("{}/graph/rust-source-lex.json", report.run_root))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!("{}/graph/rust-source-parse.json", report.run_root))
             .unwrap()
             .starts_with(b"["));
         assert!(storage
