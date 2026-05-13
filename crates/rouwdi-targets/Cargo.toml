@@ -7,7 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rouwdi-rustc = { path = "../rouwdi-rustc" }
 serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 rouwdi-contract = { path = "../rouwdi-contract" }
-

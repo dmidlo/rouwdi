@@ -467,6 +467,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dissimilar"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -507,6 +513,16 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "expect-test"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af43ff4431e848fb47472a920f14fa71c24de13255a5692e93d4e90302acb0"
+dependencies = [
+ "dissimilar",
+ "once_cell",
 ]
 
 [[package]]
@@ -1386,6 +1402,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rouwdi-rustc"
+version = "0.1.0"
+dependencies = [
+ "rustc_lexer",
+ "serde",
+]
+
+[[package]]
 name = "rouwdi-source"
 version = "0.1.0"
 dependencies = [
@@ -1400,8 +1424,11 @@ dependencies = [
 name = "rouwdi-targets"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "rouwdi-contract",
+ "rouwdi-rustc",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -1434,6 +1461,16 @@ name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
+name = "rustc_lexer"
+version = "0.0.0"
+dependencies = [
+ "expect-test",
+ "memchr",
+ "unicode-ident",
+ "unicode-properties",
+]
 
 [[package]]
 name = "rustix"
@@ -1889,6 +1926,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-properties"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "unicode-width"

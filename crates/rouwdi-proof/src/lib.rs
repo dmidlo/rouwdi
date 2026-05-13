@@ -498,7 +498,7 @@ mod tests {
             status: RunStatus::Unsupported,
             contract_sha256: "a".repeat(64),
             source_tree_sha256: "b".repeat(64),
-            compiler_engine: CompilerEngineIdentity::incomplete_bootstrap_guard(),
+            compiler_engine: CompilerEngineIdentity::from_embedded_component_inventory(),
             target_packs: Vec::new(),
             artifacts: Vec::new(),
             unsupported: Vec::new(),

@@ -129,10 +129,11 @@ impl RouwdiEngine {
         }
         let target_packs = self.target_registry.validate_contract(&contract)?;
 
+        let mut internal_blockers = Vec::new();
         let mut unsupported = Vec::new();
         for pack in &target_packs {
             if !pack.target_pack_embedded {
-                unsupported.push(UnsupportedCapability {
+                internal_blockers.push(UnsupportedCapability {
                     capability: format!("{} target pack", pack.triple),
                     required_by: format!("artifact emission for {}", pack.triple),
                     reason: "target ABI/object/link metadata is not embedded in this assembly"
@@ -140,14 +141,14 @@ impl RouwdiEngine {
                 });
             }
             if !pack.std_pack_embedded {
-                unsupported.push(UnsupportedCapability {
+                internal_blockers.push(UnsupportedCapability {
                     capability: format!("{} std/core/alloc pack", pack.triple),
                     required_by: format!("Rust standard library resolution for {}", pack.triple),
                     reason: "std/core/alloc artifacts are not embedded in this assembly".to_owned(),
                 });
             }
             if !pack.linker_pack_embedded {
-                unsupported.push(UnsupportedCapability {
+                internal_blockers.push(UnsupportedCapability {
                     capability: format!("{} linker pack", pack.triple),
                     required_by: format!("final link for {}", pack.triple),
                     reason: "linker scripts/configuration/runtime objects are not embedded in this assembly"
@@ -156,21 +157,21 @@ impl RouwdiEngine {
             }
         }
         if !self.target_registry.compiler.compiler_semantics_embedded {
-            unsupported.push(UnsupportedCapability {
+            internal_blockers.push(UnsupportedCapability {
                 capability: "rustc frontend semantics".to_owned(),
                 required_by: "compile Rust crate graph".to_owned(),
                 reason: "no Rust parser, expansion, typeck, borrowck, MIR, or metadata engine is embedded in this assembly".to_owned(),
             });
         }
         if !self.target_registry.compiler.codegen_embedded {
-            unsupported.push(UnsupportedCapability {
+            internal_blockers.push(UnsupportedCapability {
                 capability: "codegen".to_owned(),
                 required_by: "object/module emission".to_owned(),
                 reason: "no LLVM-grade codegen backend is embedded in this assembly".to_owned(),
             });
         }
         if !self.target_registry.compiler.linker_embedded {
-            unsupported.push(UnsupportedCapability {
+            internal_blockers.push(UnsupportedCapability {
                 capability: "linker".to_owned(),
                 required_by: "final native/WASI artifact emission".to_owned(),
                 reason: "no native or WASM linker is embedded in this assembly".to_owned(),
@@ -181,7 +182,7 @@ impl RouwdiEngine {
             .iter()
             .any(|unit| unit.phase == CompilePhase::BuildScript)
         {
-            unsupported.push(UnsupportedCapability {
+            internal_blockers.push(UnsupportedCapability {
                 capability: "build.rs compile-time sandbox execution".to_owned(),
                 required_by: "Cargo build script directives and generated files".to_owned(),
                 reason: "build scripts are planned for compile-time WASM but execution is not embedded yet".to_owned(),
@@ -192,7 +193,7 @@ impl RouwdiEngine {
             .iter()
             .any(|unit| unit.phase == CompilePhase::ProcMacro)
         {
-            unsupported.push(UnsupportedCapability {
+            internal_blockers.push(UnsupportedCapability {
                 capability: "proc-macro compile-time sandbox execution".to_owned(),
                 required_by: "Rust macro expansion".to_owned(),
                 reason: "proc-macro crates are planned for compile-time WASM but token-stream execution is not embedded yet".to_owned(),
@@ -208,10 +209,16 @@ impl RouwdiEngine {
             }
         }
 
-        let status = if unsupported.is_empty() {
-            RunStatus::Succeeded
-        } else {
+        let has_internal_blockers = !internal_blockers.is_empty();
+        let mut build_chain_findings = internal_blockers;
+        build_chain_findings.extend(unsupported);
+
+        let status = if has_internal_blockers {
+            RunStatus::Failed
+        } else if !build_chain_findings.is_empty() {
             RunStatus::Unsupported
+        } else {
+            RunStatus::Succeeded
         };
         let interface_proofs = contract
             .targets
@@ -226,7 +233,11 @@ impl RouwdiEngine {
                 missing_exports: target.interface.required_exports.clone(),
                 require_executable: target.interface.require_executable,
                 executable_detected: None,
-                status: ProofStatus::Unsupported,
+                status: if has_internal_blockers {
+                    ProofStatus::Failed
+                } else {
+                    ProofStatus::Unsupported
+                },
                 reason: Some(
                     "artifact was not built because compiler/codegen/linker are not embedded"
                         .to_owned(),
@@ -249,7 +260,11 @@ impl RouwdiEngine {
                 stdout_contains: target.runtime.stdout_contains.clone(),
                 stdout_matched: None,
                 status: if target.runtime.required {
-                    ProofStatus::Unsupported
+                    if has_internal_blockers {
+                        ProofStatus::Failed
+                    } else {
+                        ProofStatus::Unsupported
+                    }
                 } else {
                     ProofStatus::Succeeded
                 },
@@ -284,7 +299,7 @@ impl RouwdiEngine {
             compiler_engine: self.target_registry.compiler.clone(),
             target_packs,
             artifacts: Vec::<ArtifactManifestEntry>::new(),
-            unsupported: unsupported.clone(),
+            unsupported: build_chain_findings.clone(),
             proof_files: Vec::new(),
         };
         let mut bundle = ProofBundle {
@@ -315,7 +330,7 @@ impl RouwdiEngine {
             manifest_path: format!("{run_root}/manifest.json"),
             run_root,
             proof_files,
-            unsupported,
+            unsupported: build_chain_findings,
         })
     }
 
@@ -416,14 +431,14 @@ version = "0.1.0"
     }
 
     #[test]
-    fn build_writes_proof_bundle_and_refuses_fake_success_without_embedded_compiler() {
+    fn build_writes_proof_bundle_and_fails_without_embedded_compiler() {
         let mut storage = fixture_storage();
 
         let report = RouwdiEngine::default()
             .build(&mut storage, BuildRequest::default())
             .unwrap();
 
-        assert_eq!(report.status, RunStatus::Unsupported);
+        assert_eq!(report.status, RunStatus::Failed);
         assert!(report
             .unsupported
             .iter()
@@ -470,7 +485,7 @@ version = "0.1.0"
 
         let verify = engine.verify(&storage, &report.run_root).unwrap();
 
-        assert_eq!(verify.status, RunStatus::Unsupported);
+        assert_eq!(verify.status, RunStatus::Failed);
         assert!(verify.checked_hashes >= 3);
     }
 

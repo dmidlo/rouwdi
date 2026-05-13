@@ -1,5 +1,9 @@
 use rouwdi_contract::{ArtifactKind, RouwdiContract};
+use rouwdi_rustc::{
+    complete_rustc_semantics_embedded, rustc_component_inventory, RustcComponentStatus,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[derive(Debug, thiserror::Error)]
@@ -17,6 +21,8 @@ pub enum TargetError {
 pub struct TargetPack {
     pub triple: String,
     pub target_pack_hash: String,
+    pub target_spec_bundle_hash: String,
+    pub target_spec_sources: Vec<EmbeddedSourceFile>,
     pub std_pack_hash: String,
     pub linker_pack_hash: String,
     pub target_pack_embedded: bool,
@@ -24,6 +30,13 @@ pub struct TargetPack {
     pub linker_pack_embedded: bool,
     pub artifact_kinds: Vec<ArtifactKind>,
     pub runtime_execution: RuntimeExecutionCapability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddedSourceFile {
+    pub path: String,
+    pub sha256: String,
+    pub len: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +53,7 @@ pub struct CompilerEngineIdentity {
     pub engine_id: String,
     pub rust_release: String,
     pub source_custody: Vec<SourceCustodyEntry>,
+    pub rustc_components: Vec<RustcComponentStatus>,
     pub compiler_semantics_embedded: bool,
     pub codegen_embedded: bool,
     pub linker_embedded: bool,
@@ -55,10 +69,17 @@ pub struct SourceCustodyEntry {
 }
 
 impl CompilerEngineIdentity {
-    pub fn incomplete_bootstrap_guard() -> Self {
+    pub fn from_embedded_component_inventory() -> Self {
+        let rustc_components = rustc_component_inventory();
+        let codegen_embedded = rustc_components.iter().any(|component| {
+            component.name == "rustc_codegen_llvm" && component.embedded_in_assembly
+        });
+        let linker_embedded = rustc_components
+            .iter()
+            .any(|component| component.name == "lld" && component.embedded_in_assembly);
         Self {
-            engine_id: "rouwdi-bootstrap-guard".to_owned(),
-            rust_release: "not-embedded".to_owned(),
+            engine_id: "rouwdi-upstream-rustc-custody".to_owned(),
+            rust_release: "1.95.0-src-800892799d7666fe1dc17abd862100a6cf273718".to_owned(),
             source_custody: vec![
                 SourceCustodyEntry {
                     role: "rust-cargo-llvm-source-custody".to_owned(),
@@ -82,9 +103,10 @@ impl CompilerEngineIdentity {
                     embedded_in_assembly: false,
                 },
             ],
-            compiler_semantics_embedded: false,
-            codegen_embedded: false,
-            linker_embedded: false,
+            rustc_components,
+            compiler_semantics_embedded: complete_rustc_semantics_embedded(),
+            codegen_embedded,
+            linker_embedded,
         }
     }
 
@@ -104,53 +126,38 @@ impl TargetPackRegistry {
         let mut packs = BTreeMap::new();
         packs.insert(
             "wasm32-wasip1".to_owned(),
-            TargetPack {
-                triple: "wasm32-wasip1".to_owned(),
-                target_pack_hash: "embedded-target-pack-pending".to_owned(),
-                std_pack_hash: "embedded-std-pack-pending".to_owned(),
-                linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
-                target_pack_embedded: false,
-                std_pack_embedded: false,
-                linker_pack_embedded: false,
-                artifact_kinds: vec![ArtifactKind::Module, ArtifactKind::Component],
-                runtime_execution: RuntimeExecutionCapability::Wasi,
-            },
+            target_pack(
+                "wasm32-wasip1",
+                wasm32_wasip1_target_specs(),
+                vec![ArtifactKind::Module, ArtifactKind::Component],
+                RuntimeExecutionCapability::Wasi,
+            ),
         );
         packs.insert(
             "wasm32-wasip2".to_owned(),
-            TargetPack {
-                triple: "wasm32-wasip2".to_owned(),
-                target_pack_hash: "embedded-target-pack-pending".to_owned(),
-                std_pack_hash: "embedded-std-pack-pending".to_owned(),
-                linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
-                target_pack_embedded: false,
-                std_pack_embedded: false,
-                linker_pack_embedded: false,
-                artifact_kinds: vec![ArtifactKind::Module, ArtifactKind::Component],
-                runtime_execution: RuntimeExecutionCapability::Wasi,
-            },
+            target_pack(
+                "wasm32-wasip2",
+                wasm32_wasip2_target_specs(),
+                vec![ArtifactKind::Module, ArtifactKind::Component],
+                RuntimeExecutionCapability::Wasi,
+            ),
         );
         packs.insert(
             "native_host".to_owned(),
-            TargetPack {
-                triple: "native_host".to_owned(),
-                target_pack_hash: "embedded-target-pack-pending".to_owned(),
-                std_pack_hash: "embedded-std-pack-pending".to_owned(),
-                linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
-                target_pack_embedded: false,
-                std_pack_embedded: false,
-                linker_pack_embedded: false,
-                artifact_kinds: vec![
+            target_pack(
+                "native_host",
+                native_host_family_target_specs(),
+                vec![
                     ArtifactKind::Executable,
                     ArtifactKind::Staticlib,
                     ArtifactKind::Archive,
                     ArtifactKind::Object,
                 ],
-                runtime_execution: RuntimeExecutionCapability::DelegatedOnly,
-            },
+                RuntimeExecutionCapability::DelegatedOnly,
+            ),
         );
         Self {
-            compiler: CompilerEngineIdentity::incomplete_bootstrap_guard(),
+            compiler: CompilerEngineIdentity::from_embedded_component_inventory(),
             packs,
         }
     }
@@ -177,6 +184,118 @@ impl TargetPackRegistry {
     }
 }
 
+fn target_pack(
+    triple: &str,
+    target_spec_sources: Vec<EmbeddedSourceFile>,
+    artifact_kinds: Vec<ArtifactKind>,
+    runtime_execution: RuntimeExecutionCapability,
+) -> TargetPack {
+    TargetPack {
+        triple: triple.to_owned(),
+        target_pack_hash: "embedded-target-pack-pending".to_owned(),
+        target_spec_bundle_hash: embedded_source_bundle_hash(&target_spec_sources),
+        target_spec_sources,
+        std_pack_hash: "embedded-std-pack-pending".to_owned(),
+        linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
+        target_pack_embedded: false,
+        std_pack_embedded: false,
+        linker_pack_embedded: false,
+        artifact_kinds,
+        runtime_execution,
+    }
+}
+
+fn wasm32_wasip1_target_specs() -> Vec<EmbeddedSourceFile> {
+    vec![
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/base/wasm.rs",
+            include_bytes!("../../../third_party/rust/compiler/rustc_target/src/spec/base/wasm.rs"),
+        ),
+    ]
+}
+
+fn wasm32_wasip2_target_specs() -> Vec<EmbeddedSourceFile> {
+    vec![
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/wasm32_wasip2.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/wasm32_wasip2.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/base/wasm.rs",
+            include_bytes!("../../../third_party/rust/compiler/rustc_target/src/spec/base/wasm.rs"),
+        ),
+    ]
+}
+
+fn native_host_family_target_specs() -> Vec<EmbeddedSourceFile> {
+    vec![
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_unknown_linux_gnu.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_unknown_linux_gnu.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/aarch64_unknown_linux_gnu.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/aarch64_unknown_linux_gnu.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_apple_darwin.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_apple_darwin.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/aarch64_apple_darwin.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/aarch64_apple_darwin.rs"
+            ),
+        ),
+        embedded_source(
+            "third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_pc_windows_msvc.rs",
+            include_bytes!(
+                "../../../third_party/rust/compiler/rustc_target/src/spec/targets/x86_64_pc_windows_msvc.rs"
+            ),
+        ),
+    ]
+}
+
+fn embedded_source(path: &str, bytes: &[u8]) -> EmbeddedSourceFile {
+    EmbeddedSourceFile {
+        path: path.to_owned(),
+        sha256: hash_bytes(bytes),
+        len: bytes.len() as u64,
+    }
+}
+
+fn embedded_source_bundle_hash(files: &[EmbeddedSourceFile]) -> String {
+    let mut digest = Sha256::new();
+    for file in files {
+        digest.update(file.path.as_bytes());
+        digest.update(b"\0");
+        digest.update(file.sha256.as_bytes());
+        digest.update(b"\0");
+        digest.update(file.len.to_le_bytes());
+    }
+    hex::encode(digest.finalize())
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    hex::encode(digest.finalize())
+}
+
 impl Default for TargetPackRegistry {
     fn default() -> Self {
         Self::strict_embedded()
@@ -195,6 +314,7 @@ mod tests {
         assert!(registry.packs.contains_key("wasm32-wasip1"));
         assert!(registry.packs.contains_key("wasm32-wasip2"));
         assert!(registry.packs.contains_key("native_host"));
+        assert_eq!(registry.compiler.engine_id, "rouwdi-upstream-rustc-custody");
         assert_eq!(
             registry.compiler.source_custody[0].commit,
             "800892799d7666fe1dc17abd862100a6cf273718"
@@ -210,6 +330,27 @@ mod tests {
         assert!(!registry.packs["wasm32-wasip1"].target_pack_embedded);
         assert!(!registry.packs["wasm32-wasip1"].std_pack_embedded);
         assert!(!registry.packs["wasm32-wasip1"].linker_pack_embedded);
+        assert_eq!(
+            registry.packs["wasm32-wasip1"]
+                .target_spec_bundle_hash
+                .len(),
+            64
+        );
+        assert!(registry.packs["wasm32-wasip1"]
+            .target_spec_sources
+            .iter()
+            .any(|source| source.path.ends_with("wasm32_wasip1.rs")));
+        assert!(registry
+            .compiler
+            .rustc_components
+            .iter()
+            .any(|component| component.name == "rustc_lexer" && component.embedded_in_assembly));
+        assert!(registry
+            .compiler
+            .rustc_components
+            .iter()
+            .any(|component| component.name == "rustc_codegen_llvm"
+                && !component.embedded_in_assembly));
         assert!(!registry.compiler.is_complete());
     }
 

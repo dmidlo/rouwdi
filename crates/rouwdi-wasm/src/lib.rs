@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_build_returns_unsupported_until_full_compiler_is_embedded() {
+    fn storage_build_fails_until_full_compiler_is_embedded() {
         let mut storage = MemoryStorage::new();
         storage
             .write(
@@ -165,6 +165,6 @@ version = "0.1.0"
             .unwrap();
         storage.write("src/main.rs", b"fn main() {}\n").unwrap();
 
-        assert_eq!(build_with_storage(&mut storage, "rouwdi.toml"), 2);
+        assert_eq!(build_with_storage(&mut storage, "rouwdi.toml"), 1);
     }
 }
