@@ -29,3 +29,4 @@ sha2 = "0.10"
 thiserror = "1"
 toml = "0.8"
 rustc_lexer = { path = "third_party/rust/compiler/rustc_lexer" }
+wasmi = { version = "2.0.0-beta.2", default-features = false, features = ["stable", "std", "prefer-btree-collections"] }

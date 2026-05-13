@@ -12,10 +12,12 @@ Current implementation status: the root engine parses and validates
 Cargo workspace model without invoking host Cargo, handles virtual workspaces,
 path/git/registry dependency source planning, contract-selected feature
 resolution, frozen lockfile enforcement, build scripts, proc-macro targets,
-compile-time sandbox planning, build graph planning, manifest-relative Rust
-source paths, upstream `rustc_lexer` preflight proof records, computed embedded
-target spec/ABI pack identities, per-target interface/runtime proof records, and
-proof bundle verification. The native runner is a thin Wasmtime/WASI substrate
+compile-time sandbox planning, internal compile-time WASM execution for
+precompiled build-script and proc-macro modules, build graph planning,
+manifest-relative Rust source paths, upstream `rustc_lexer` preflight proof
+records, computed embedded target spec/ABI pack identities, per-target
+interface/runtime proof records, and proof bundle verification. The native
+runner is a thin Wasmtime/WASI substrate
 runner around `dist/rouwdi.wasm`; it
 does not provide Cargo, rustc, a linker, target policy, validation, or proof
 logic.
@@ -27,8 +29,9 @@ The repository also pins upstream compiler source custody with git submodules:
 - `third_party/rust/src/llvm-project` at `eaab4d9841b9a8a12783d927b2df2291c1c79269`
 
 The build still refuses to report success until Rust compiler semantics,
-codegen, linker, std/target/linker packs, build-script execution, and proc-macro
-execution are actually embedded inside `rouwdi.wasm`.
+codegen, linker, std/target/linker packs, build-script compilation into
+compile-time WASM, and proc-macro crate compilation into compile-time WASM are
+actually embedded inside `rouwdi.wasm`.
 
 The refusal is intentional. rouwdi must not shell out to host `cargo`, `rustc`,
 `lld`, or native build-script/proc-macro execution and call that complete.

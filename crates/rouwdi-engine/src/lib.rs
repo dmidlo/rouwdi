@@ -235,9 +235,9 @@ impl RouwdiEngine {
             .any(|unit| unit.phase == CompilePhase::BuildScript)
         {
             internal_blockers.push(UnsupportedCapability {
-                capability: "build.rs compile-time sandbox execution".to_owned(),
+                capability: "build.rs compilation to compile-time WASM".to_owned(),
                 required_by: "Cargo build script directives and generated files".to_owned(),
-                reason: "build scripts are planned for compile-time WASM but execution is not embedded yet".to_owned(),
+                reason: "precompiled compile-time WASM execution is embedded, but compiling build.rs source into sandbox modules is not embedded yet".to_owned(),
             });
         }
         if build_plan
@@ -246,9 +246,9 @@ impl RouwdiEngine {
             .any(|unit| unit.phase == CompilePhase::ProcMacro)
         {
             internal_blockers.push(UnsupportedCapability {
-                capability: "proc-macro compile-time sandbox execution".to_owned(),
+                capability: "proc-macro crate compilation to compile-time WASM".to_owned(),
                 required_by: "Rust macro expansion".to_owned(),
-                reason: "proc-macro crates are planned for compile-time WASM but token-stream execution is not embedded yet".to_owned(),
+                reason: "precompiled proc-macro WASM token-stream execution is embedded, but compiling proc-macro crates into sandbox modules is not embedded yet".to_owned(),
             });
         }
         for target in &contract.targets {
