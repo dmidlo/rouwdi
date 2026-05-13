@@ -10,7 +10,10 @@ use rouwdi_proof::{
     ArtifactManifestEntry, HashEntry, ProofBundle, ProofError, ProofStatus, RouwdiRunManifest,
     RunStatus, RuntimeProof, UnsupportedCapability,
 };
-use rouwdi_rustc::{lex_rust_source_with_diagnostics, RustSourceLexProof};
+use rouwdi_rustc::{
+    lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
+    RustCompilerPipelineRecord, RustSourceLexProof,
+};
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
     SourceCacheOptions, SourceCacheRequest, SourceCacheStatus, SourceError,
@@ -151,6 +154,7 @@ impl RouwdiEngine {
         )?;
         let compile_time_plan = plan_compile_time(&build_plan);
         let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
+        let compiler_pipeline = run_compiler_pipeline(storage, &build_plan)?;
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -206,27 +210,6 @@ impl RouwdiEngine {
                 });
             }
         }
-        if !self.target_registry.compiler.compiler_semantics_embedded {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "rustc frontend semantics".to_owned(),
-                required_by: "compile Rust crate graph".to_owned(),
-                reason: "no Rust parser, expansion, typeck, borrowck, MIR, or metadata engine is embedded in this assembly".to_owned(),
-            });
-        }
-        if !self.target_registry.compiler.codegen_embedded {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "codegen".to_owned(),
-                required_by: "object/module emission".to_owned(),
-                reason: "no LLVM-grade codegen backend is embedded in this assembly".to_owned(),
-            });
-        }
-        if !self.target_registry.compiler.linker_embedded {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "linker".to_owned(),
-                required_by: "final native/WASI artifact emission".to_owned(),
-                reason: "no native or WASM linker is embedded in this assembly".to_owned(),
-            });
-        }
         let lexical_diagnostic_count = rust_source_lex
             .iter()
             .map(|proof| proof.diagnostics.len())
@@ -239,6 +222,15 @@ impl RouwdiEngine {
                     "upstream rustc_lexer reported {lexical_diagnostic_count} lexical diagnostic(s)"
                 ),
             });
+        }
+        for record in &compiler_pipeline {
+            if let Some(missing_stage) = &record.missing_stage {
+                internal_blockers.push(UnsupportedCapability {
+                    capability: missing_stage.capability(),
+                    required_by: missing_stage.required_by(),
+                    reason: missing_stage.reason.clone(),
+                });
+            }
         }
         if build_plan
             .units
@@ -373,6 +365,7 @@ impl RouwdiEngine {
             source_tree_sha256: source_snapshot.tree_sha256.clone(),
             compiler_engine: self.target_registry.compiler.clone(),
             target_packs,
+            compiler_pipeline,
             artifacts: Vec::<ArtifactManifestEntry>::new(),
             unsupported: build_chain_findings.clone(),
             proof_files: Vec::new(),
@@ -448,6 +441,35 @@ fn lex_build_plan_sources(
         proofs.push(lex_rust_source_with_diagnostics(&path, &source));
     }
     Ok(proofs)
+}
+
+fn run_compiler_pipeline(
+    storage: &dyn Storage,
+    build_plan: &rouwdi_cargo::CargoBuildPlan,
+) -> Result<Vec<RustCompilerPipelineRecord>, EngineError> {
+    let mut records = Vec::new();
+    for unit in build_plan
+        .units
+        .iter()
+        .filter(|unit| unit.phase == CompilePhase::Rust)
+    {
+        let source_path = unit.source_path.clone().ok_or_else(|| {
+            VfsError::NotFound(format!("source path for compile unit {}", unit.id))
+        })?;
+        let bytes = storage.read(&source_path)?;
+        let source = String::from_utf8_lossy(&bytes);
+        let request = RustCompileRequest {
+            unit_id: unit.id.clone(),
+            package: unit.package.clone(),
+            target: unit.target.clone(),
+            target_kind: format!("{:?}", unit.target_kind),
+            source_path,
+            triple: unit.triple.clone(),
+            profile: unit.profile.clone(),
+        };
+        records.push(run_rust_compiler_pipeline_record(&request, &source));
+    }
+    Ok(records)
 }
 
 impl Default for RouwdiEngine {
@@ -547,11 +569,27 @@ version = "0.1.0"
         assert!(report
             .unsupported
             .iter()
+            .any(|item| item.capability == "compiler stage rustc_parse"
+                && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
+        assert!(!report
+            .unsupported
+            .iter()
             .any(|item| item.capability == "rustc frontend semantics"));
         assert!(storage
             .read(&report.manifest_path)
             .unwrap()
             .starts_with(b"{"));
+        let manifest: RouwdiRunManifest =
+            serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.compiler_pipeline.len(), 1);
+        assert_eq!(
+            manifest.compiler_pipeline[0]
+                .missing_stage
+                .as_ref()
+                .unwrap()
+                .required_component,
+            "rustc_parse"
+        );
         assert!(storage
             .read(&format!("{}/source/source-cache.json", report.run_root))
             .unwrap()

@@ -3,7 +3,7 @@ use rouwdi_cargo::{
 };
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
-use rouwdi_rustc::RustSourceLexProof;
+use rouwdi_rustc::{RustCompilerPipelineRecord, RustSourceLexProof};
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
 use rouwdi_vfs::{Storage, VfsError};
@@ -125,6 +125,7 @@ pub struct RouwdiRunManifest {
     pub source_tree_sha256: String,
     pub compiler_engine: CompilerEngineIdentity,
     pub target_packs: Vec<TargetPack>,
+    pub compiler_pipeline: Vec<RustCompilerPipelineRecord>,
     pub artifacts: Vec<ArtifactManifestEntry>,
     pub unsupported: Vec<UnsupportedCapability>,
     pub proof_files: Vec<String>,
@@ -511,6 +512,7 @@ mod tests {
             source_tree_sha256: "b".repeat(64),
             compiler_engine: CompilerEngineIdentity::from_embedded_component_inventory(),
             target_packs: Vec::new(),
+            compiler_pipeline: Vec::new(),
             artifacts: Vec::new(),
             unsupported: Vec::new(),
             proof_files: vec!["run/proofs/hashes.json".to_owned()],

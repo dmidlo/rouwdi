@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustcComponentStatus {
@@ -28,6 +29,137 @@ pub struct RustSourceLexProof {
     pub token_count: usize,
     pub tokens: Vec<RustTokenSummary>,
     pub diagnostics: Vec<RustLexDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustCompileRequest {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustCompileArtifactRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub triple: String,
+    pub profile: String,
+    pub artifact_kind: RustCompileArtifactKind,
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustCompileArtifactKind {
+    CompilerUnitObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustCompilerStage {
+    Parse,
+    MacroExpansion,
+    NameResolution,
+    TypeChecking,
+    BorrowChecking,
+    Mir,
+    Monomorphization,
+    Codegen,
+    ArtifactEmission,
+}
+
+impl RustCompilerStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Parse => "parse",
+            Self::MacroExpansion => "macro_expansion",
+            Self::NameResolution => "name_resolution",
+            Self::TypeChecking => "type_checking",
+            Self::BorrowChecking => "borrow_checking",
+            Self::Mir => "mir",
+            Self::Monomorphization => "monomorphization",
+            Self::Codegen => "codegen",
+            Self::ArtifactEmission => "artifact_emission",
+        }
+    }
+}
+
+impl fmt::Display for RustCompilerStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingRustCompilerStage {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub triple: String,
+    pub stage: RustCompilerStage,
+    pub required_component: String,
+    pub component_role: String,
+    pub reason: String,
+}
+
+impl MissingRustCompilerStage {
+    pub fn capability(&self) -> String {
+        format!("compiler stage {}", self.required_component)
+    }
+
+    pub fn required_by(&self) -> String {
+        format!("compile unit {}", self.unit_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RustCompilerPipelineError {
+    MissingStage { missing: MissingRustCompilerStage },
+}
+
+impl fmt::Display for RustCompilerPipelineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingStage { missing } => write!(
+                formatter,
+                "compiler stage {} is missing for {}: {}",
+                missing.stage,
+                missing.required_by(),
+                missing.reason
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RustCompilerPipelineError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustCompilerPipelineStatus {
+    Artifact,
+    MissingStage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustCompilerPipelineRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+    pub status: RustCompilerPipelineStatus,
+    pub artifact: Option<RustCompileArtifactRecord>,
+    pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
 pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
@@ -83,6 +215,61 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "native and WebAssembly linker implementation",
         ),
     ]
+}
+
+pub fn run_rust_compiler_pipeline(
+    request: &RustCompileRequest,
+    source: &str,
+) -> Result<RustCompileArtifactRecord, RustCompilerPipelineError> {
+    let _lex = lex_rust_source_with_diagnostics(&request.source_path, source);
+    if let Some(missing) = first_missing_compiler_stage(request) {
+        return Err(RustCompilerPipelineError::MissingStage { missing });
+    }
+
+    Err(RustCompilerPipelineError::MissingStage {
+        missing: MissingRustCompilerStage {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            triple: request.triple.clone(),
+            stage: RustCompilerStage::ArtifactEmission,
+            required_component: "rouwdi-rustc-artifact-writer".to_owned(),
+            component_role: "internal compiler artifact emission".to_owned(),
+            reason: "the internal compiler boundary has no artifact writer wired yet".to_owned(),
+        },
+    })
+}
+
+pub fn run_rust_compiler_pipeline_record(
+    request: &RustCompileRequest,
+    source: &str,
+) -> RustCompilerPipelineRecord {
+    match run_rust_compiler_pipeline(request, source) {
+        Ok(artifact) => RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::Artifact,
+            artifact: Some(artifact),
+            missing_stage: None,
+        },
+        Err(RustCompilerPipelineError::MissingStage { missing }) => RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::MissingStage,
+            artifact: None,
+            missing_stage: Some(missing),
+        },
+    }
 }
 
 pub fn complete_rustc_semantics_embedded() -> bool {
@@ -175,6 +362,45 @@ fn lexical_error_message(kind: rustc_lexer::TokenKind) -> Option<String> {
     }
 }
 
+fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingRustCompilerStage> {
+    let inventory = rustc_component_inventory();
+    for (stage, component_name) in compiler_stage_components() {
+        let component = inventory
+            .iter()
+            .find(|component| component.name == component_name)
+            .expect("compiler stage component inventory is complete");
+        if !component.embedded_in_assembly {
+            return Some(MissingRustCompilerStage {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                triple: request.triple.clone(),
+                stage,
+                required_component: component.name.clone(),
+                component_role: component.role.clone(),
+                reason: format!(
+                    "{} is not embedded in rouwdi.wasm; source custody is present at {}",
+                    component.role, component.upstream_path
+                ),
+            });
+        }
+    }
+    None
+}
+
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 8] {
+    [
+        (RustCompilerStage::Parse, "rustc_parse"),
+        (RustCompilerStage::MacroExpansion, "rustc_expand"),
+        (RustCompilerStage::NameResolution, "rustc_resolve"),
+        (RustCompilerStage::TypeChecking, "rustc_hir_analysis"),
+        (RustCompilerStage::BorrowChecking, "rustc_borrowck"),
+        (RustCompilerStage::Mir, "rustc_middle"),
+        (RustCompilerStage::Monomorphization, "rustc_monomorphize"),
+        (RustCompilerStage::Codegen, "rustc_codegen_llvm"),
+    ]
+}
+
 fn embedded_component(name: &str, upstream_path: &str, role: &str) -> RustcComponentStatus {
     RustcComponentStatus {
         name: name.to_owned(),
@@ -233,5 +459,53 @@ mod tests {
             .any(|component| component.name == "rustc_codegen_llvm"
                 && !component.embedded_in_assembly));
         assert!(!complete_rustc_semantics_embedded());
+    }
+
+    #[test]
+    fn compiler_pipeline_returns_typed_missing_stage_for_first_unembedded_stage() {
+        let request = RustCompileRequest {
+            unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            triple: "wasm32-wasip1".to_owned(),
+            profile: "release".to_owned(),
+        };
+
+        let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
+
+        assert!(matches!(
+            error,
+            RustCompilerPipelineError::MissingStage {
+                missing: MissingRustCompilerStage {
+                    stage: RustCompilerStage::Parse,
+                    ref required_component,
+                    ..
+                },
+            } if required_component == "rustc_parse"
+        ));
+    }
+
+    #[test]
+    fn compiler_pipeline_record_preserves_missing_stage_identity() {
+        let request = RustCompileRequest {
+            unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            triple: "wasm32-wasip1".to_owned(),
+            profile: "release".to_owned(),
+        };
+
+        let record = run_rust_compiler_pipeline_record(&request, "fn main() {}\n");
+
+        assert_eq!(record.status, RustCompilerPipelineStatus::MissingStage);
+        assert_eq!(
+            record.missing_stage.as_ref().unwrap().required_component,
+            "rustc_parse"
+        );
+        assert_eq!(record.artifact, None);
     }
 }
