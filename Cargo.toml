@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/rouwdi-cargo",
+    "crates/rouwdi-contract",
+    "crates/rouwdi-engine",
+    "crates/rouwdi-proof",
+    "crates/rouwdi-source",
+    "crates/rouwdi-targets",
+    "crates/rouwdi-vfs",
+    "crates/rouwdi-wasm",
+    "runners/rouwdi",
+]
+resolver = "2"
+exclude = ["examples/hello-dual"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://example.invalid/rouwdi"
+rust-version = "1.82"
+
+[workspace.dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+toml = "0.8"

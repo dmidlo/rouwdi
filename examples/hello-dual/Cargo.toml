@@ -1,0 +1,10 @@
+[package]
+name = "hello-dual"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "hello-dual"
+path = "src/main.rs"
+

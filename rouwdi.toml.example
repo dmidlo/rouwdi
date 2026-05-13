@@ -1,0 +1,60 @@
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "app"
+bin = "app"
+profile = "release"
+
+[source]
+mode = "snapshot"
+root = "."
+
+[resolver]
+lockfile = "Cargo.lock"
+offline = false
+frozen = true
+
+[toolchain]
+channel = "stable"
+edition_floor = "2021"
+std = true
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+
+[targets.interface]
+required_exports = ["_start"]
+
+[targets.runtime]
+required = true
+kind = "wasi"
+args = []
+timeout_seconds = 10
+expected_exit_code = 0
+stdout_contains = "hello"
+
+[[targets]]
+name = "native"
+triple = "native_host"
+artifact = "executable"
+
+[targets.interface]
+require_executable = true
+
+[targets.runtime]
+required = true
+kind = "native"
+args = []
+timeout_seconds = 10
+expected_exit_code = 0
+stdout_contains = "hello"
+
+[proof]
+emit_hashes = true
+emit_build_graph = true
+emit_source_snapshot = true
+emit_runtime_transcripts = true
+
