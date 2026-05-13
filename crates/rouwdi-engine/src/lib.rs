@@ -1,6 +1,7 @@
 use rouwdi_cargo::{
     parse_lockfile, plan_build, plan_source_fetches, resolve_features, resolve_workspace,
-    validate_lockfile_against_fetch_plan, CargoModelError, CargoTargetKind, CompilePhase,
+    validate_lockfile_against_fetch_plan, CargoModelError, CargoSourceKind, CargoTargetKind,
+    CompilePhase,
 };
 use rouwdi_compiletime::plan_compile_time;
 use rouwdi_contract::{ContractError, RouwdiContract};
@@ -10,7 +11,10 @@ use rouwdi_proof::{
     RunStatus, RuntimeProof, UnsupportedCapability,
 };
 use rouwdi_rustc::{lex_rust_source_with_diagnostics, RustSourceLexProof};
-use rouwdi_source::{snapshot_source, source_relative_path, SourceError};
+use rouwdi_source::{
+    materialize_source_cache, snapshot_source, source_relative_path, SourceCacheKind,
+    SourceCacheRequest, SourceCacheStatus, SourceError,
+};
 use rouwdi_targets::{TargetError, TargetPackRegistry};
 use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
 use serde::{Deserialize, Serialize};
@@ -89,6 +93,25 @@ impl RouwdiEngine {
         let manifest_path = source_relative_path(&source_root, &contract.project.manifest_path)?;
         let cargo_workspace = resolve_workspace(storage, &manifest_path)?;
         let source_fetch_plan = plan_source_fetches(&cargo_workspace);
+        let source_cache_root = source_relative_path(&source_root, ".rouwdi/cache/sources")?;
+        let source_cache_requests = source_fetch_plan
+            .entries
+            .iter()
+            .map(|entry| SourceCacheRequest {
+                package: entry.package.clone(),
+                dependency: entry.dependency.clone(),
+                kind: match entry.kind {
+                    CargoSourceKind::Path => SourceCacheKind::Path,
+                    CargoSourceKind::Git => SourceCacheKind::Git,
+                    CargoSourceKind::Registry => SourceCacheKind::Registry,
+                },
+                locator: entry.locator.clone(),
+                requirement: entry.requirement.clone(),
+                target_cfg: entry.target_cfg.clone(),
+            })
+            .collect::<Vec<_>>();
+        let source_cache =
+            materialize_source_cache(storage, &source_cache_root, &source_cache_requests)?;
         let (selected_target, selected_target_kind) =
             match (&contract.project.bin, &contract.project.example) {
                 (Some(bin), None) => (bin.clone(), CargoTargetKind::Bin),
@@ -133,6 +156,20 @@ impl RouwdiEngine {
 
         let mut internal_blockers = Vec::new();
         let mut unsupported = Vec::new();
+        for cache_entry in &source_cache.entries {
+            if cache_entry.status == SourceCacheStatus::PlannedFetch {
+                internal_blockers.push(UnsupportedCapability {
+                    capability: format!("{:?} source fetcher", cache_entry.kind),
+                    required_by: format!(
+                        "dependency source materialization for {}",
+                        cache_entry.dependency
+                    ),
+                    reason: cache_entry.reason.clone().unwrap_or_else(|| {
+                        "remote source fetch is not embedded in this assembly".to_owned()
+                    }),
+                });
+            }
+        }
         for pack in &target_packs {
             if !pack.target_pack_embedded {
                 internal_blockers.push(UnsupportedCapability {
@@ -305,6 +342,18 @@ impl RouwdiEngine {
                 sha256: file.sha256.clone(),
             });
         }
+        for cache_entry in &source_cache.entries {
+            for file in &cache_entry.files {
+                hashes.push(HashEntry {
+                    label: format!(
+                        "source-cache:{}:{}",
+                        cache_entry.dependency, file.source_path
+                    ),
+                    path: file.cache_path.clone(),
+                    sha256: file.sha256.clone(),
+                });
+            }
+        }
 
         let mut manifest = RouwdiRunManifest {
             run_id: run_id.clone(),
@@ -321,6 +370,7 @@ impl RouwdiEngine {
             manifest: manifest.clone(),
             normalized_contract: normalized,
             source_snapshot,
+            source_cache,
             cargo_workspace,
             cargo_features,
             source_fetch_plan,
@@ -489,6 +539,10 @@ version = "0.1.0"
             .any(|item| item.capability == "rustc frontend semantics"));
         assert!(storage
             .read(&report.manifest_path)
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/source/source-cache.json", report.run_root))
             .unwrap()
             .starts_with(b"{"));
         assert!(storage
@@ -668,6 +722,174 @@ version = "0.1.0"
                     .diagnostics
                     .iter()
                     .any(|diagnostic| diagnostic.message == "unterminated string literal")
+        }));
+    }
+
+    #[test]
+    fn build_materializes_path_dependency_source_cache_inside_rouwdi_state() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write(
+                "rouwdi.toml",
+                br#"
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "app"
+bin = "app"
+
+[source]
+mode = "snapshot"
+root = "."
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.toml",
+                br#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+helper = { path = "helper" }
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+"#,
+            )
+            .unwrap();
+        storage.write("src/main.rs", b"fn main() {}\n").unwrap();
+        storage
+            .write(
+                "helper/Cargo.toml",
+                br#"
+[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+            )
+            .unwrap();
+        storage
+            .write("helper/src/lib.rs", b"pub fn helper() {}\n")
+            .unwrap();
+
+        let report = RouwdiEngine::default()
+            .build(&mut storage, BuildRequest::default())
+            .unwrap();
+        let source_cache: rouwdi_source::SourceCacheProof = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/source/source-cache.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let helper = source_cache
+            .entries
+            .iter()
+            .find(|entry| entry.dependency == "helper")
+            .unwrap();
+        assert_eq!(helper.status, rouwdi_source::SourceCacheStatus::Cached);
+        assert!(helper
+            .cache_path
+            .as_deref()
+            .unwrap()
+            .starts_with(".rouwdi/cache/sources/"));
+        assert!(helper.files.iter().any(|file| {
+            file.cache_path.ends_with("src/lib.rs")
+                && storage.read(&file.cache_path).unwrap() == b"pub fn helper() {}\n"
+        }));
+        let hashes: Vec<HashEntry> = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/proofs/hashes.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(hashes.iter().any(|hash| {
+            hash.label == "source-cache:helper:helper/src/lib.rs"
+                && hash.path.ends_with("src/lib.rs")
+        }));
+    }
+
+    #[test]
+    fn build_records_remote_dependency_fetcher_as_internal_blocker() {
+        let mut storage = fixture_storage();
+        storage
+            .write(
+                "Cargo.toml",
+                br#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123"
+"#,
+            )
+            .unwrap();
+
+        let report = RouwdiEngine::default()
+            .build(&mut storage, BuildRequest::default())
+            .unwrap();
+        let source_cache: rouwdi_source::SourceCacheProof = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/source/source-cache.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert!(source_cache.entries.iter().any(|entry| {
+            entry.dependency == "serde"
+                && entry.status == rouwdi_source::SourceCacheStatus::PlannedFetch
+        }));
+        assert!(report.unsupported.iter().any(|item| {
+            item.capability == "Registry source fetcher"
+                && item.required_by.contains("serde")
+                && item.reason.contains("no host Cargo")
         }));
     }
 }

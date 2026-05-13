@@ -4,7 +4,7 @@ use rouwdi_cargo::{
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
 use rouwdi_rustc::RustSourceLexProof;
-use rouwdi_source::SourceSnapshot;
+use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
 use rouwdi_vfs::{Storage, VfsError};
 use serde::{Deserialize, Serialize};
@@ -135,6 +135,7 @@ pub struct ProofBundle {
     pub manifest: RouwdiRunManifest,
     pub normalized_contract: NormalizedContract,
     pub source_snapshot: SourceSnapshot,
+    pub source_cache: SourceCacheProof,
     pub cargo_workspace: CargoWorkspace,
     pub cargo_features: CargoFeatureResolution,
     pub source_fetch_plan: CargoSourceFetchPlan,
@@ -166,6 +167,10 @@ impl ProofBundle {
             (
                 "source/source-tree.hashes.json",
                 serde_json::to_vec_pretty(&self.source_snapshot.files)?,
+            ),
+            (
+                "source/source-cache.json",
+                serde_json::to_vec_pretty(&self.source_cache)?,
             ),
             (
                 "graph/cargo-resolve.json",
