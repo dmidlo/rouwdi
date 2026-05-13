@@ -65,12 +65,20 @@ pub fn normalize_path(path: &str) -> Result<String, VfsError> {
 
 pub fn join_path(base: &str, child: &str) -> Result<String, VfsError> {
     let base = normalize_path(base)?;
-    let child = normalize_path(child)?;
-    match (base.is_empty(), child.is_empty()) {
-        (true, true) => Ok(String::new()),
-        (true, false) => Ok(child),
-        (false, true) => Ok(base),
-        (false, false) => Ok(format!("{base}/{child}")),
+    let rendered_child = child.replace('\\', "/");
+    if rendered_child.starts_with('/') {
+        return Err(VfsError::AbsolutePath(child.to_owned()));
+    }
+    if rendered_child.len() >= 2 && rendered_child.as_bytes()[1] == b':' {
+        return Err(VfsError::DrivePath(child.to_owned()));
+    }
+    if rendered_child.is_empty() {
+        return Ok(base);
+    }
+    if base.is_empty() {
+        normalize_path(&rendered_child)
+    } else {
+        normalize_path(&format!("{base}/{rendered_child}"))
     }
 }
 
@@ -242,9 +250,15 @@ impl HostStorage {
 impl Storage for HostStorage {
     fn read(&self, path: &str) -> Result<Vec<u8>, VfsError> {
         let resolved = self.resolve(path)?;
-        std::fs::read(&resolved).map_err(|source| VfsError::Io {
-            path: resolved.display().to_string(),
-            source,
+        std::fs::read(&resolved).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                VfsError::NotFound(path.to_owned())
+            } else {
+                VfsError::Io {
+                    path: resolved.display().to_string(),
+                    source,
+                }
+            }
         })
     }
 
@@ -326,7 +340,9 @@ mod tests {
     #[test]
     fn normalizes_relative_paths_without_escaping_root() {
         assert_eq!(normalize_path("./a/b/../c").unwrap(), "a/c");
+        assert_eq!(join_path("a/b", "../c").unwrap(), "a/c");
         assert!(normalize_path("../secret").is_err());
+        assert!(join_path("", "../secret").is_err());
         assert!(normalize_path("C:/secret").is_err());
         assert!(normalize_path("/secret").is_err());
     }
@@ -345,5 +361,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("README.md".to_owned(), false), ("src".to_owned(), true),]
         );
+    }
+
+    #[test]
+    fn host_storage_reports_missing_reads_as_not_found() {
+        let root = std::env::temp_dir().join("rouwdi-host-storage-missing-read");
+        let storage = HostStorage::new(root);
+
+        let err = storage.read("missing-build.rs").unwrap_err();
+
+        assert!(matches!(err, VfsError::NotFound(path) if path == "missing-build.rs"));
     }
 }

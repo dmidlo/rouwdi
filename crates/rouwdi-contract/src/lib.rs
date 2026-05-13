@@ -44,6 +44,10 @@ pub struct ProjectContract {
     pub example: Option<String>,
     #[serde(default = "default_profile")]
     pub profile: String,
+    #[serde(default = "default_true")]
+    pub default_features: bool,
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,11 +56,11 @@ pub struct SourceContract {
     pub mode: SourceMode,
     #[serde(default = "default_source_root")]
     pub root: String,
-    #[serde(default)]
+    #[serde(default, rename = "ref")]
     pub ref_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceMode {
     Git,
@@ -239,7 +243,20 @@ impl RouwdiContract {
                 "exactly one of project.bin or project.example must be set".to_owned(),
             ));
         }
+        for feature in &self.project.features {
+            if feature.trim().is_empty() {
+                return Err(ContractError::Invalid(
+                    "project.features entries must not be empty".to_owned(),
+                ));
+            }
+        }
         validate_path("source.root", &self.source.root)?;
+        if self.source.mode == SourceMode::Git {
+            match self.source.ref_name.as_deref() {
+                Some(ref_name) if !ref_name.trim().is_empty() => {}
+                _ => return Err(ContractError::Missing("source.ref")),
+            }
+        }
         if let Some(vendor) = &self.resolver.vendor {
             validate_path("resolver.vendor", vendor)?;
         }
@@ -336,6 +353,7 @@ manifest_path = "Cargo.toml"
 package = "app"
 bin = "app"
 profile = "release"
+features = ["serde"]
 
 [source]
 mode = "snapshot"
@@ -362,6 +380,7 @@ expected_exit_code = 0
         let normalized = contract.normalize().unwrap();
 
         assert_eq!(contract.project.package, "app");
+        assert_eq!(contract.project.features, vec!["serde".to_owned()]);
         assert_eq!(contract.targets[0].triple, "wasm32-wasip1");
         assert_eq!(normalized.sha256.len(), 64);
         assert!(normalized.canonical_json.contains("\"contract_version\":1"));
@@ -382,5 +401,16 @@ expected_exit_code = 0
         let err = RouwdiContract::parse(&invalid).unwrap_err();
 
         assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn parses_git_source_ref_using_spec_field_name() {
+        let input =
+            valid_contract().replace("mode = \"snapshot\"", "mode = \"git\"\nref = \"HEAD\"");
+        let contract = RouwdiContract::parse(&input).unwrap();
+        let normalized = contract.normalize().unwrap();
+
+        assert_eq!(contract.source.ref_name.as_deref(), Some("HEAD"));
+        assert!(normalized.canonical_json.contains("\"ref\":\"HEAD\""));
     }
 }

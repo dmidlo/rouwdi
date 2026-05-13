@@ -9,9 +9,24 @@ assembly plus thin hosts that provide substrate.
 
 Current implementation status: the root engine parses and validates
 `rouwdi.toml`, snapshots source through a virtual storage interface, resolves a
-Cargo workspace model without invoking host Cargo, writes first-class proof
-bundle files, and refuses to report a successful build until Rust compiler,
-codegen, linker, and target packs are actually embedded inside `rouwdi.wasm`.
+Cargo workspace model without invoking host Cargo, handles virtual workspaces,
+path/git/registry dependency source planning, contract-selected feature
+resolution, frozen lockfile enforcement, build scripts, proc-macro targets,
+compile-time sandbox planning, build graph planning, per-target
+interface/runtime proof records, and proof bundle verification. The native
+runner is a thin Wasmtime/WASI substrate runner around `dist/rouwdi.wasm`; it
+does not provide Cargo, rustc, a linker, target policy, validation, or proof
+logic.
+
+The repository also pins upstream compiler source custody with git submodules:
+
+- `third_party/rust` at `800892799d7666fe1dc17abd862100a6cf273718`
+- `third_party/rust/src/tools/cargo` at `a343accce8526b128adc517d33348573d22920a3`
+- `third_party/rust/src/llvm-project` at `eaab4d9841b9a8a12783d927b2df2291c1c79269`
+
+The build still refuses to report success until Rust compiler semantics,
+codegen, linker, std/target/linker packs, build-script execution, and proc-macro
+execution are actually embedded inside `rouwdi.wasm`.
 
 The refusal is intentional. rouwdi must not shell out to host `cargo`, `rustc`,
 `lld`, or native build-script/proc-macro execution and call that complete.
@@ -20,9 +35,9 @@ The refusal is intentional. rouwdi must not shell out to host `cargo`, `rustc`,
 
 ```bash
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p rouwdi-wasm --target wasm32-wasip1 --release
 ```
 
 The WASI build command produces the assembly from `crates/rouwdi-wasm`. A
 release packaging step may copy it to `dist/rouwdi.wasm`.
-

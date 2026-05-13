@@ -19,6 +19,9 @@ pub struct TargetPack {
     pub target_pack_hash: String,
     pub std_pack_hash: String,
     pub linker_pack_hash: String,
+    pub target_pack_embedded: bool,
+    pub std_pack_embedded: bool,
+    pub linker_pack_embedded: bool,
     pub artifact_kinds: Vec<ArtifactKind>,
     pub runtime_execution: RuntimeExecutionCapability,
 }
@@ -36,9 +39,19 @@ pub enum RuntimeExecutionCapability {
 pub struct CompilerEngineIdentity {
     pub engine_id: String,
     pub rust_release: String,
+    pub source_custody: Vec<SourceCustodyEntry>,
     pub compiler_semantics_embedded: bool,
     pub codegen_embedded: bool,
     pub linker_embedded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCustodyEntry {
+    pub role: String,
+    pub repository_url: String,
+    pub path: String,
+    pub commit: String,
+    pub embedded_in_assembly: bool,
 }
 
 impl CompilerEngineIdentity {
@@ -46,6 +59,29 @@ impl CompilerEngineIdentity {
         Self {
             engine_id: "rouwdi-bootstrap-guard".to_owned(),
             rust_release: "not-embedded".to_owned(),
+            source_custody: vec![
+                SourceCustodyEntry {
+                    role: "rust-cargo-llvm-source-custody".to_owned(),
+                    repository_url: "https://github.com/rust-lang/rust".to_owned(),
+                    path: "third_party/rust".to_owned(),
+                    commit: "800892799d7666fe1dc17abd862100a6cf273718".to_owned(),
+                    embedded_in_assembly: false,
+                },
+                SourceCustodyEntry {
+                    role: "cargo-source-custody".to_owned(),
+                    repository_url: "https://github.com/rust-lang/cargo.git".to_owned(),
+                    path: "third_party/rust/src/tools/cargo".to_owned(),
+                    commit: "a343accce8526b128adc517d33348573d22920a3".to_owned(),
+                    embedded_in_assembly: false,
+                },
+                SourceCustodyEntry {
+                    role: "llvm-source-custody".to_owned(),
+                    repository_url: "https://github.com/rust-lang/llvm-project.git".to_owned(),
+                    path: "third_party/rust/src/llvm-project".to_owned(),
+                    commit: "eaab4d9841b9a8a12783d927b2df2291c1c79269".to_owned(),
+                    embedded_in_assembly: false,
+                },
+            ],
             compiler_semantics_embedded: false,
             codegen_embedded: false,
             linker_embedded: false,
@@ -73,6 +109,9 @@ impl TargetPackRegistry {
                 target_pack_hash: "embedded-target-pack-pending".to_owned(),
                 std_pack_hash: "embedded-std-pack-pending".to_owned(),
                 linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
+                target_pack_embedded: false,
+                std_pack_embedded: false,
+                linker_pack_embedded: false,
                 artifact_kinds: vec![ArtifactKind::Module, ArtifactKind::Component],
                 runtime_execution: RuntimeExecutionCapability::Wasi,
             },
@@ -84,6 +123,9 @@ impl TargetPackRegistry {
                 target_pack_hash: "embedded-target-pack-pending".to_owned(),
                 std_pack_hash: "embedded-std-pack-pending".to_owned(),
                 linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
+                target_pack_embedded: false,
+                std_pack_embedded: false,
+                linker_pack_embedded: false,
                 artifact_kinds: vec![ArtifactKind::Module, ArtifactKind::Component],
                 runtime_execution: RuntimeExecutionCapability::Wasi,
             },
@@ -95,6 +137,9 @@ impl TargetPackRegistry {
                 target_pack_hash: "embedded-target-pack-pending".to_owned(),
                 std_pack_hash: "embedded-std-pack-pending".to_owned(),
                 linker_pack_hash: "embedded-linker-pack-pending".to_owned(),
+                target_pack_embedded: false,
+                std_pack_embedded: false,
+                linker_pack_embedded: false,
                 artifact_kinds: vec![
                     ArtifactKind::Executable,
                     ArtifactKind::Staticlib,
@@ -150,6 +195,21 @@ mod tests {
         assert!(registry.packs.contains_key("wasm32-wasip1"));
         assert!(registry.packs.contains_key("wasm32-wasip2"));
         assert!(registry.packs.contains_key("native_host"));
+        assert_eq!(
+            registry.compiler.source_custody[0].commit,
+            "800892799d7666fe1dc17abd862100a6cf273718"
+        );
+        assert_eq!(
+            registry.compiler.source_custody[1].commit,
+            "a343accce8526b128adc517d33348573d22920a3"
+        );
+        assert_eq!(
+            registry.compiler.source_custody[2].commit,
+            "eaab4d9841b9a8a12783d927b2df2291c1c79269"
+        );
+        assert!(!registry.packs["wasm32-wasip1"].target_pack_embedded);
+        assert!(!registry.packs["wasm32-wasip1"].std_pack_embedded);
+        assert!(!registry.packs["wasm32-wasip1"].linker_pack_embedded);
         assert!(!registry.compiler.is_complete());
     }
 

@@ -5,6 +5,8 @@ manifest_path = "Cargo.toml"
 package = "hello-dual"
 bin = "hello-dual"
 profile = "release"
+default_features = true
+features = []
 
 [source]
 mode = "snapshot"
@@ -58,4 +60,3 @@ emit_hashes = true
 emit_build_graph = true
 emit_source_snapshot = true
 emit_runtime_transcripts = true
-

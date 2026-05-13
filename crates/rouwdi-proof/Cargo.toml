@@ -13,8 +13,8 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 rouwdi-cargo = { path = "../rouwdi-cargo" }
+rouwdi-compiletime = { path = "../rouwdi-compiletime" }
 rouwdi-contract = { path = "../rouwdi-contract" }
 rouwdi-source = { path = "../rouwdi-source" }
 rouwdi-targets = { path = "../rouwdi-targets" }
 rouwdi-vfs = { path = "../rouwdi-vfs" }
-

@@ -7,4 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wasmtime = "43.0.2"
+wasmtime-wasi = "43.0.2"

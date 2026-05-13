@@ -91,10 +91,32 @@ mod tests {
     use super::*;
     use rouwdi_vfs::MemoryStorage;
 
+    const HOST_WIT: &str = include_str!("../wit/rouwdi.wit");
+
     #[test]
     fn exports_no_host_toolchain_dependency_claim() {
         assert_eq!(rouwdi_abi_version(), 1);
         assert_eq!(rouwdi_host_toolchain_dependency_count(), 0);
+    }
+
+    #[test]
+    fn host_wit_exposes_substrate_not_toolchain_calls() {
+        for forbidden in ["run-cargo", "run-rustc", "run-linker", "cargo:", "rustc:"] {
+            assert!(
+                !HOST_WIT.contains(forbidden),
+                "host WIT must not expose {forbidden}"
+            );
+        }
+        for required in [
+            "interface storage",
+            "interface network",
+            "interface host-runtime",
+        ] {
+            assert!(
+                HOST_WIT.contains(required),
+                "host WIT is missing {required}"
+            );
+        }
     }
 
     #[test]
@@ -126,6 +148,18 @@ artifact = "module"
 name = "app"
 version = "0.1.0"
 edition = "2021"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
 "#,
             )
             .unwrap();

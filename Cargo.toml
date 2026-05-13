@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/rouwdi-cargo",
+    "crates/rouwdi-compiletime",
     "crates/rouwdi-contract",
     "crates/rouwdi-engine",
     "crates/rouwdi-proof",
@@ -17,7 +18,7 @@ exclude = ["examples/hello-dual"]
 edition = "2021"
 license = "MIT"
 repository = "https://example.invalid/rouwdi"
-rust-version = "1.82"
+rust-version = "1.95"
 
 [workspace.dependencies]
 hex = "0.4"

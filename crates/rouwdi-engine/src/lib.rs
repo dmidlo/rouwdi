@@ -1,8 +1,13 @@
-use rouwdi_cargo::{resolve_workspace, CargoModelError};
+use rouwdi_cargo::{
+    parse_lockfile, plan_build, plan_source_fetches, resolve_features, resolve_workspace,
+    validate_lockfile_against_fetch_plan, CargoModelError, CargoTargetKind, CompilePhase,
+};
+use rouwdi_compiletime::plan_compile_time;
 use rouwdi_contract::{ContractError, RouwdiContract};
 use rouwdi_proof::{
-    hash_bytes, verify_manifest_hashes, ArtifactManifestEntry, HashEntry, ProofBundle, ProofError,
-    RouwdiRunManifest, RunStatus, UnsupportedCapability,
+    hash_bytes, verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
+    ArtifactManifestEntry, HashEntry, ProofBundle, ProofError, ProofStatus, RouwdiRunManifest,
+    RunStatus, RuntimeProof, UnsupportedCapability,
 };
 use rouwdi_source::{snapshot_source, source_relative_path, SourceError};
 use rouwdi_targets::{TargetError, TargetPackRegistry};
@@ -80,9 +85,76 @@ impl RouwdiEngine {
         let manifest_path =
             source_relative_path(&contract.source.root, &contract.project.manifest_path)?;
         let cargo_workspace = resolve_workspace(storage, &manifest_path)?;
+        let source_fetch_plan = plan_source_fetches(&cargo_workspace);
+        let (selected_target, selected_target_kind) =
+            match (&contract.project.bin, &contract.project.example) {
+                (Some(bin), None) => (bin.clone(), CargoTargetKind::Bin),
+                (None, Some(example)) => (example.clone(), CargoTargetKind::Example),
+                _ => unreachable!("contract validation requires exactly one primary target"),
+            };
+        let target_triples = contract
+            .targets
+            .iter()
+            .map(|target| target.triple.clone())
+            .collect::<Vec<_>>();
+        let cargo_features = resolve_features(
+            &cargo_workspace,
+            &contract.project.package,
+            contract.project.default_features,
+            &contract.project.features,
+        )?;
+        let build_plan = plan_build(
+            &cargo_workspace,
+            &cargo_features,
+            &contract.project.package,
+            &selected_target,
+            selected_target_kind,
+            &contract.project.profile,
+            &target_triples,
+        )?;
+        let compile_time_plan = plan_compile_time(&build_plan);
+        let cargo_lockfile = match parse_lockfile(storage, &contract.resolver.lockfile) {
+            Ok(lockfile) => Some(lockfile),
+            Err(CargoModelError::Vfs(VfsError::NotFound(_))) if !contract.resolver.frozen => None,
+            Err(CargoModelError::Vfs(VfsError::NotFound(_))) => {
+                return Err(CargoModelError::MissingFrozenLockfile(
+                    contract.resolver.lockfile.clone(),
+                )
+                .into());
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if let Some(lockfile) = &cargo_lockfile {
+            validate_lockfile_against_fetch_plan(lockfile, &source_fetch_plan)?;
+        }
         let target_packs = self.target_registry.validate_contract(&contract)?;
 
         let mut unsupported = Vec::new();
+        for pack in &target_packs {
+            if !pack.target_pack_embedded {
+                unsupported.push(UnsupportedCapability {
+                    capability: format!("{} target pack", pack.triple),
+                    required_by: format!("artifact emission for {}", pack.triple),
+                    reason: "target ABI/object/link metadata is not embedded in this assembly"
+                        .to_owned(),
+                });
+            }
+            if !pack.std_pack_embedded {
+                unsupported.push(UnsupportedCapability {
+                    capability: format!("{} std/core/alloc pack", pack.triple),
+                    required_by: format!("Rust standard library resolution for {}", pack.triple),
+                    reason: "std/core/alloc artifacts are not embedded in this assembly".to_owned(),
+                });
+            }
+            if !pack.linker_pack_embedded {
+                unsupported.push(UnsupportedCapability {
+                    capability: format!("{} linker pack", pack.triple),
+                    required_by: format!("final link for {}", pack.triple),
+                    reason: "linker scripts/configuration/runtime objects are not embedded in this assembly"
+                        .to_owned(),
+                });
+            }
+        }
         if !self.target_registry.compiler.compiler_semantics_embedded {
             unsupported.push(UnsupportedCapability {
                 capability: "rustc frontend semantics".to_owned(),
@@ -104,6 +176,28 @@ impl RouwdiEngine {
                 reason: "no native or WASM linker is embedded in this assembly".to_owned(),
             });
         }
+        if build_plan
+            .units
+            .iter()
+            .any(|unit| unit.phase == CompilePhase::BuildScript)
+        {
+            unsupported.push(UnsupportedCapability {
+                capability: "build.rs compile-time sandbox execution".to_owned(),
+                required_by: "Cargo build script directives and generated files".to_owned(),
+                reason: "build scripts are planned for compile-time WASM but execution is not embedded yet".to_owned(),
+            });
+        }
+        if build_plan
+            .units
+            .iter()
+            .any(|unit| unit.phase == CompilePhase::ProcMacro)
+        {
+            unsupported.push(UnsupportedCapability {
+                capability: "proc-macro compile-time sandbox execution".to_owned(),
+                required_by: "Rust macro expansion".to_owned(),
+                reason: "proc-macro crates are planned for compile-time WASM but token-stream execution is not embedded yet".to_owned(),
+            });
+        }
         for target in &contract.targets {
             if target.runtime.required && target.triple == "native_host" {
                 unsupported.push(UnsupportedCapability {
@@ -119,6 +213,53 @@ impl RouwdiEngine {
         } else {
             RunStatus::Unsupported
         };
+        let interface_proofs = contract
+            .targets
+            .iter()
+            .map(|target| ArtifactInterfaceProof {
+                target_name: target.name.clone(),
+                triple: target.triple.clone(),
+                artifact_kind: format!("{:?}", target.artifact),
+                artifact_path: None,
+                artifact_built: false,
+                required_exports: target.interface.required_exports.clone(),
+                missing_exports: target.interface.required_exports.clone(),
+                require_executable: target.interface.require_executable,
+                executable_detected: None,
+                status: ProofStatus::Unsupported,
+                reason: Some(
+                    "artifact was not built because compiler/codegen/linker are not embedded"
+                        .to_owned(),
+                ),
+            })
+            .collect::<Vec<_>>();
+        let runtime_proofs = contract
+            .targets
+            .iter()
+            .map(|target| RuntimeProof {
+                target_name: target.name.clone(),
+                triple: target.triple.clone(),
+                required: target.runtime.required,
+                kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
+                mode: format!("{:?}", target.runtime.mode),
+                executed: false,
+                expected_exit_code: target.runtime.expected_exit_code,
+                actual_exit_code: None,
+                timed_out: None,
+                stdout_contains: target.runtime.stdout_contains.clone(),
+                stdout_matched: None,
+                status: if target.runtime.required {
+                    ProofStatus::Unsupported
+                } else {
+                    ProofStatus::Succeeded
+                },
+                reason: if target.runtime.required {
+                    Some("runtime proof cannot execute until the artifact exists".to_owned())
+                } else {
+                    None
+                },
+            })
+            .collect::<Vec<_>>();
         let run_id = deterministic_run_id(&normalized.sha256, &source_snapshot.tree_sha256);
         let run_root = format!(".rouwdi/runs/{run_id}");
         let mut hashes = Vec::new();
@@ -151,6 +292,13 @@ impl RouwdiEngine {
             normalized_contract: normalized,
             source_snapshot,
             cargo_workspace,
+            cargo_features,
+            source_fetch_plan,
+            build_plan,
+            compile_time_plan,
+            cargo_lockfile,
+            interface_proofs,
+            runtime_proofs,
             hashes,
         };
         let proof_files = bundle.write_to_storage(storage, &run_root)?;
@@ -178,6 +326,7 @@ impl RouwdiEngine {
     ) -> Result<VerifyReport, EngineError> {
         let manifest_path = format!("{run_root}/manifest.json");
         let manifest: RouwdiRunManifest = serde_json::from_slice(&storage.read(&manifest_path)?)?;
+        verify_manifest_references(storage, &manifest)?;
         let hashes_path = format!("{run_root}/proofs/hashes.json");
         let hashes: Vec<HashEntry> = serde_json::from_slice(&storage.read(&hashes_path)?)?;
         verify_manifest_hashes(storage, &hashes)?;
@@ -252,6 +401,18 @@ edition = "2021"
             .unwrap();
         storage.write("src/main.rs", b"fn main() {}\n").unwrap();
         storage
+            .write(
+                "Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+"#,
+            )
+            .unwrap();
+        storage
     }
 
     #[test]
@@ -275,6 +436,30 @@ edition = "2021"
             .read(&format!("{}/graph/cargo-resolve.json", report.run_root))
             .unwrap()
             .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/graph/features.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/graph/cargo-lock.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/graph/source-fetch-plan.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/graph/compiletime-plan.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/proofs/interface-wasi.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
+        assert!(storage
+            .read(&format!("{}/proofs/runtime-wasi.json", report.run_root))
+            .unwrap()
+            .starts_with(b"{"));
     }
 
     #[test]
@@ -287,5 +472,17 @@ edition = "2021"
 
         assert_eq!(verify.status, RunStatus::Unsupported);
         assert!(verify.checked_hashes >= 3);
+    }
+
+    #[test]
+    fn frozen_resolver_rejects_missing_lockfile() {
+        let mut storage = fixture_storage();
+        storage.remove("Cargo.lock").unwrap();
+
+        let err = RouwdiEngine::default()
+            .build(&mut storage, BuildRequest::default())
+            .unwrap_err();
+
+        assert!(err.to_string().contains("resolver is frozen"));
     }
 }

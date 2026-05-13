@@ -1,0 +1,100 @@
+package rouwdi:engine;
+
+interface storage {
+  record dir-entry {
+    path: string,
+    is-dir: bool,
+    len: u64,
+  }
+
+  read: func(path: string) -> result<list<u8>, string>;
+  write: func(path: string, bytes: list<u8>) -> result<_, string>;
+  list: func(path: string) -> result<list<dir-entry>, string>;
+  mkdir: func(path: string) -> result<_, string>;
+  remove: func(path: string) -> result<_, string>;
+}
+
+interface network {
+  record request {
+    method: string,
+    url: string,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  record response {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  fetch: func(req: request) -> result<response, string>;
+}
+
+interface clock {
+  now-ms: func() -> u64;
+}
+
+interface entropy {
+  random: func(len: u32) -> list<u8>;
+}
+
+interface workers {
+  record task-request {
+    label: string,
+    payload: list<u8>,
+  }
+
+  record task-result {
+    payload: list<u8>,
+  }
+
+  type task-id = u64;
+
+  spawn: func(task: task-request) -> result<task-id, string>;
+  join: func(task: task-id) -> result<task-result, string>;
+}
+
+interface output {
+  emit-event: func(event: string);
+  emit-log: func(stream: string, chunk: list<u8>);
+}
+
+interface artifact-io {
+  offer-download: func(path: string) -> result<_, string>;
+}
+
+interface host-runtime {
+  record native-exec-request {
+    artifact-path: string,
+    args: list<string>,
+    timeout-ms: u64,
+  }
+
+  record native-exec-result {
+    exit-code: s32,
+    timed-out: bool,
+    stdout: list<u8>,
+    stderr: list<u8>,
+  }
+
+  execute-native: func(req: native-exec-request) -> result<native-exec-result, string>;
+}
+
+interface rouwdi {
+  build: func(contract-path: string) -> result<string, string>;
+  verify-proof-bundle: func(run-root: string) -> result<string, string>;
+}
+
+world assembly {
+  import storage;
+  import network;
+  import clock;
+  import entropy;
+  import workers;
+  import output;
+  import artifact-io;
+  import host-runtime;
+
+  export rouwdi;
+}

@@ -1,4 +1,7 @@
-use rouwdi_cargo::CargoWorkspace;
+use rouwdi_cargo::{
+    CargoBuildPlan, CargoFeatureResolution, CargoLockfile, CargoSourceFetchPlan, CargoWorkspace,
+};
+use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
 use rouwdi_source::SourceSnapshot;
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
@@ -44,6 +47,46 @@ pub struct ArtifactManifestEntry {
     pub path: String,
     pub artifact_kind: String,
     pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofStatus {
+    Succeeded,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactInterfaceProof {
+    pub target_name: String,
+    pub triple: String,
+    pub artifact_kind: String,
+    pub artifact_path: Option<String>,
+    pub artifact_built: bool,
+    pub required_exports: Vec<String>,
+    pub missing_exports: Vec<String>,
+    pub require_executable: bool,
+    pub executable_detected: Option<bool>,
+    pub status: ProofStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProof {
+    pub target_name: String,
+    pub triple: String,
+    pub required: bool,
+    pub kind: Option<String>,
+    pub mode: String,
+    pub executed: bool,
+    pub expected_exit_code: Option<i32>,
+    pub actual_exit_code: Option<i32>,
+    pub timed_out: Option<bool>,
+    pub stdout_contains: Option<String>,
+    pub stdout_matched: Option<bool>,
+    pub status: ProofStatus,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +135,13 @@ pub struct ProofBundle {
     pub normalized_contract: NormalizedContract,
     pub source_snapshot: SourceSnapshot,
     pub cargo_workspace: CargoWorkspace,
+    pub cargo_features: CargoFeatureResolution,
+    pub source_fetch_plan: CargoSourceFetchPlan,
+    pub build_plan: CargoBuildPlan,
+    pub compile_time_plan: CompileTimePlan,
+    pub cargo_lockfile: Option<CargoLockfile>,
+    pub interface_proofs: Vec<ArtifactInterfaceProof>,
+    pub runtime_proofs: Vec<RuntimeProof>,
     pub hashes: Vec<HashEntry>,
 }
 
@@ -120,12 +170,28 @@ impl ProofBundle {
                 serde_json::to_vec_pretty(&self.cargo_workspace)?,
             ),
             (
+                "graph/features.json",
+                serde_json::to_vec_pretty(&self.cargo_features)?,
+            ),
+            (
+                "graph/source-fetch-plan.json",
+                serde_json::to_vec_pretty(&self.source_fetch_plan)?,
+            ),
+            (
                 "graph/build-plan.json",
-                serde_json::to_vec_pretty(&self.manifest)?,
+                serde_json::to_vec_pretty(&self.build_plan)?,
+            ),
+            (
+                "graph/compiletime-plan.json",
+                serde_json::to_vec_pretty(&self.compile_time_plan)?,
             ),
             (
                 "toolchain/rouwdi-engine.json",
                 serde_json::to_vec_pretty(&self.manifest.compiler_engine)?,
+            ),
+            (
+                "toolchain/source-custody.json",
+                serde_json::to_vec_pretty(&self.manifest.compiler_engine.source_custody)?,
             ),
             (
                 "toolchain/target-packs.json",
@@ -146,16 +212,58 @@ impl ProofBundle {
             storage.write(&path, &bytes)?;
             written.push(path);
         }
+        if let Some(lockfile) = &self.cargo_lockfile {
+            let path = if run_root.is_empty() {
+                "graph/cargo-lock.json".to_owned()
+            } else {
+                format!("{run_root}/graph/cargo-lock.json")
+            };
+            storage.write(&path, &serde_json::to_vec_pretty(lockfile)?)?;
+            written.push(path);
+        }
+        for proof in &self.interface_proofs {
+            let path = proof_path(run_root, "interface", &proof.target_name);
+            storage.write(&path, &serde_json::to_vec_pretty(proof)?)?;
+            written.push(path);
+        }
+        for proof in &self.runtime_proofs {
+            let path = proof_path(run_root, "runtime", &proof.target_name);
+            storage.write(&path, &serde_json::to_vec_pretty(proof)?)?;
+            written.push(path);
+        }
+        let events_path = if run_root.is_empty() {
+            "events.jsonl".to_owned()
+        } else {
+            format!("{run_root}/events.jsonl")
+        };
         storage.write(
-            &format!("{run_root}/events.jsonl"),
+            &events_path,
             format!(
                 "{{\"event\":\"run-finalized\",\"run_id\":\"{}\",\"status\":\"{:?}\"}}\n",
                 self.manifest.run_id, self.manifest.status
             )
             .as_bytes(),
         )?;
-        written.push(format!("{run_root}/events.jsonl"));
+        written.push(events_path);
         Ok(written)
+    }
+}
+
+fn proof_path(run_root: &str, kind: &str, target_name: &str) -> String {
+    let safe_target_name = target_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if run_root.is_empty() {
+        format!("proofs/{kind}-{safe_target_name}.json")
+    } else {
+        format!("{run_root}/proofs/{kind}-{safe_target_name}.json")
     }
 }
 
@@ -181,6 +289,28 @@ pub fn verify_manifest_hashes(
                 entry.path, entry.sha256, actual
             )));
         }
+    }
+    Ok(())
+}
+
+pub fn verify_manifest_references(
+    storage: &dyn Storage,
+    manifest: &RouwdiRunManifest,
+) -> Result<(), ProofError> {
+    if manifest.status == RunStatus::Succeeded && !manifest.unsupported.is_empty() {
+        return Err(ProofError::Verification(
+            "successful manifest must not contain unsupported capabilities".to_owned(),
+        ));
+    }
+    if manifest.contract_sha256.len() != 64 || manifest.source_tree_sha256.len() != 64 {
+        return Err(ProofError::Verification(
+            "manifest contains malformed sha256 fields".to_owned(),
+        ));
+    }
+    for proof_file in &manifest.proof_files {
+        storage.read(proof_file).map_err(|err| {
+            ProofError::Verification(format!("missing referenced proof file {proof_file}: {err}"))
+        })?;
     }
     Ok(())
 }
@@ -357,6 +487,25 @@ mod tests {
         }];
 
         verify_manifest_hashes(&storage, &hashes).unwrap();
+    }
+
+    #[test]
+    fn verifies_manifest_references_are_present() {
+        let mut storage = MemoryStorage::new();
+        storage.write("run/proofs/hashes.json", b"[]").unwrap();
+        let manifest = RouwdiRunManifest {
+            run_id: "run".to_owned(),
+            status: RunStatus::Unsupported,
+            contract_sha256: "a".repeat(64),
+            source_tree_sha256: "b".repeat(64),
+            compiler_engine: CompilerEngineIdentity::incomplete_bootstrap_guard(),
+            target_packs: Vec::new(),
+            artifacts: Vec::new(),
+            unsupported: Vec::new(),
+            proof_files: vec!["run/proofs/hashes.json".to_owned()],
+        };
+
+        verify_manifest_references(&storage, &manifest).unwrap();
     }
 
     #[test]

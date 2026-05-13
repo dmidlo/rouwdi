@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 rouwdi-cargo = { path = "../rouwdi-cargo" }
+rouwdi-compiletime = { path = "../rouwdi-compiletime" }
 rouwdi-contract = { path = "../rouwdi-contract" }
 rouwdi-proof = { path = "../rouwdi-proof" }
 rouwdi-source = { path = "../rouwdi-source" }
@@ -19,4 +20,3 @@ rouwdi-vfs = { path = "../rouwdi-vfs" }
 
 [dev-dependencies]
 tempfile = "3"
-
