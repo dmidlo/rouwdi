@@ -1,0 +1,1 @@
+This is a reference repo only for some partial implementation ideas that have already been prototyped.  Search here; but it is not authoritive. It is only for inspiration.
