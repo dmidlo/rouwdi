@@ -29,8 +29,8 @@ pub enum RunStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnsupportedCapability {
-    pub capability: String,
+pub struct BootstrapDiagnostic {
+    pub component: String,
     pub required_by: String,
     pub reason: String,
 }
@@ -127,7 +127,7 @@ pub struct RouwdiRunManifest {
     pub target_packs: Vec<TargetPack>,
     pub compiler_pipeline: Vec<RustCompilerPipelineRecord>,
     pub artifacts: Vec<ArtifactManifestEntry>,
-    pub unsupported: Vec<UnsupportedCapability>,
+    pub bootstrap_diagnostics: Vec<BootstrapDiagnostic>,
     pub proof_files: Vec<String>,
 }
 
@@ -309,9 +309,9 @@ pub fn verify_manifest_references(
     storage: &dyn Storage,
     manifest: &RouwdiRunManifest,
 ) -> Result<(), ProofError> {
-    if manifest.status == RunStatus::Succeeded && !manifest.unsupported.is_empty() {
+    if manifest.status == RunStatus::Succeeded && !manifest.bootstrap_diagnostics.is_empty() {
         return Err(ProofError::Verification(
-            "successful manifest must not contain unsupported capabilities".to_owned(),
+            "successful manifest must not contain bootstrap diagnostics".to_owned(),
         ));
     }
     if manifest.contract_sha256.len() != 64 || manifest.source_tree_sha256.len() != 64 {
@@ -514,7 +514,7 @@ mod tests {
             target_packs: Vec::new(),
             compiler_pipeline: Vec::new(),
             artifacts: Vec::new(),
-            unsupported: Vec::new(),
+            bootstrap_diagnostics: Vec::new(),
             proof_files: vec!["run/proofs/hashes.json".to_owned()],
         };
 

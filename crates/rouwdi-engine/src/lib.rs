@@ -7,8 +7,8 @@ use rouwdi_compiletime::plan_compile_time;
 use rouwdi_contract::{ContractError, RouwdiContract};
 use rouwdi_proof::{
     hash_bytes, verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
-    ArtifactManifestEntry, HashEntry, ProofBundle, ProofError, ProofStatus, RouwdiRunManifest,
-    RunStatus, RuntimeProof, UnsupportedCapability,
+    ArtifactManifestEntry, BootstrapDiagnostic, HashEntry, ProofBundle, ProofError, ProofStatus,
+    RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
@@ -61,7 +61,7 @@ pub struct BuildReport {
     pub run_root: String,
     pub manifest_path: String,
     pub proof_files: Vec<String>,
-    pub unsupported: Vec<UnsupportedCapability>,
+    pub bootstrap_diagnostics: Vec<BootstrapDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,12 +169,12 @@ impl RouwdiEngine {
         }
         let target_packs = self.target_registry.validate_contract(&contract)?;
 
-        let mut internal_blockers = Vec::new();
-        let mut unsupported = Vec::new();
+        let mut assembly_diagnostics = Vec::new();
+        let mut host_diagnostics = Vec::new();
         for cache_entry in &source_cache.entries {
             if cache_entry.status == SourceCacheStatus::PlannedFetch {
-                internal_blockers.push(UnsupportedCapability {
-                    capability: format!("{:?} source fetcher", cache_entry.kind),
+                assembly_diagnostics.push(BootstrapDiagnostic {
+                    component: format!("{:?} source fetcher", cache_entry.kind),
                     required_by: format!(
                         "dependency source materialization for {}",
                         cache_entry.dependency
@@ -187,23 +187,23 @@ impl RouwdiEngine {
         }
         for pack in &target_packs {
             if !pack.target_pack_embedded {
-                internal_blockers.push(UnsupportedCapability {
-                    capability: format!("{} target pack", pack.triple),
+                assembly_diagnostics.push(BootstrapDiagnostic {
+                    component: format!("{} target pack", pack.triple),
                     required_by: format!("artifact emission for {}", pack.triple),
                     reason: "target ABI/object/link metadata is not embedded in this assembly"
                         .to_owned(),
                 });
             }
             if !pack.std_pack_embedded {
-                internal_blockers.push(UnsupportedCapability {
-                    capability: format!("{} std/core/alloc pack", pack.triple),
+                assembly_diagnostics.push(BootstrapDiagnostic {
+                    component: format!("{} std/core/alloc pack", pack.triple),
                     required_by: format!("Rust standard library resolution for {}", pack.triple),
                     reason: "std/core/alloc artifacts are not embedded in this assembly".to_owned(),
                 });
             }
             if !pack.linker_pack_embedded {
-                internal_blockers.push(UnsupportedCapability {
-                    capability: format!("{} linker pack", pack.triple),
+                assembly_diagnostics.push(BootstrapDiagnostic {
+                    component: format!("{} linker pack", pack.triple),
                     required_by: format!("final link for {}", pack.triple),
                     reason: "linker scripts/configuration/runtime objects are not embedded in this assembly"
                         .to_owned(),
@@ -215,8 +215,8 @@ impl RouwdiEngine {
             .map(|proof| proof.diagnostics.len())
             .sum::<usize>();
         if lexical_diagnostic_count > 0 {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "valid Rust lexical source".to_owned(),
+            assembly_diagnostics.push(BootstrapDiagnostic {
+                component: "valid Rust lexical source".to_owned(),
                 required_by: "compile Rust crate graph".to_owned(),
                 reason: format!(
                     "upstream rustc_lexer reported {lexical_diagnostic_count} lexical diagnostic(s)"
@@ -225,8 +225,8 @@ impl RouwdiEngine {
         }
         for record in &compiler_pipeline {
             if let Some(missing_stage) = &record.missing_stage {
-                internal_blockers.push(UnsupportedCapability {
-                    capability: missing_stage.capability(),
+                assembly_diagnostics.push(BootstrapDiagnostic {
+                    component: missing_stage.component(),
                     required_by: missing_stage.required_by(),
                     reason: missing_stage.reason.clone(),
                 });
@@ -237,8 +237,8 @@ impl RouwdiEngine {
             .iter()
             .any(|unit| unit.phase == CompilePhase::BuildScript)
         {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "build.rs compilation to compile-time WASM".to_owned(),
+            assembly_diagnostics.push(BootstrapDiagnostic {
+                component: "build.rs compilation to compile-time WASM".to_owned(),
                 required_by: "Cargo build script directives and generated files".to_owned(),
                 reason: "precompiled compile-time WASM execution is embedded, but compiling build.rs source into sandbox modules is not embedded yet".to_owned(),
             });
@@ -248,29 +248,29 @@ impl RouwdiEngine {
             .iter()
             .any(|unit| unit.phase == CompilePhase::ProcMacro)
         {
-            internal_blockers.push(UnsupportedCapability {
-                capability: "proc-macro crate compilation to compile-time WASM".to_owned(),
+            assembly_diagnostics.push(BootstrapDiagnostic {
+                component: "proc-macro crate compilation to compile-time WASM".to_owned(),
                 required_by: "Rust macro expansion".to_owned(),
                 reason: "precompiled proc-macro WASM token-stream execution is embedded, but compiling proc-macro crates into sandbox modules is not embedded yet".to_owned(),
             });
         }
         for target in &contract.targets {
             if target.runtime.required && target.triple == "native_host" {
-                unsupported.push(UnsupportedCapability {
-                    capability: "native runtime execution".to_owned(),
+                host_diagnostics.push(BootstrapDiagnostic {
+                    component: "native runtime execution".to_owned(),
                     required_by: format!("runtime proof for target {}", target.name),
-                    reason: "native execution is a host runtime capability and must be recorded as delegated or unsupported by the current host".to_owned(),
+                    reason: "native execution is a host runtime capability and must be recorded as delegated or unavailable in the current host substrate".to_owned(),
                 });
             }
         }
 
-        let has_internal_blockers = !internal_blockers.is_empty();
-        let mut build_chain_findings = internal_blockers;
-        build_chain_findings.extend(unsupported);
+        let has_assembly_diagnostics = !assembly_diagnostics.is_empty();
+        let mut bootstrap_diagnostics = assembly_diagnostics;
+        bootstrap_diagnostics.extend(host_diagnostics);
 
-        let status = if has_internal_blockers {
+        let status = if has_assembly_diagnostics {
             RunStatus::Failed
-        } else if !build_chain_findings.is_empty() {
+        } else if !bootstrap_diagnostics.is_empty() {
             RunStatus::Unsupported
         } else {
             RunStatus::Succeeded
@@ -288,7 +288,7 @@ impl RouwdiEngine {
                 missing_exports: target.interface.required_exports.clone(),
                 require_executable: target.interface.require_executable,
                 executable_detected: None,
-                status: if has_internal_blockers {
+                status: if has_assembly_diagnostics {
                     ProofStatus::Failed
                 } else {
                     ProofStatus::Unsupported
@@ -315,7 +315,7 @@ impl RouwdiEngine {
                 stdout_contains: target.runtime.stdout_contains.clone(),
                 stdout_matched: None,
                 status: if target.runtime.required {
-                    if has_internal_blockers {
+                    if has_assembly_diagnostics {
                         ProofStatus::Failed
                     } else {
                         ProofStatus::Unsupported
@@ -367,7 +367,7 @@ impl RouwdiEngine {
             target_packs,
             compiler_pipeline,
             artifacts: Vec::<ArtifactManifestEntry>::new(),
-            unsupported: build_chain_findings.clone(),
+            bootstrap_diagnostics: bootstrap_diagnostics.clone(),
             proof_files: Vec::new(),
         };
         let mut bundle = ProofBundle {
@@ -400,7 +400,7 @@ impl RouwdiEngine {
             manifest_path: format!("{run_root}/manifest.json"),
             run_root,
             proof_files,
-            unsupported: build_chain_findings,
+            bootstrap_diagnostics,
         })
     }
 
@@ -567,14 +567,14 @@ version = "0.1.0"
 
         assert_eq!(report.status, RunStatus::Failed);
         assert!(report
-            .unsupported
+            .bootstrap_diagnostics
             .iter()
-            .any(|item| item.capability == "compiler stage rustc_parse"
+            .any(|item| item.component == "compiler stage rustc_parse"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
-            .unsupported
+            .bootstrap_diagnostics
             .iter()
-            .any(|item| item.capability == "rustc frontend semantics"));
+            .any(|item| item.component == "rustc frontend semantics"));
         assert!(storage
             .read(&report.manifest_path)
             .unwrap()
@@ -762,9 +762,9 @@ version = "0.1.0"
 
         assert_eq!(report.status, RunStatus::Failed);
         assert!(report
-            .unsupported
+            .bootstrap_diagnostics
             .iter()
-            .any(|item| item.capability == "valid Rust lexical source"));
+            .any(|item| item.component == "valid Rust lexical source"));
         assert!(lex_proofs.iter().any(|proof| {
             proof.path == "src/main.rs"
                 && proof
@@ -883,7 +883,7 @@ edition = "2021"
     }
 
     #[test]
-    fn build_records_remote_dependency_fetcher_as_internal_blocker() {
+    fn build_records_remote_dependency_fetcher_as_bootstrap_diagnostic() {
         let mut storage = fixture_storage();
         storage
             .write(
@@ -935,8 +935,8 @@ checksum = "abc123"
             entry.dependency == "serde"
                 && entry.status == rouwdi_source::SourceCacheStatus::PlannedFetch
         }));
-        assert!(report.unsupported.iter().any(|item| {
-            item.capability == "Registry source fetcher"
+        assert!(report.bootstrap_diagnostics.iter().any(|item| {
+            item.component == "Registry source fetcher"
                 && item.required_by.contains("serde")
                 && item.reason.contains("no host Cargo")
         }));
@@ -1040,9 +1040,9 @@ checksum = "abc123"
             .iter()
             .any(|file| file.source_path == ".rouwdi/vendor/serde/src/lib.rs"));
         assert!(!report
-            .unsupported
+            .bootstrap_diagnostics
             .iter()
-            .any(|item| item.capability == "Registry source fetcher"));
+            .any(|item| item.component == "Registry source fetcher"));
         let hashes: Vec<HashEntry> = serde_json::from_slice(
             &storage
                 .read(&format!("{}/proofs/hashes.json", report.run_root))

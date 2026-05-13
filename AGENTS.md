@@ -1073,7 +1073,7 @@ The proof result may say:
   "artifact_hashed": true,
   "interface_validated": true,
   "runtime_executed": false,
-  "runtime_status": "unsupported-by-host",
+  "runtime_status": "unavailable-in-current-host",
   "reason": "browser host cannot execute native Linux executable"
 }
 ```
@@ -1414,7 +1414,7 @@ What artifacts were emitted?
 What interfaces were validated?
 What runtime behavior was observed?
 What hashes identify the outputs?
-What parts were unsupported by the current host?
+What bootstrap diagnostics were recorded for the current host?
 What failed, if anything?
 ```
 
@@ -2057,7 +2057,7 @@ host-capability-dependent
 network-dependent
 runtime-proof-delegated
 non-reproducible-input
-unsupported
+unavailable-in-current-host
 ```
 
 The proof bundle should not lie.
@@ -2783,7 +2783,7 @@ fixed-point level: behavior-identical | normalized-identical | byte-identical
 
 Not the compiler.
 
-First build the **bootstrap rails**.
+First build the **bootstrap scaffold**.
 
 The correct first PR is:
 

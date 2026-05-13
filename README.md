@@ -15,7 +15,7 @@ resolution, frozen lockfile enforcement, vendored registry/git source
 materialization into rouwdi-managed source cache, build scripts, proc-macro
 targets, compile-time sandbox planning, internal compile-time WASM execution
 for precompiled build-script and proc-macro modules, build graph planning,
-manifest-relative Rust source paths, upstream `rustc_lexer` preflight proof
+manifest-relative Rust source paths, upstream `rustc_lexer` bootstrap diagnostic proof
 records, computed embedded target spec/ABI pack identities, per-target
 interface/runtime proof records, and proof bundle verification. The native
 runner is a thin Wasmtime/WASI substrate runner around `dist/rouwdi.wasm`; it

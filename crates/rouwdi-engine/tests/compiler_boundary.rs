@@ -90,14 +90,14 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         RustCompilerStageErrorCode::RustcParseNotEmbedded
     );
     assert_eq!(missing_stage.required_component, "rustc_parse");
-    assert!(report.unsupported.iter().any(|item| {
-        item.capability == "compiler stage rustc_parse"
+    assert!(report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "compiler stage rustc_parse"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report
-        .unsupported
+        .bootstrap_diagnostics
         .iter()
-        .any(|item| item.capability == "rustc frontend semantics"));
+        .any(|item| item.component == "rustc frontend semantics"));
 }
 
 #[test]

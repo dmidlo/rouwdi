@@ -160,7 +160,7 @@ pub struct MissingRustCompilerStage {
 }
 
 impl MissingRustCompilerStage {
-    pub fn capability(&self) -> String {
+    pub fn component(&self) -> String {
         format!("compiler stage {}", self.required_component)
     }
 
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn lexer_preflight_records_real_rustc_lexer_diagnostics() {
+    fn lexer_records_real_rustc_lexer_bootstrap_diagnostics() {
         let proof = lex_rust_source_with_diagnostics("src/main.rs", "fn main() { \"open\n");
 
         assert_eq!(proof.path, "src/main.rs");
