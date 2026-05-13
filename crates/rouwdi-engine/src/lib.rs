@@ -12,8 +12,8 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{lex_rust_source_with_diagnostics, RustSourceLexProof};
 use rouwdi_source::{
-    materialize_source_cache, snapshot_source, source_relative_path, SourceCacheKind,
-    SourceCacheRequest, SourceCacheStatus, SourceError,
+    materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
+    SourceCacheOptions, SourceCacheRequest, SourceCacheStatus, SourceError,
 };
 use rouwdi_targets::{TargetError, TargetPackRegistry};
 use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
@@ -110,8 +110,19 @@ impl RouwdiEngine {
                 target_cfg: entry.target_cfg.clone(),
             })
             .collect::<Vec<_>>();
-        let source_cache =
-            materialize_source_cache(storage, &source_cache_root, &source_cache_requests)?;
+        let source_cache = materialize_source_cache_with_options(
+            storage,
+            &source_cache_root,
+            &source_cache_requests,
+            SourceCacheOptions {
+                vendor_root: contract
+                    .resolver
+                    .vendor
+                    .as_deref()
+                    .map(|vendor| source_relative_path(&source_root, vendor))
+                    .transpose()?,
+            },
+        )?;
         let (selected_target, selected_target_kind) =
             match (&contract.project.bin, &contract.project.example) {
                 (Some(bin), None) => (bin.clone(), CargoTargetKind::Bin),
@@ -890,6 +901,119 @@ checksum = "abc123"
             item.capability == "Registry source fetcher"
                 && item.required_by.contains("serde")
                 && item.reason.contains("no host Cargo")
+        }));
+    }
+
+    #[test]
+    fn build_materializes_vendored_registry_dependency_source_cache() {
+        let mut storage = fixture_storage();
+        storage
+            .write(
+                "rouwdi.toml",
+                br#"
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "app"
+bin = "app"
+profile = "release"
+
+[source]
+mode = "snapshot"
+root = "."
+
+[resolver]
+vendor = ".rouwdi/vendor"
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.toml",
+                br#"
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                "Cargo.lock",
+                br#"
+version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123"
+"#,
+            )
+            .unwrap();
+        storage
+            .write(
+                ".rouwdi/vendor/serde/Cargo.toml",
+                b"[package]\nname='serde'\nversion='1.0.0'\n",
+            )
+            .unwrap();
+        storage
+            .write(
+                ".rouwdi/vendor/serde/src/lib.rs",
+                b"pub trait Serialize {}\n",
+            )
+            .unwrap();
+
+        let report = RouwdiEngine::default()
+            .build(&mut storage, BuildRequest::default())
+            .unwrap();
+        let source_cache: rouwdi_source::SourceCacheProof = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/source/source-cache.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let serde = source_cache
+            .entries
+            .iter()
+            .find(|entry| entry.dependency == "serde")
+            .unwrap();
+        assert_eq!(serde.status, rouwdi_source::SourceCacheStatus::Cached);
+        assert!(serde
+            .files
+            .iter()
+            .any(|file| file.source_path == ".rouwdi/vendor/serde/src/lib.rs"));
+        assert!(!report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "Registry source fetcher"));
+        let hashes: Vec<HashEntry> = serde_json::from_slice(
+            &storage
+                .read(&format!("{}/proofs/hashes.json", report.run_root))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(hashes.iter().any(|hash| {
+            hash.label == "source-cache:serde:.rouwdi/vendor/serde/src/lib.rs"
+                && hash.path.contains(".rouwdi/cache/sources/")
         }));
     }
 }

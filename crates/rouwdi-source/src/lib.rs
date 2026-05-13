@@ -34,6 +34,11 @@ pub struct SourceCacheRequest {
     pub target_cfg: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceCacheOptions {
+    pub vendor_root: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceCacheKind {
@@ -79,9 +84,21 @@ pub struct SourceCacheFile {
 }
 
 pub fn snapshot_source(storage: &dyn Storage, root: &str) -> Result<SourceSnapshot, SourceError> {
+    snapshot_source_with_policy(storage, root, should_skip_project_state)
+}
+
+fn snapshot_cache_source(storage: &dyn Storage, root: &str) -> Result<SourceSnapshot, SourceError> {
+    snapshot_source_with_policy(storage, root, should_skip_dependency_cache_state)
+}
+
+fn snapshot_source_with_policy(
+    storage: &dyn Storage,
+    root: &str,
+    should_skip: fn(&str) -> bool,
+) -> Result<SourceSnapshot, SourceError> {
     let root = normalize_path(root)?;
     let mut files = Vec::new();
-    visit(storage, &root, &mut files)?;
+    visit(storage, &root, &mut files, should_skip)?;
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let mut tree_digest = Sha256::new();
@@ -105,12 +122,35 @@ pub fn materialize_source_cache(
     cache_root: &str,
     requests: &[SourceCacheRequest],
 ) -> Result<SourceCacheProof, SourceError> {
+    materialize_source_cache_with_options(
+        storage,
+        cache_root,
+        requests,
+        SourceCacheOptions::default(),
+    )
+}
+
+pub fn materialize_source_cache_with_options(
+    storage: &mut dyn Storage,
+    cache_root: &str,
+    requests: &[SourceCacheRequest],
+    options: SourceCacheOptions,
+) -> Result<SourceCacheProof, SourceError> {
     let cache_root = normalize_path(cache_root)?;
     let mut entries = Vec::new();
     for request in requests {
         entries.push(match request.kind {
             SourceCacheKind::Path => cache_path_source(storage, &cache_root, request)?,
-            SourceCacheKind::Git | SourceCacheKind::Registry => planned_fetch_source(request),
+            SourceCacheKind::Git | SourceCacheKind::Registry => {
+                if let Some(vendor_root) = &options.vendor_root {
+                    match cache_vendored_source(storage, &cache_root, vendor_root, request)? {
+                        Some(entry) => entry,
+                        None => planned_fetch_source(request),
+                    }
+                } else {
+                    planned_fetch_source(request)
+                }
+            }
         });
     }
     entries.sort_by(|left, right| {
@@ -131,7 +171,32 @@ fn cache_path_source(
     cache_root: &str,
     request: &SourceCacheRequest,
 ) -> Result<SourceCacheEntry, SourceError> {
-    let snapshot = snapshot_source(storage, &request.locator)?;
+    cache_source_root(storage, cache_root, request, &request.locator)
+}
+
+fn cache_vendored_source(
+    storage: &mut dyn Storage,
+    cache_root: &str,
+    vendor_root: &str,
+    request: &SourceCacheRequest,
+) -> Result<Option<SourceCacheEntry>, SourceError> {
+    for candidate in vendor_candidates(vendor_root, request)? {
+        match cache_source_root(storage, cache_root, request, &candidate) {
+            Ok(entry) => return Ok(Some(entry)),
+            Err(SourceError::Vfs(VfsError::NotFound(_))) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(None)
+}
+
+fn cache_source_root(
+    storage: &mut dyn Storage,
+    cache_root: &str,
+    request: &SourceCacheRequest,
+    source_root: &str,
+) -> Result<SourceCacheEntry, SourceError> {
+    let snapshot = snapshot_cache_source(storage, source_root)?;
     let cache_path = join_path(cache_root, &snapshot.tree_sha256)?;
     let mut files = Vec::new();
     for file in &snapshot.files {
@@ -159,6 +224,39 @@ fn cache_path_source(
         files,
         reason: None,
     })
+}
+
+fn vendor_candidates(
+    vendor_root: &str,
+    request: &SourceCacheRequest,
+) -> Result<Vec<String>, SourceError> {
+    let mut candidates = vec![join_path(vendor_root, &request.dependency)?];
+    if let Some(requirement) = request
+        .requirement
+        .as_deref()
+        .and_then(exact_version_requirement)
+    {
+        candidates.push(join_path(
+            vendor_root,
+            &format!("{}-{requirement}", request.dependency),
+        )?);
+    }
+    candidates.sort();
+    candidates.dedup();
+    Ok(candidates)
+}
+
+fn exact_version_requirement(requirement: &str) -> Option<&str> {
+    let trimmed = requirement.trim();
+    let exact = trimmed.strip_prefix('=').map(str::trim).unwrap_or(trimmed);
+    if exact
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
+    {
+        Some(exact)
+    } else {
+        None
+    }
 }
 
 fn planned_fetch_source(request: &SourceCacheRequest) -> SourceCacheEntry {
@@ -197,13 +295,14 @@ fn visit(
     storage: &dyn Storage,
     path: &str,
     files: &mut Vec<SourceFileProof>,
+    should_skip: fn(&str) -> bool,
 ) -> Result<(), SourceError> {
     for entry in storage.list(path)? {
         if should_skip(&entry.path) {
             continue;
         }
         if entry.is_dir {
-            visit(storage, &entry.path, files)?;
+            visit(storage, &entry.path, files, should_skip)?;
         } else {
             let bytes = storage.read(&entry.path)?;
             let mut digest = Sha256::new();
@@ -218,9 +317,14 @@ fn visit(
     Ok(())
 }
 
-fn should_skip(path: &str) -> bool {
+fn should_skip_project_state(path: &str) -> bool {
     path.split('/')
         .any(|part| matches!(part, ".git" | ".rouwdi" | "target"))
+}
+
+fn should_skip_dependency_cache_state(path: &str) -> bool {
+    path.split('/')
+        .any(|part| matches!(part, ".git" | "target"))
 }
 
 pub fn source_relative_path(root: &str, child: &str) -> Result<String, SourceError> {
@@ -349,5 +453,91 @@ mod tests {
         assert_eq!(entry.status, SourceCacheStatus::PlannedFetch);
         assert!(entry.reason.as_deref().unwrap().contains("no host Cargo"));
         assert!(entry.cache_path.is_none());
+    }
+
+    #[test]
+    fn materializes_vendored_registry_sources_without_host_cargo() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write(
+                ".rouwdi/vendor/serde/Cargo.toml",
+                b"[package]\nname='serde'\nversion='1.0.0'\n",
+            )
+            .unwrap();
+        storage
+            .write(
+                ".rouwdi/vendor/serde/src/lib.rs",
+                b"pub trait Serialize {}\n",
+            )
+            .unwrap();
+
+        let proof = materialize_source_cache_with_options(
+            &mut storage,
+            ".rouwdi/cache/sources",
+            &[SourceCacheRequest {
+                package: "app".to_owned(),
+                dependency: "serde".to_owned(),
+                kind: SourceCacheKind::Registry,
+                locator: "crates-io".to_owned(),
+                requirement: Some("1".to_owned()),
+                target_cfg: None,
+            }],
+            SourceCacheOptions {
+                vendor_root: Some(".rouwdi/vendor".to_owned()),
+            },
+        )
+        .unwrap();
+
+        let entry = &proof.entries[0];
+        assert_eq!(entry.status, SourceCacheStatus::Cached);
+        assert_eq!(entry.kind, SourceCacheKind::Registry);
+        assert!(entry
+            .cache_path
+            .as_deref()
+            .unwrap()
+            .starts_with(".rouwdi/cache/sources/"));
+        assert!(entry.files.iter().any(|file| {
+            file.source_path == ".rouwdi/vendor/serde/src/lib.rs"
+                && storage.read(&file.cache_path).unwrap() == b"pub trait Serialize {}\n"
+        }));
+        assert!(entry.reason.is_none());
+    }
+
+    #[test]
+    fn materializes_exact_version_vendor_directory_when_package_name_is_absent() {
+        let mut storage = MemoryStorage::new();
+        storage
+            .write(
+                "vendor/serde-1.0.0/Cargo.toml",
+                b"[package]\nname='serde'\nversion='1.0.0'\n",
+            )
+            .unwrap();
+        storage
+            .write("vendor/serde-1.0.0/src/lib.rs", b"pub mod de {}\n")
+            .unwrap();
+
+        let proof = materialize_source_cache_with_options(
+            &mut storage,
+            ".rouwdi/cache/sources",
+            &[SourceCacheRequest {
+                package: "app".to_owned(),
+                dependency: "serde".to_owned(),
+                kind: SourceCacheKind::Registry,
+                locator: "crates-io".to_owned(),
+                requirement: Some("=1.0.0".to_owned()),
+                target_cfg: None,
+            }],
+            SourceCacheOptions {
+                vendor_root: Some("vendor".to_owned()),
+            },
+        )
+        .unwrap();
+
+        let entry = &proof.entries[0];
+        assert_eq!(entry.status, SourceCacheStatus::Cached);
+        assert!(entry
+            .files
+            .iter()
+            .any(|file| file.source_path == "vendor/serde-1.0.0/src/lib.rs"));
     }
 }

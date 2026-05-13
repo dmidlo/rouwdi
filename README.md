@@ -11,14 +11,14 @@ Current implementation status: the root engine parses and validates
 `rouwdi.toml`, snapshots source through a virtual storage interface, resolves a
 Cargo workspace model without invoking host Cargo, handles virtual workspaces,
 path/git/registry dependency source planning, contract-selected feature
-resolution, frozen lockfile enforcement, build scripts, proc-macro targets,
-compile-time sandbox planning, internal compile-time WASM execution for
-precompiled build-script and proc-macro modules, build graph planning,
+resolution, frozen lockfile enforcement, vendored registry/git source
+materialization into rouwdi-managed source cache, build scripts, proc-macro
+targets, compile-time sandbox planning, internal compile-time WASM execution
+for precompiled build-script and proc-macro modules, build graph planning,
 manifest-relative Rust source paths, upstream `rustc_lexer` preflight proof
 records, computed embedded target spec/ABI pack identities, per-target
 interface/runtime proof records, and proof bundle verification. The native
-runner is a thin Wasmtime/WASI substrate
-runner around `dist/rouwdi.wasm`; it
+runner is a thin Wasmtime/WASI substrate runner around `dist/rouwdi.wasm`; it
 does not provide Cargo, rustc, a linker, target policy, validation, or proof
 logic.
 
