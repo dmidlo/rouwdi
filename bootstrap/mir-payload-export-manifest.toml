@@ -8,10 +8,10 @@ target_triple = "x86_64-pc-windows-msvc"
 profile = "release"
 loadable_by_rouwdi_wasm = false
 loader_blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported rlib remains not loadable by rouwdi.wasm. Compiler-payload ABI v1 and the selected wasm32-wasip1 shim route exist. The wasm32-wasip1 target pack is real: core, alloc, and std artifacts were produced. The full rustc-private root crate loop was attempted; x.py's compiler-crate `--target wasm32-wasip1` route emitted host artifacts only, and the discovered wasm-host route is blocked by missing Ninja."
+loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported rlib remains not loadable by rouwdi.wasm. Compiler-payload ABI v1 and the selected wasm32-wasip1 shim route exist. The wasm32-wasip1 target pack is real: core, alloc, and std artifacts were produced. The full rustc-private root crate loop was attempted; x.py's compiler-crate `--target wasm32-wasip1` route emitted host artifacts only, and the discovered wasm-host route is now blocked inside LLVM-for-wasm32-wasip1 C++ compilation at missing `machine/endian.h` after repo-local Ninja/CMake/WASI tool provisioning."
 loadability_status = "unsupported_compiler_private_artifact"
-milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
-exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI artifact. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. Target-pack provisioning remains valid: `python x.py build library/std --stage 1 --target wasm32-wasip1 -v` exits 0 and produces wasm32-wasip1 core/alloc/std artifacts. The root rustc-private target crate closure is recorded in bootstrap/rustc-private-target-pack.toml. Commands for rustc_hir, rustc_middle, rustc_mir_build, rustc_session, and rustc_span with `x.py build compiler/<crate> --stage 1 --target wasm32-wasip1 -v` all exited 0 but emitted host compiler artifacts only. The bridge retry then exited 101 because no target-loadable rustc-private crates are present; the discovered stage2 wasm-host route currently exits 1 at missing Ninja before rustc_span wasm emission."
+milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI artifact. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. Target-pack provisioning remains valid: `python x.py build library/std --stage 1 --target wasm32-wasip1 -v` exits 0 and produces wasm32-wasip1 core/alloc/std artifacts. The root rustc-private target crate closure is recorded in bootstrap/rustc-private-target-pack.toml. Commands for rustc_hir, rustc_middle, rustc_mir_build, rustc_session, and rustc_span with `x.py build compiler/<crate> --stage 1 --target wasm32-wasip1 -v` all exited 0 but emitted host compiler artifacts only. The stage2 wasm-host route was then attempted for all five root crates after repo-local Ninja/CMake/WASI tool provisioning and exited 1 before root artifact emission at LLVM-for-wasm32-wasip1 missing `machine/endian.h`. The bridge was not retried after stage2 because no real target-loadable rustc-private root artifact exists."
 next_required_artifact_format = "rustc_private_to_wasm_mir_handoff_bridge"
 upstream_type_surface = [
   "rustc_middle::mir::Body<'tcx>",
@@ -40,6 +40,13 @@ adapter_entrypoints = [
   "rouwdi_mir_handoff_payload_v1_execute(input_ptr: usize, input_len: usize, output_ptr_out: usize, output_len_out: usize, error_ptr_out: usize, error_len_out: usize) -> i32",
 ]
 
+[fallback_architecture]
+selected = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
+status = "selected"
+decision_reason = "The stage2 wasm-host route is blocked by LLVM C++ portability against the WASI sysroot. The bridge must wait for a direct wasm32-wasip1 rustc-private root pack or another real target-loadable payload route."
+rustc_private_manifest_path = "bootstrap/rustc-private-target-pack.toml"
+bridge_retry_policy = "only_after_real_target_loadable_root_artifacts"
+
 [compiler_payload_abi]
 manifest_path = "bootstrap/compiler-payload-abi.toml"
 abi_name = "rouwdi.compiler-payload.mir-handoff"
@@ -48,9 +55,9 @@ supported_stage = "mir_handoff"
 selected_route = "wasm32_wasip1_module"
 selected_route_status = "shim_emitted_bridge_attempted_blocked"
 bridge_status = "attempted_blocked"
-bridge_blocker_kind = "rustc_private_target_crate_route_blocked_missing_ninja"
-bridge_blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols. The target-pack provisioning command exits 0 with core, alloc, and std available. The full root rustc-private crate loop was attempted. The x.py target route emitted host artifacts only; the discovered stage2 wasm-host route is blocked before rustc_span Wasm emission by missing Ninja."
-milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+bridge_blocker_kind = "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
+bridge_blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols. The target-pack provisioning command exits 0 with core, alloc, and std available. The full root rustc-private crate loop was attempted. The x.py target route emitted host artifacts only; the discovered stage2 wasm-host route was attempted for all five roots and is blocked inside LLVM-for-wasm32-wasip1 C++ compilation at missing `machine/endian.h` before root Wasm emission."
+milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
 
 [bridge]
 rustc_private_payload = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
@@ -58,14 +65,14 @@ rustc_private_artifact_format = "rlib"
 strategy = "compile_rustc_private_mir_adapter_to_wasm32_wasip1_under_bootstrap"
 command_attempted = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
 command_exit_code = 101
-command_evidence = "After all five root rustc-private crates were attempted for wasm32-wasip1, the bridge retry still emitted error[E0463] for `rustc_hir`, `rustc_middle`, `rustc_mir_build`, `rustc_session`, and `rustc_span` because the x.py --target route produced host compiler artifacts only. The discovered stage2 wasm-host route is blocked before rustc_span emission by missing Ninja."
+command_evidence = "After all five root rustc-private crates were attempted for wasm32-wasip1, the direct bridge retry still emitted error[E0463] for `rustc_hir`, `rustc_middle`, `rustc_mir_build`, `rustc_session`, and `rustc_span` because the x.py --target route produced host compiler artifacts only. The discovered stage2 wasm-host route was then attempted for all five roots after repo-local Ninja/CMake/WASI tool provisioning and blocked before root artifact emission at LLVM-for-wasm32-wasip1 missing `machine/endian.h`; no stage2 bridge retry was run because there are no real target-loadable root artifacts."
 target_triple = "wasm32-wasip1"
 status = "attempted_blocked"
-milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
-blocker_kind = "rustc_private_target_crate_route_blocked_missing_ninja"
-blocker_reason = "The direct bridge retry targeted wasm32-wasip1 through the real MIR adapter crate after the stage1 wasm32-wasip1 target pack was provisioned and after all root rustc-private crates were attempted. It still failed after std discovery because no target-loadable rustc_private crates were emitted. The discovered wasm-host compiler route is currently blocked by missing Ninja before rustc_span emission."
-exact_blocker = "Bridge retry exited 101 after the full root-crate loop because no target-loadable rustc_hir, rustc_middle, rustc_mir_build, rustc_session, or rustc_span artifacts exist in `third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib`. Commands `python x.py build compiler/{rustc_span,rustc_session,rustc_hir,rustc_middle,rustc_mir_build} --stage 1 --target wasm32-wasip1 -v` all exited 0 but invoked Cargo with `--target x86_64-pc-windows-msvc` and landed under stage1-rustc. The discovered next route `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v` exited 1 at `Couldn't find required command: ninja (or ninja-build)`. No host rlib is relabeled as Wasm, and no TyCtxt, Providers, Body<'tcx>, MIR, Wasm component, static link success, or loadable payload is fabricated."
-next_command = "Provision repo-local Ninja or configure bootstrap to avoid LLVM rebuild for the stage2 wasm-host route, then rerun `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v`."
+milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+blocker_kind = "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
+blocker_reason = "The direct bridge retry targeted wasm32-wasip1 through the real MIR adapter crate after the stage1 wasm32-wasip1 target pack was provisioned and after all root rustc-private crates were attempted. It still failed after std discovery because no target-loadable rustc_private crates were emitted. The discovered wasm-host compiler route is blocked inside LLVM-for-wasm32-wasip1 C++ compilation at missing `machine/endian.h` after tool provisioning."
+exact_blocker = "Bridge retry exited 101 after the full root-crate loop because no target-loadable rustc_hir, rustc_middle, rustc_mir_build, rustc_session, or rustc_span artifacts exist in `third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib`. Commands `python x.py build compiler/{rustc_span,rustc_session,rustc_hir,rustc_middle,rustc_mir_build} --stage 1 --target wasm32-wasip1 -v` all exited 0 but invoked Cargo with `--target x86_64-pc-windows-msvc` and landed under stage1-rustc. The discovered route `python x.py build compiler/<root> --stage 2 --host wasm32-wasip1 -v` was attempted for all five roots after provisioning Ninja, CMake, CI LLVM config, WASI SDK, and explicit .exe clang/linker paths; all exited 1 while building LLVM for wasm32-wasip1 with `fatal error: 'machine/endian.h' file not found`. No host rlib is relabeled as Wasm, and no TyCtxt, Providers, Body<'tcx>, MIR, Wasm component, static link success, or loadable payload is fabricated."
+next_command = "Use fallback architecture `direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm`; retry the MIR bridge only after real target-loadable rustc-private root artifacts exist."
 
 [[bridge.commands_attempted]]
 command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 --target wasm32-wasip1 -v"
@@ -145,6 +152,20 @@ classification = "xpy_stage2_host_wasm_requires_ninja"
 evidence = "The discovered wasm-host compiler route advanced past the stage1 target-pack step but exited before rustc_span wasm emission with `Couldn't find required command: ninja (or ninja-build)`."
 
 [[bridge.commands_attempted]]
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+evidence = "After repo-local Ninja, repo-local CMake, [llvm].download-ci-llvm=true, WASI SDK 33.0, and explicit WASI .exe tool paths were provisioned, the route configured LLVM for wasm32-wasip1 and failed during Ninja compilation of LLVM Support because llvm/include/llvm/ADT/bit.h includes missing `machine/endian.h`."
+
+[[bridge.commands_attempted]]
+command = "python x.py build compiler/{rustc_session,rustc_hir,rustc_middle,rustc_mir_build} --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_root_closure_blocked_at_same_llvm_wasm32_wasip1_machine_endian_header_missing"
+evidence = "The remaining four root crates were attempted through the same stage2 wasm-host route and exited 1 before root artifact emission at the same LLVM-for-wasm32-wasip1 build boundary. No target-loadable root rustc-private artifact was produced."
+
+[[bridge.commands_attempted]]
 command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
 workdir = "third_party/rust"
 exit_code = 101
@@ -155,8 +176,8 @@ evidence = "After the full root-crate loop, the bridge still emitted error[E0463
 role = "wasm_abi_shim"
 artifact_format = "wasm_module"
 path = "target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm"
-sha256 = "c6c4137b52f718bce4aaced57545e48125468abdc94c239c52aa67250e38a16f"
-size_bytes = 1364
+sha256 = "bf5375de1072cf57fcff6baad1e9e373862e58273b1ad5c19e9fe4dcf796d51a"
+size_bytes = 1371
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = false
 
@@ -203,7 +224,7 @@ core_available = true
 alloc_available = true
 rustc_private_manifest_path = "bootstrap/rustc-private-target-pack.toml"
 rustc_private_status = "blocked"
-rustc_private_milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+rustc_private_milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
 blocker_kind = "none"
 exact_blocker = "No target-pack blocker remains: WASI SDK 33.0 was provisioned by bootstrap/provision-wasi-sdk.ps1, bootstrap.toml has [target.wasm32-wasip1].wasi-root, and `python x.py build library/std --stage 1 --target wasm32-wasip1 -v` exited 0 with core, alloc, and std artifacts produced."
 next_command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
@@ -247,8 +268,8 @@ artifact_format = "wasm_module"
 command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release"
 attempted = true
 status = "attempted_blocked"
-blocker_kind = "rustc_private_target_crate_route_blocked_missing_ninja"
-exact_blocker = "The selected wasm32-wasip1 route emits a thin rouwdi compiler-payload ABI shim at target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. Target-pack provisioning succeeds. The full root rustc-private root loop was attempted; x.py's `--target wasm32-wasip1` route emitted host artifacts only, and the discovered stage2 wasm-host route is blocked by missing Ninja before rustc_span Wasm emission."
+blocker_kind = "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
+exact_blocker = "The selected wasm32-wasip1 route emits a thin rouwdi compiler-payload ABI shim at target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. Target-pack provisioning succeeds. The full root rustc-private root loop was attempted; x.py's `--target wasm32-wasip1` route emitted host artifacts only, and the discovered stage2 wasm-host route was attempted for all five root crates after tool provisioning but blocked inside LLVM-for-wasm32-wasip1 C++ compilation at missing `machine/endian.h` before root artifact emission."
 
 [[loadable_export_routes]]
 route = "wasm32_wasip2_component"

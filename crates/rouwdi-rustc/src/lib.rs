@@ -3951,12 +3951,12 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
@@ -4017,19 +4017,19 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "attempted_blocked");
         assert_eq!(
             bridge_attempt.blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         assert_eq!(bridge_attempt.command_exit_code, Some(101));
         assert!(bridge_attempt.exact_blocker.contains("rustc_middle"));
@@ -4078,7 +4078,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

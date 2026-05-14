@@ -150,11 +150,11 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("rustc_private_target_crate_route_blocked_missing_ninja")
+        Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
     );
     assert_eq!(
         mir_handoff.payload_milestone_state.as_deref(),
-        Some("rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja")
+        Some("stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing")
     );
     let target_pack = mir_handoff.payload_target_pack.as_ref().unwrap();
     assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -191,13 +191,13 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(mir_handoff.payload_abi_route_attempted, Some(true));
     assert_eq!(
         mir_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-        Some("rustc_private_target_crate_route_blocked_missing_ninja")
+        Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
     );
     let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
     assert_eq!(bridge_attempt.status, "attempted_blocked");
     assert_eq!(
         bridge_attempt.blocker_kind,
-        "rustc_private_target_crate_route_blocked_missing_ninja"
+        "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
     );
     assert_eq!(bridge_attempt.command_exit_code, Some(101));
     assert!(bridge_attempt

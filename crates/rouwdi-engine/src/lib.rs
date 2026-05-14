@@ -944,12 +944,12 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
@@ -965,7 +965,7 @@ version = "0.1.0"
         assert_eq!(bridge_attempt.status, "attempted_blocked");
         assert_eq!(
             bridge_attempt.blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         assert_eq!(
             manifest.compiler_pipeline[0]

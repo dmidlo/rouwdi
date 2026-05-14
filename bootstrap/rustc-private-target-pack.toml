@@ -2,9 +2,10 @@ schema_version = 1
 target_triple = "wasm32-wasip1"
 host_triple = "x86_64-pc-windows-msvc"
 status = "blocked"
-milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
-exact_blocker = "All five required root rustc-private crates were attempted with `python x.py build compiler/<crate> --stage 1 --target wasm32-wasip1 -v`. Each command exited 0, but bootstrap invoked Cargo with `--target x86_64-pc-windows-msvc` and emitted host compiler artifacts under stage1-rustc, not target-loadable wasm32-wasip1 artifacts. The wasm32-wasip1 target sysroot still contains zero rustc-private rlibs/rmetas. The discovered wasm-host compiler route is `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v`, but it currently exits 1 before rustc_span emission because Ninja is missing while bootstrap enters LLVM work. The bridge retry after these attempts still exits 101 with E0463 for rustc_hir, rustc_middle, rustc_mir_build, rustc_session, and rustc_span."
-next_command = "Provision repo-local Ninja or configure bootstrap to reuse downloadable CI LLVM for the stage2 wasm-host route, then rerun `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v` before retrying the full root closure."
+milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+route_decision = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+exact_blocker = "Ninja 1.13.2 and CMake 4.3.2 were provisioned repo-locally, bootstrap.toml was updated with [llvm].download-ci-llvm=true, [llvm].ninja=true, [target.wasm32-wasip1].wasi-root, and explicit WASI SDK cc/cxx/ar/ranlib/linker .exe paths. The discovered stage2 wasm-host route was then rerun for rustc_span, rustc_session, rustc_hir, rustc_middle, and rustc_mir_build with `python x.py build compiler/<crate> --stage 2 --host wasm32-wasip1 -v`. Every root exited 1 before root rustc-private artifact emission while bootstrap attempted `Building LLVM for wasm32-wasip1`; Ninja invoked the WASI C++ compiler and LLVM Support failed on `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h. rustc_mir_build also exposed LLVM Support FileSystem status API compile errors under the same wasm32-wasip1 LLVM build. No target-loadable rustc_span, rustc_session, rustc_hir, rustc_middle, or rustc_mir_build rlib/rmeta was produced."
+next_command = "Switch to fallback architecture `direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm`; do not retry the MIR bridge until real target-loadable rustc-private root artifacts exist."
 
 [dependency_closure]
 metadata_command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe metadata --format-version 1 --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml"
@@ -210,20 +211,31 @@ crates = [
 ]
 
 [target_loadable_resolution]
-selected_strategy = "none_available_yet"
+selected_strategy = "fallback_selected_direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
 rejected_strategies = [
   "building_with_xpy_target: produced host compiler artifacts, not wasm32-wasip1 target artifacts",
   "passing_explicit_extern_host_paths: rejected because host x86_64-pc-windows-msvc rlibs are not target-loadable Wasm",
   "copying_host_artifacts_to_target_pack: forbidden because no command proved target compatibility",
   "direct_cargo_stage1_rustc: failed before rustc_span because build-script dependencies could not find host core/std in the stage1 sysroot",
   "xpy_stage1_host_wasm32_wasip1: rejected by bootstrap because stage0 cannot build wasm32-wasip1 std for a wasm host compiler",
-  "xpy_stage2_host_wasm32_wasip1: currently blocked before rustc_span emission by missing Ninja/LLVM work",
+  "xpy_stage2_host_wasm32_wasip1: blocked after repo-local Ninja/CMake/WASI tool paths by LLVM-for-wasm32-wasip1 C++ compilation against a WASI sysroot missing machine/endian.h",
 ]
 target_sysroot_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
 target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
 target_rustc_private_artifact_count = 0
 host_artifact_dir = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
-exact_blocker = "No target-loadable rustc-private sysroot or rouwdi compiler-private target-pack exists yet. The only produced root-crate artifacts are host compiler rlibs/rmetas under stage1-rustc. They must not be passed as wasm32-wasip1 --extern inputs or copied into the wasm target pack."
+exact_blocker = "No target-loadable rustc-private sysroot or rouwdi compiler-private target-pack exists yet. The stage1 `--target wasm32-wasip1` route produced host compiler rlibs/rmetas only. The stage2 `--host wasm32-wasip1` route was attempted for all five root crates after provisioning Ninja, CMake, CI LLVM config, WASI SDK, and explicit linker/clang paths, but it blocked inside the LLVM-for-wasm32-wasip1 build before root crate Cargo emission. Host artifacts must not be passed as wasm32-wasip1 --extern inputs or copied into the wasm target pack."
+
+[fallback_architecture]
+selected = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
+status = "selected"
+reason = "The stage2 wasm-host route tries to build an LLVM host library for wasm32-wasip1 and is blocked by LLVM C++ portability against the WASI sysroot before rustc-private crates are emitted. The next route must avoid building a full wasm-host rustc and instead construct only the rustc-private root closure required by the MIR adapter as a target pack."
+must_not_do = [
+  "relabel host x86_64-pc-windows-msvc rlibs as wasm32-wasip1",
+  "copy host rustc-private artifacts into the wasm target pack",
+  "retry the MIR bridge without real target-loadable rustc-private root artifacts",
+]
+next_manifest = "bootstrap/compiler-payload-abi.toml"
 
 [[root_crates]]
 name = "rustc_span"
@@ -320,6 +332,86 @@ target_loadable = false
 exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_mir_build} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_mir_build artifact landed in the wasm32-wasip1 target libdir."
 next_command = "python x.py build compiler/rustc_mir_build --stage 2 --host wasm32-wasip1 -v after the rustc_span wasm-host route is unblocked"
 
+[[stage2_wasm_host_root_crates]]
+name = "rustc_span"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+cargo_targeted_wasm32_wasip1_before_blocker = true
+root_crate_cargo_targeted_wasm32_wasip1 = false
+target_loadable = false
+artifact_format = "none"
+artifact_path = ""
+sha256 = ""
+size_bytes = 0
+log_path = ".rouwdi/runs/stage2-wasm-host/rustc_span-stage2-host-wasm32-wasip1-after-wasi-exe-paths.log"
+exact_blocker = "The route rebuilt/restored the stage1 compiler, rebuilt wasm32-wasip1 std, entered `Building LLVM for wasm32-wasip1`, configured CMake with repo-local Ninja/CMake/WASI clang paths, then failed under Ninja because llvm/include/llvm/ADT/bit.h includes missing `machine/endian.h` in the WASI sysroot before rustc_span root artifact emission."
+
+[[stage2_wasm_host_root_crates]]
+name = "rustc_session"
+command = "python x.py build compiler/rustc_session --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+cargo_targeted_wasm32_wasip1_before_blocker = true
+root_crate_cargo_targeted_wasm32_wasip1 = false
+target_loadable = false
+artifact_format = "none"
+artifact_path = ""
+sha256 = ""
+size_bytes = 0
+log_path = ".rouwdi/runs/stage2-wasm-host/rustc_session-stage2-host-wasm32-wasip1.log"
+exact_blocker = "The root attempt reached the same LLVM-for-wasm32-wasip1 build step and failed before rustc_session Cargo root emission with `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h."
+
+[[stage2_wasm_host_root_crates]]
+name = "rustc_hir"
+command = "python x.py build compiler/rustc_hir --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+cargo_targeted_wasm32_wasip1_before_blocker = true
+root_crate_cargo_targeted_wasm32_wasip1 = false
+target_loadable = false
+artifact_format = "none"
+artifact_path = ""
+sha256 = ""
+size_bytes = 0
+log_path = ".rouwdi/runs/stage2-wasm-host/rustc_hir-stage2-host-wasm32-wasip1.log"
+exact_blocker = "The root attempt reached the same LLVM-for-wasm32-wasip1 build step and failed before rustc_hir Cargo root emission with `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h."
+
+[[stage2_wasm_host_root_crates]]
+name = "rustc_middle"
+command = "python x.py build compiler/rustc_middle --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+cargo_targeted_wasm32_wasip1_before_blocker = true
+root_crate_cargo_targeted_wasm32_wasip1 = false
+target_loadable = false
+artifact_format = "none"
+artifact_path = ""
+sha256 = ""
+size_bytes = 0
+log_path = ".rouwdi/runs/stage2-wasm-host/rustc_middle-stage2-host-wasm32-wasip1.log"
+exact_blocker = "The root attempt reached the same LLVM-for-wasm32-wasip1 build step and failed before rustc_middle Cargo root emission with `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h."
+
+[[stage2_wasm_host_root_crates]]
+name = "rustc_mir_build"
+command = "python x.py build compiler/rustc_mir_build --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+cargo_targeted_wasm32_wasip1_before_blocker = true
+root_crate_cargo_targeted_wasm32_wasip1 = false
+target_loadable = false
+artifact_format = "none"
+artifact_path = ""
+sha256 = ""
+size_bytes = 0
+log_path = ".rouwdi/runs/stage2-wasm-host/rustc_mir_build-stage2-host-wasm32-wasip1.log"
+exact_blocker = "The root attempt reached the same LLVM-for-wasm32-wasip1 build step and failed before rustc_mir_build Cargo root emission. The log includes `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h and additional LLVM Support FileSystem compile errors while building with the WASI C++ compiler."
+
 [[route_discovery_attempts]]
 name = "direct_cargo_stage1_rustc_span_target_wasm32_wasip1"
 command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml -p rustc_span --target wasm32-wasip1 --release --message-format short"
@@ -344,6 +436,30 @@ exit_code = 1
 classification = "xpy_stage2_host_wasm_requires_ninja"
 evidence = "bootstrap advanced into the stage2 wasm-host route, rebuilt/restored stage1 compiler and wasm32-wasip1 std work, then exited before rustc_span wasm emission with `Couldn't find required command: ninja (or ninja-build)` while entering LLVM work."
 
+[[route_discovery_attempts]]
+name = "xpy_stage2_host_wasm32_wasip1_rustc_span_after_repo_local_ninja"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_requires_cmake_for_llvm_wasm"
+evidence = "With repo-local Ninja 1.13.2 on PATH and [llvm].download-ci-llvm=true, bootstrap entered `Building LLVM for wasm32-wasip1` and failed because `cmake` was not installed."
+
+[[route_discovery_attempts]]
+name = "xpy_stage2_host_wasm32_wasip1_rustc_span_after_repo_local_cmake"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_requires_explicit_wasi_clang_exe_paths"
+evidence = "With repo-local CMake 4.3.2 on PATH, CMake started but rejected bootstrap's extensionless `wasm32-wasip1-clang` and `wasm32-wasip1-clang++` paths on Windows. bootstrap.toml was updated with explicit .exe cc/cxx/ar/ranlib/linker paths."
+
+[[route_discovery_attempts]]
+name = "xpy_stage2_host_wasm32_wasip1_rustc_span_after_wasi_exe_paths"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+evidence = "With repo-local Ninja, repo-local CMake, [llvm].download-ci-llvm=true, WASI SDK 33.0, and explicit WASI .exe tool paths, the route configured LLVM for wasm32-wasip1 and failed during Ninja compilation of LLVM Support: llvm/include/llvm/ADT/bit.h includes missing `machine/endian.h` from the WASI sysroot before rustc_span root artifact emission."
+
 [bridge_retry]
 command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
 workdir = "third_party/rust"
@@ -357,4 +473,16 @@ missing_crates = [
   "rustc_mir_build",
   "rustc_session",
   "rustc_span",
+]
+
+[bridge_retry_after_stage2_wasm_host]
+attempted = false
+classification = "not_retried_no_real_target_loadable_rustc_private_artifacts"
+reason = "The stage2 wasm-host root closure produced no target-loadable rustc_span, rustc_session, rustc_hir, rustc_middle, or rustc_mir_build artifact. Retrying the real rouwdi-mir-adapter-probe bridge would only replay the previous E0463 failure and would violate the rule that bridge retry occurs only when real target-loadable artifacts exist."
+required_before_retry = [
+  "target-loadable rustc_span artifact",
+  "target-loadable rustc_session artifact",
+  "target-loadable rustc_hir artifact",
+  "target-loadable rustc_middle artifact",
+  "target-loadable rustc_mir_build artifact",
 ]

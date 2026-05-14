@@ -1,0 +1,112 @@
+schema_version = 1
+milestone = "stage2_wasm_host_rustc_private_payload_route"
+recorded_by = "bootstrap/provision-stage2-wasm-host-tooling.ps1"
+
+[stage2_wasm_host_route]
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+bootstrap_config = "third_party\\rust\\bootstrap.toml"
+bootstrap_config_download_ci_llvm = true
+bootstrap_config_llvm_ninja = true
+bootstrap_config_wasm32_wasip1_wasi_root = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\share\\wasi-sysroot"
+bootstrap_config_wasm32_wasip1_cc = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\wasm32-wasip1-clang.exe"
+bootstrap_config_wasm32_wasip1_cxx = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\wasm32-wasip1-clang++.exe"
+bootstrap_config_wasm32_wasip1_ar = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\llvm-ar.exe"
+bootstrap_config_wasm32_wasip1_ranlib = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\llvm-ranlib.exe"
+bootstrap_config_wasm32_wasip1_linker = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\wasm32-wasip1-clang.exe"
+path_prefix = ".rouwdi\\tools\\ninja\\ninja-1.13.2-win"
+decision = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+
+[tools.ninja]
+required = true
+status = "ready"
+source = "repo_local_existing"
+version = "1.13.2"
+path = ".rouwdi\\tools\\ninja\\ninja-1.13.2-win\\ninja.exe"
+archive = ".rouwdi\\tool-cache\\ninja\\ninja-win-1.13.2.zip"
+archive_url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip"
+archive_sha256 = "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65"
+
+[tools.cmake]
+required = true
+required_because = "The stage2 wasm-host route entered LLVM-for-wasm32-wasip1 CMake configuration after Ninja was provisioned."
+status = "ready"
+source = "repo_local_existing"
+version = "4.3.2"
+path = ".rouwdi\\tools\\cmake\\cmake-4.3.2-windows-x86_64\\bin\\cmake.exe"
+archive = ".rouwdi\\tool-cache\\cmake\\cmake-4.3.2-windows-x86_64.zip"
+archive_url = "https://github.com/Kitware/CMake/releases/download/v4.3.2/cmake-4.3.2-windows-x86_64.zip"
+archive_sha256 = "83d20c23f5c5f64b3b328785e35b23c532e33057a97ed6294acaca3781b78a01"
+detected_on_path = true
+detected_path = "C:\\rouwdi\\.rouwdi\\tools\\cmake\\cmake-4.3.2-windows-x86_64\\bin\\cmake.exe"
+detected_version = "cmake version 4.3.2"
+
+[tools.llvm]
+download_ci_llvm_configured = true
+llvm_tools_found = true
+wasm_ld_found = true
+wasm_ld_path = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\wasm-ld.exe"
+wasm_ld_version = "LLD 22.1.0 (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)"
+lld_link_found = true
+lld_link_path = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\lld-link.exe"
+lld_link_version = "LLD 22.1.0 (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)"
+
+[tools.clang]
+clang_found = true
+clang_path = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\clang.exe"
+clang_version = "clang version 22.1.0 (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)"
+clang_cl_found = true
+clang_cl_path = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\clang-cl.exe"
+clang_cl_version = "clang version 22.1.0 (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)"
+
+[tools.python]
+required = true
+found = true
+path = "C:\\Python314\\python.exe"
+version = "Python 3.14.5"
+
+[tools.fetch_extract]
+curl_found = true
+curl_path = "C:\\windows\\system32\\curl.exe"
+curl_version = "curl 8.19.0 (Windows) libcurl/8.19.0 Schannel zlib/1.3.1 WinIDN WinLDAP"
+tar_found = true
+tar_path = "C:\\windows\\system32\\tar.exe"
+tar_version = "bsdtar 3.8.4 - libarchive 3.8.4 zlib/1.2.13.1-motley liblzma/5.8.1 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled "
+
+[tools.wasi_sdk]
+required = true
+status = "ready"
+root = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows"
+wasi_root = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\share\\wasi-sysroot"
+clang = "C:\\rouwdi\\.rouwdi\\tools\\wasi-sdk\\wasi-sdk-33.0-x86_64-windows\\bin\\wasm32-wasip1-clang.exe"
+
+[[commands]]
+name = "provision_stage2_wasm_host_tooling"
+command = "powershell -ExecutionPolicy Bypass -File bootstrap/provision-stage2-wasm-host-tooling.ps1"
+exit_code = 0
+classification = "tooling_provisioned"
+evidence = "Repo-local Ninja 1.13.2 is present, bootstrap.toml has [llvm].download-ci-llvm=true, [llvm].ninja=true, and [target.wasm32-wasip1].wasi-root."
+
+[[commands]]
+name = "stage2_wasm_host_route_after_ninja"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_requires_cmake_for_llvm_wasm"
+evidence = "After repo-local Ninja was on PATH, bootstrap reached Building LLVM for wasm32-wasip1 and failed at cmake program-not-found. This makes CMake a required route tool unless the LLVM-for-wasm host step is redesigned away."
+
+[[commands]]
+name = "stage2_wasm_host_route_after_cmake"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_requires_explicit_wasi_clang_exe_paths"
+evidence = "After repo-local CMake was on PATH, CMake started but rejected bootstrap's extensionless wasm32-wasip1-clang and wasm32-wasip1-clang++ paths on Windows. The generated bootstrap.toml now records explicit .exe cc/cxx/ar/ranlib/linker entries."
+
+[[commands]]
+name = "stage2_wasm_host_route_after_wasi_exe_paths"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+evidence = "With repo-local Ninja, repo-local CMake, [llvm].download-ci-llvm=true, WASI SDK 33.0, and explicit WASI .exe tool paths, the route configured LLVM for wasm32-wasip1 and failed during Ninja compilation of LLVM Support: llvm/include/llvm/ADT/bit.h includes missing `machine/endian.h` from the WASI sysroot before rustc_span root artifact emission."

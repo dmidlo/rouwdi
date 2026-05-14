@@ -13,6 +13,7 @@ pub const MIR_PAYLOAD_EXPORT_MANIFEST_PATH: &str = "bootstrap/mir-payload-export
 pub const COMPILER_PAYLOAD_ABI_MANIFEST_PATH: &str = "bootstrap/compiler-payload-abi.toml";
 pub const RUSTC_PRIVATE_TARGET_PACK_MANIFEST_PATH: &str =
     "bootstrap/rustc-private-target-pack.toml";
+pub const STAGE2_WASM_HOST_TOOLING_MANIFEST_PATH: &str = "bootstrap/tooling.toml";
 pub const COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_version";
 pub const COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_stage";
 pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL: &str =
@@ -28,6 +29,8 @@ const COMPILER_PAYLOAD_ABI_MANIFEST_TOML: &str =
     include_str!("../../../bootstrap/compiler-payload-abi.toml");
 const RUSTC_PRIVATE_TARGET_PACK_MANIFEST_TOML: &str =
     include_str!("../../../bootstrap/rustc-private-target-pack.toml");
+const STAGE2_WASM_HOST_TOOLING_MANIFEST_TOML: &str =
+    include_str!("../../../bootstrap/tooling.toml");
 
 macro_rules! count_error_codes {
     ($($code:tt,)*) => {
@@ -455,15 +458,23 @@ pub struct RustcPrivateTargetPackManifest {
     pub host_triple: String,
     pub status: String,
     pub milestone_state: String,
+    #[serde(default)]
+    pub route_decision: Option<String>,
     pub exact_blocker: String,
     pub next_command: String,
     pub dependency_closure: RustcPrivateDependencyClosure,
     pub target_loadable_resolution: RustcPrivateTargetLoadableResolution,
     #[serde(default)]
+    pub fallback_architecture: Option<RustcPrivateFallbackArchitecture>,
+    #[serde(default)]
     pub root_crates: Vec<RustcPrivateRootCrateAttempt>,
+    #[serde(default)]
+    pub stage2_wasm_host_root_crates: Vec<RustcPrivateStage2WasmHostRootCrateAttempt>,
     #[serde(default)]
     pub route_discovery_attempts: Vec<RustcPrivateRouteDiscoveryAttempt>,
     pub bridge_retry: RustcPrivateBridgeRetry,
+    #[serde(default)]
+    pub bridge_retry_after_stage2_wasm_host: Option<RustcPrivateBridgeRetryGate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -501,6 +512,43 @@ pub struct RustcPrivateRootCrateAttempt {
     pub target_loadable: bool,
     pub exact_blocker: String,
     pub next_command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateStage2WasmHostRootCrateAttempt {
+    pub name: String,
+    pub command: String,
+    pub workdir: String,
+    pub exit_code: i32,
+    pub classification: String,
+    pub cargo_targeted_wasm32_wasip1_before_blocker: bool,
+    pub root_crate_cargo_targeted_wasm32_wasip1: bool,
+    pub target_loadable: bool,
+    pub artifact_format: String,
+    pub artifact_path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub log_path: String,
+    pub exact_blocker: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateFallbackArchitecture {
+    pub selected: String,
+    pub status: String,
+    pub reason: String,
+    #[serde(default)]
+    pub must_not_do: Vec<String>,
+    pub next_manifest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateBridgeRetryGate {
+    pub attempted: bool,
+    pub classification: String,
+    pub reason: String,
+    #[serde(default)]
+    pub required_before_retry: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -812,6 +860,133 @@ pub struct CompilerPayloadLoaderInspection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2WasmHostToolingManifest {
+    pub schema_version: u32,
+    pub milestone: String,
+    pub recorded_by: String,
+    pub stage2_wasm_host_route: Stage2WasmHostRouteTooling,
+    pub tools: Stage2WasmHostTools,
+    #[serde(default)]
+    pub commands: Vec<Stage2WasmHostToolingCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2WasmHostRouteTooling {
+    pub command: String,
+    pub workdir: String,
+    pub bootstrap_config: String,
+    pub bootstrap_config_download_ci_llvm: bool,
+    pub bootstrap_config_llvm_ninja: bool,
+    pub bootstrap_config_wasm32_wasip1_wasi_root: String,
+    pub bootstrap_config_wasm32_wasip1_cc: String,
+    pub bootstrap_config_wasm32_wasip1_cxx: String,
+    pub bootstrap_config_wasm32_wasip1_ar: String,
+    pub bootstrap_config_wasm32_wasip1_ranlib: String,
+    pub bootstrap_config_wasm32_wasip1_linker: String,
+    pub path_prefix: String,
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2WasmHostTools {
+    pub ninja: Stage2ToolRecord,
+    pub cmake: Stage2CMakeToolRecord,
+    pub llvm: Stage2LlvmToolRecord,
+    pub clang: Stage2ClangToolRecord,
+    pub python: Stage2PythonToolRecord,
+    pub fetch_extract: Stage2FetchExtractToolRecord,
+    pub wasi_sdk: Stage2WasiSdkToolRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2ToolRecord {
+    pub required: bool,
+    pub status: String,
+    pub source: String,
+    pub version: String,
+    pub path: String,
+    pub archive: String,
+    pub archive_url: String,
+    pub archive_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2CMakeToolRecord {
+    pub required: bool,
+    pub required_because: String,
+    pub status: String,
+    pub source: String,
+    pub version: String,
+    pub path: String,
+    pub archive: String,
+    pub archive_url: String,
+    pub archive_sha256: String,
+    pub detected_on_path: bool,
+    pub detected_path: String,
+    pub detected_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2LlvmToolRecord {
+    pub download_ci_llvm_configured: bool,
+    pub llvm_tools_found: bool,
+    pub wasm_ld_found: bool,
+    pub wasm_ld_path: String,
+    pub wasm_ld_version: String,
+    pub lld_link_found: bool,
+    pub lld_link_path: String,
+    pub lld_link_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2ClangToolRecord {
+    pub clang_found: bool,
+    pub clang_path: String,
+    pub clang_version: String,
+    pub clang_cl_found: bool,
+    pub clang_cl_path: String,
+    pub clang_cl_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2PythonToolRecord {
+    pub required: bool,
+    pub found: bool,
+    pub path: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2FetchExtractToolRecord {
+    pub curl_found: bool,
+    pub curl_path: String,
+    pub curl_version: String,
+    pub tar_found: bool,
+    pub tar_path: String,
+    pub tar_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2WasiSdkToolRecord {
+    pub required: bool,
+    pub status: String,
+    pub root: String,
+    pub wasi_root: String,
+    pub clang: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage2WasmHostToolingCommand {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub workdir: Option<String>,
+    pub exit_code: i32,
+    pub classification: String,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirHandoffPayloadAdapter {
     pub adapter_symbol: String,
     pub status: MirHandoffPayloadAdapterStatus,
@@ -1120,6 +1295,11 @@ pub fn compiler_payload_abi_manifest() -> CompilerPayloadAbiManifest {
 pub fn rustc_private_target_pack_manifest() -> RustcPrivateTargetPackManifest {
     toml::from_str(RUSTC_PRIVATE_TARGET_PACK_MANIFEST_TOML)
         .expect("bootstrap/rustc-private-target-pack.toml must remain valid")
+}
+
+pub fn stage2_wasm_host_tooling_manifest() -> Stage2WasmHostToolingManifest {
+    toml::from_str(STAGE2_WASM_HOST_TOOLING_MANIFEST_TOML)
+        .expect("bootstrap/tooling.toml must remain valid")
 }
 
 pub fn compiler_payload_abi_manifest_identity() -> CompilerPayloadManifestIdentity {
@@ -2212,12 +2392,12 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
@@ -2334,12 +2514,12 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         assert!(carrier
@@ -2415,12 +2595,12 @@ mod tests {
         assert_eq!(abi.bridge_status, "attempted_blocked");
         assert_eq!(
             abi.bridge_blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         assert_eq!(
             abi.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
@@ -2446,7 +2626,7 @@ mod tests {
         assert_eq!(bridge.status, "attempted_blocked");
         assert_eq!(
             bridge.blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         assert!(bridge
             .input_artifact_identities
@@ -2471,7 +2651,7 @@ mod tests {
         assert_eq!(manifest.status, "blocked");
         assert_eq!(
             manifest.milestone_state,
-            "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
         );
         assert_eq!(manifest.dependency_closure.metadata_exit_code, 0);
         for root in [
@@ -2513,16 +2693,62 @@ mod tests {
         );
         assert_eq!(
             manifest.target_loadable_resolution.selected_strategy,
-            "none_available_yet"
+            "fallback_selected_direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
         );
         assert!(manifest
             .target_loadable_resolution
             .exact_blocker
             .contains("must not be passed as wasm32-wasip1 --extern"));
+        assert_eq!(
+            manifest.route_decision.as_deref(),
+            Some("stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing")
+        );
+        let fallback = manifest.fallback_architecture.as_ref().unwrap();
+        assert_eq!(
+            fallback.selected,
+            "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
+        );
+        assert!(fallback
+            .must_not_do
+            .iter()
+            .any(|item| item.contains("relabel host")));
+        let stage2_roots = manifest
+            .stage2_wasm_host_root_crates
+            .iter()
+            .map(|attempt| attempt.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            stage2_roots,
+            std::collections::BTreeSet::from([
+                "rustc_hir",
+                "rustc_middle",
+                "rustc_mir_build",
+                "rustc_session",
+                "rustc_span"
+            ])
+        );
+        assert!(manifest.stage2_wasm_host_root_crates.iter().all(|attempt| {
+            attempt.exit_code == 1
+                && attempt.classification
+                    == "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+                && attempt.cargo_targeted_wasm32_wasip1_before_blocker
+                && !attempt.root_crate_cargo_targeted_wasm32_wasip1
+                && !attempt.target_loadable
+                && attempt.artifact_path.is_empty()
+                && attempt.sha256.is_empty()
+                && attempt.size_bytes == 0
+                && attempt.exact_blocker.contains("machine/endian.h")
+        }));
         assert!(manifest.route_discovery_attempts.iter().any(|attempt| {
             attempt.classification == "xpy_stage2_host_wasm_requires_ninja"
                 && attempt.exit_code == 1
                 && attempt.evidence.contains("ninja")
+        }));
+        assert!(manifest.route_discovery_attempts.iter().any(|attempt| {
+            attempt.classification
+                == "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+                && attempt.exit_code == 1
+                && attempt.evidence.contains("machine/endian.h")
         }));
         assert!(manifest.bridge_retry.after_root_crate_attempts);
         assert_eq!(manifest.bridge_retry.exit_code, 101);
@@ -2531,6 +2757,83 @@ mod tests {
             .bridge_retry
             .missing_crates
             .contains(&"rustc_middle".to_owned()));
+        let bridge_gate = manifest
+            .bridge_retry_after_stage2_wasm_host
+            .as_ref()
+            .unwrap();
+        assert!(!bridge_gate.attempted);
+        assert_eq!(
+            bridge_gate.classification,
+            "not_retried_no_real_target_loadable_rustc_private_artifacts"
+        );
+        assert!(bridge_gate
+            .required_before_retry
+            .iter()
+            .any(|item| item.contains("rustc_middle")));
+    }
+
+    #[test]
+    fn stage2_wasm_host_tooling_manifest_records_provisioned_tools_and_route_blocker() {
+        let tooling = stage2_wasm_host_tooling_manifest();
+
+        assert_eq!(tooling.schema_version, 1);
+        assert_eq!(
+            tooling.recorded_by,
+            "bootstrap/provision-stage2-wasm-host-tooling.ps1"
+        );
+        assert_eq!(
+            tooling.stage2_wasm_host_route.decision,
+            "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+        );
+        assert!(
+            tooling
+                .stage2_wasm_host_route
+                .bootstrap_config_download_ci_llvm
+        );
+        assert!(tooling.stage2_wasm_host_route.bootstrap_config_llvm_ninja);
+        assert!(tooling
+            .stage2_wasm_host_route
+            .bootstrap_config_wasm32_wasip1_cc
+            .ends_with("wasm32-wasip1-clang.exe"));
+        assert!(tooling
+            .stage2_wasm_host_route
+            .bootstrap_config_wasm32_wasip1_cxx
+            .ends_with("wasm32-wasip1-clang++.exe"));
+        assert!(tooling.tools.ninja.required);
+        assert_eq!(tooling.tools.ninja.status, "ready");
+        assert_eq!(tooling.tools.ninja.version, "1.13.2");
+        assert_eq!(
+            tooling.tools.ninja.archive_sha256,
+            "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65"
+        );
+        assert!(tooling.tools.cmake.required);
+        assert_eq!(tooling.tools.cmake.status, "ready");
+        assert_eq!(tooling.tools.cmake.version, "4.3.2");
+        assert_eq!(
+            tooling.tools.cmake.archive_sha256,
+            "83d20c23f5c5f64b3b328785e35b23c532e33057a97ed6294acaca3781b78a01"
+        );
+        assert!(tooling.tools.llvm.download_ci_llvm_configured);
+        assert!(tooling.tools.llvm.wasm_ld_found);
+        assert!(tooling.tools.wasi_sdk.required);
+        assert_eq!(tooling.tools.wasi_sdk.status, "ready");
+        assert!(tooling.commands.iter().any(|command| {
+            command.classification == "tooling_provisioned" && command.exit_code == 0
+        }));
+        assert!(tooling.commands.iter().any(|command| {
+            command.classification == "stage2_wasm_host_route_requires_cmake_for_llvm_wasm"
+                && command.exit_code == 1
+        }));
+        assert!(tooling.commands.iter().any(|command| {
+            command.classification
+                == "stage2_wasm_host_route_requires_explicit_wasi_clang_exe_paths"
+                && command.exit_code == 1
+        }));
+        assert!(tooling.commands.iter().any(|command| {
+            command.classification
+                == "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+                && command.evidence.contains("machine/endian.h")
+        }));
     }
 
     #[test]
@@ -2581,6 +2884,10 @@ mod tests {
             .known_codes
             .contains(&"bootstrap_target_pack_missing_for_wasm_payload".to_owned()));
         assert!(manifest
+            .error_contract
+            .known_codes
+            .contains(&"llvm_wasm32_wasip1_sysroot_missing_machine_endian".to_owned()));
+        assert!(manifest
             .proof_metadata
             .emitted_fields
             .contains(&"rustc_private_bridge_status".to_owned()));
@@ -2589,18 +2896,18 @@ mod tests {
         assert_eq!(
             manifest.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         assert_eq!(
             manifest.bridge.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         assert_eq!(
             manifest.bridge.blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -2666,6 +2973,16 @@ mod tests {
                     && command.exit_code == 1
                     && command.evidence.contains("ninja")
             ));
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
+            .any(
+                |command| command.classification
+                    == "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
+                    && command.exit_code == 1
+                    && command.evidence.contains("machine/endian.h")
+            ));
         assert!(manifest.bridge.output_artifact_identity.is_none());
 
         let required_symbols = manifest.required_symbol_names();
@@ -2692,7 +3009,7 @@ mod tests {
         assert_eq!(route.bridge_status, "attempted_blocked");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -2773,7 +3090,7 @@ mod tests {
         assert_eq!(bridge.status, "attempted_blocked");
         assert_eq!(
             bridge.blocker_kind,
-            "rustc_private_target_crate_route_blocked_missing_ninja"
+            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
         );
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -2784,7 +3101,7 @@ mod tests {
         assert_eq!(
             bundle.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         assert!(bridge.output_artifact_identity.is_none());
@@ -2910,12 +3227,12 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_target_crate_route_blocked_missing_ninja")
+            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
         );
         assert_eq!(
             inspection.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
@@ -2967,7 +3284,7 @@ mod tests {
         assert_eq!(
             boundary.milestone_state.as_deref(),
             Some(
-                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
             )
         );
         assert_eq!(
@@ -3026,8 +3343,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind
-                    == "rustc_private_target_crate_route_blocked_missing_ninja"
+                && component.blocker_kind == "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

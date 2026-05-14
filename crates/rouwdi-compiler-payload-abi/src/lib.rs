@@ -13,8 +13,8 @@ pub const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 pub const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 pub const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
 
-const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"shim-only-bridge-attempted-blocked","bridge_blocker":"bootstrap_target_pack_missing_for_wasm_payload"}"#;
-const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: wasm ABI shim is present, rustc-private bridge attempt is blocked by missing wasm32-wasip1 bootstrap target pack";
+const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"shim-only-bridge-attempted-blocked","bridge_blocker":"llvm_wasm32_wasip1_sysroot_missing_machine_endian"}"#;
+const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: wasm ABI shim is present, rustc-private bridge attempt is blocked at LLVM-for-wasm32-wasip1 missing machine/endian.h";
 
 #[no_mangle]
 pub extern "C" fn rouwdi_compiler_payload_abi_v1_version() -> u32 {
@@ -81,6 +81,6 @@ mod tests {
             .contains("bridge-attempted-blocked"));
         assert!(core::str::from_utf8(LAST_ERROR)
             .unwrap()
-            .contains("bootstrap target pack"));
+            .contains("machine/endian.h"));
     }
 }
