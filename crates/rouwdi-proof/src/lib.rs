@@ -2,10 +2,11 @@ use rouwdi_cargo::{
     CargoBuildPlan, CargoFeatureResolution, CargoLockfile, CargoSourceFetchPlan, CargoWorkspace,
 };
 use rouwdi_compiletime::CompileTimePlan;
-use rouwdi_contract::NormalizedContract;
+use rouwdi_contract::{ArtifactKind, NormalizedContract};
 use rouwdi_rustc::{
-    RustBorrowCheckStageRecord, RustCompilerPipelineRecord, RustExpansionStageRecord,
-    RustNameResolutionStageRecord, RustParseStageRecord, RustSourceLexProof,
+    RustBorrowCheckStageRecord, RustCompilerPipelineRecord, RustCompilerStage,
+    RustExpansionStageRecord, RustMirHandoffBlockerCategory, RustMirHandoffRecord,
+    RustMirHandoffStatus, RustNameResolutionStageRecord, RustParseStageRecord, RustSourceLexProof,
     RustTypeCheckStageRecord,
 };
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
@@ -52,6 +53,58 @@ pub struct ArtifactManifestEntry {
     pub path: String,
     pub artifact_kind: String,
     pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactPipelineRecord {
+    pub target_name: String,
+    pub triple: String,
+    pub package: String,
+    pub cargo_target: String,
+    pub cargo_target_kind: String,
+    pub expected_artifact_kind: ArtifactKind,
+    pub expected_output_path: String,
+    pub artifact_emitted: bool,
+    pub compile_units: Vec<ArtifactPipelineCompileUnit>,
+    pub remaining_stages: Vec<ArtifactPipelineStageRecord>,
+    pub blocked_at_stage: Option<RustCompilerStage>,
+    pub blocker_category: Option<RustMirHandoffBlockerCategory>,
+    pub blocker_component: Option<String>,
+    pub blocker_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactPipelineCompileUnit {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub frontend_parse_status: Option<String>,
+    pub frontend_expansion_status: Option<String>,
+    pub frontend_name_resolution_status: Option<String>,
+    pub frontend_type_check_status: Option<String>,
+    pub frontend_borrow_check_status: Option<String>,
+    pub mir_handoff_status: Option<RustMirHandoffStatus>,
+    pub mir_handoff_blocker_component: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactPipelineStageRecord {
+    pub stage: RustCompilerStage,
+    pub required_component: String,
+    pub component_role: String,
+    pub adapter_available: bool,
+    pub status: ArtifactPipelineStageStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactPipelineStageStatus {
+    Blocked,
+    WaitingOnUpstreamMir,
+    Planned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +183,7 @@ pub struct RouwdiRunManifest {
     pub compiler_engine: CompilerEngineIdentity,
     pub target_packs: Vec<TargetPack>,
     pub compiler_pipeline: Vec<RustCompilerPipelineRecord>,
+    pub artifact_pipeline: Vec<ArtifactPipelineRecord>,
     pub artifacts: Vec<ArtifactManifestEntry>,
     pub bootstrap_diagnostics: Vec<BootstrapDiagnostic>,
     pub proof_files: Vec<String>,
@@ -152,6 +206,8 @@ pub struct ProofBundle {
     pub rust_source_name_resolution: Vec<RustNameResolutionStageRecord>,
     pub rust_source_type_check: Vec<RustTypeCheckStageRecord>,
     pub rust_source_borrow_check: Vec<RustBorrowCheckStageRecord>,
+    pub rust_source_mir_handoff: Vec<RustMirHandoffRecord>,
+    pub artifact_pipeline: Vec<ArtifactPipelineRecord>,
     pub cargo_lockfile: Option<CargoLockfile>,
     pub interface_proofs: Vec<ArtifactInterfaceProof>,
     pub runtime_proofs: Vec<RuntimeProof>,
@@ -225,6 +281,14 @@ impl ProofBundle {
             (
                 "graph/rust-source-borrow-check.json",
                 serde_json::to_vec_pretty(&self.rust_source_borrow_check)?,
+            ),
+            (
+                "graph/rust-source-mir-handoff.json",
+                serde_json::to_vec_pretty(&self.rust_source_mir_handoff)?,
+            ),
+            (
+                "graph/artifact-pipeline.json",
+                serde_json::to_vec_pretty(&self.artifact_pipeline)?,
             ),
             (
                 "toolchain/rouwdi-engine.json",
@@ -542,6 +606,7 @@ mod tests {
             compiler_engine: CompilerEngineIdentity::from_embedded_component_inventory(),
             target_packs: Vec::new(),
             compiler_pipeline: Vec::new(),
+            artifact_pipeline: Vec::new(),
             artifacts: Vec::new(),
             bootstrap_diagnostics: Vec::new(),
             proof_files: vec!["run/proofs/hashes.json".to_owned()],

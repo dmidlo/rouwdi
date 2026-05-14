@@ -390,6 +390,81 @@ pub struct RustBorrowCheckStageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustCompileUnitIdentity {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub triple: String,
+    pub profile: String,
+}
+
+impl From<&RustCompileRequest> for RustCompileUnitIdentity {
+    fn from(request: &RustCompileRequest) -> Self {
+        Self {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum RustFrontendStageStatus {
+    Parse {
+        status: RustParseStageStatus,
+    },
+    MacroExpansion {
+        status: RustExpansionStageStatus,
+    },
+    NameResolution {
+        status: RustNameResolutionStageStatus,
+    },
+    TypeChecking {
+        status: RustTypeCheckStageStatus,
+    },
+    BorrowChecking {
+        status: RustBorrowCheckStageStatus,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustMirHandoffStatus {
+    AdapterAvailable,
+    AdapterUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustMirHandoffBlockerCategory {
+    UpstreamCompilerPayloadNotEmbedded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustMirHandoffRecord {
+    pub compile_unit: RustCompileUnitIdentity,
+    pub source_path: String,
+    pub previous_stage_statuses: Vec<RustFrontendStageStatus>,
+    pub stage: RustCompilerStage,
+    pub status: RustMirHandoffStatus,
+    pub intended_upstream_component: String,
+    pub intended_upstream_path: String,
+    pub required_upstream_crates: Vec<String>,
+    pub required_upstream_modules: Vec<String>,
+    pub upstream_mir_adapter_available: bool,
+    pub blocker_category: Option<RustMirHandoffBlockerCategory>,
+    pub blocker_component: Option<String>,
+    pub blocker_component_role: Option<String>,
+    pub blocker_component_path: Option<String>,
+    pub blocker_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCompileRequest {
     pub unit_id: String,
     pub package: String,
@@ -531,6 +606,9 @@ impl MissingRustCompilerStage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RustCompilerPipelineError {
+    MirHandoff {
+        handoff: Box<RustMirHandoffRecord>,
+    },
     MissingStage {
         missing: Box<MissingRustCompilerStage>,
     },
@@ -554,6 +632,15 @@ pub enum RustCompilerPipelineError {
 impl fmt::Display for RustCompilerPipelineError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MirHandoff { handoff } => write!(
+                formatter,
+                "compiler MIR handoff blocked for compile unit {}: {}",
+                handoff.compile_unit.unit_id,
+                handoff
+                    .blocker_reason
+                    .as_deref()
+                    .unwrap_or("upstream MIR adapter is unavailable")
+            ),
             Self::MissingStage { missing } => write!(
                 formatter,
                 "compiler stage {} is missing for {}: {}",
@@ -596,6 +683,7 @@ impl std::error::Error for RustCompilerPipelineError {}
 #[serde(rename_all = "snake_case")]
 pub enum RustCompilerPipelineStatus {
     Artifact,
+    MirHandoffBlocked,
     MissingStage,
     ParseError,
     ExpansionError,
@@ -620,6 +708,7 @@ pub struct RustCompilerPipelineRecord {
     pub name_resolution_stage: Option<RustNameResolutionStageRecord>,
     pub type_check_stage: Option<RustTypeCheckStageRecord>,
     pub borrow_check_stage: Option<RustBorrowCheckStageRecord>,
+    pub mir_handoff: Option<RustMirHandoffRecord>,
     pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
@@ -674,6 +763,11 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "rustc_middle",
             "third_party/rust/compiler/rustc_middle",
             "MIR, query model, and compiler metadata",
+        ),
+        pending_component(
+            "rustc_mir_build",
+            "third_party/rust/compiler/rustc_mir_build",
+            "HIR-to-MIR lowering and MIR construction",
         ),
         pending_component(
             "rustc_monomorphize",
@@ -743,6 +837,15 @@ pub fn run_rust_compiler_pipeline(
                 ),
             })
         }
+        RustCompilerPipelineStatus::MirHandoffBlocked => {
+            Err(RustCompilerPipelineError::MirHandoff {
+                handoff: Box::new(
+                    record
+                        .mir_handoff
+                        .expect("MIR handoff error pipeline record includes MIR handoff record"),
+                ),
+            })
+        }
         RustCompilerPipelineStatus::MissingStage => Err(RustCompilerPipelineError::MissingStage {
             missing: Box::new(
                 record
@@ -775,6 +878,7 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: None,
             type_check_stage: None,
             borrow_check_stage: None,
+            mir_handoff: None,
             missing_stage: None,
         };
     }
@@ -796,6 +900,7 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: None,
             type_check_stage: None,
             borrow_check_stage: None,
+            mir_handoff: None,
             missing_stage: None,
         };
     }
@@ -826,6 +931,7 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: None,
             borrow_check_stage: None,
+            mir_handoff: None,
             missing_stage: None,
         };
     }
@@ -853,6 +959,7 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: Some(type_check_stage),
             borrow_check_stage: None,
+            mir_handoff: None,
             missing_stage: None,
         };
     }
@@ -881,6 +988,36 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: Some(type_check_stage),
             borrow_check_stage: Some(borrow_check_stage),
+            mir_handoff: None,
+            missing_stage: None,
+        };
+    }
+
+    let mir_handoff = handoff_rust_mir_for_compile_unit(
+        request,
+        &parse_stage,
+        &expansion_stage,
+        &name_resolution_stage,
+        &type_check_stage,
+        &borrow_check_stage,
+    );
+    if !mir_handoff.upstream_mir_adapter_available {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::MirHandoffBlocked,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
+            name_resolution_stage: Some(name_resolution_stage),
+            type_check_stage: Some(type_check_stage),
+            borrow_check_stage: Some(borrow_check_stage),
+            mir_handoff: Some(mir_handoff),
             missing_stage: None,
         };
     }
@@ -901,6 +1038,7 @@ pub fn run_rust_compiler_pipeline_record(
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: Some(type_check_stage),
             borrow_check_stage: Some(borrow_check_stage),
+            mir_handoff: Some(mir_handoff),
             missing_stage: Some(missing),
         };
     }
@@ -920,6 +1058,7 @@ pub fn run_rust_compiler_pipeline_record(
         name_resolution_stage: Some(name_resolution_stage),
         type_check_stage: Some(type_check_stage),
         borrow_check_stage: Some(borrow_check_stage),
+        mir_handoff: Some(mir_handoff),
         missing_stage: Some(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -931,6 +1070,82 @@ pub fn run_rust_compiler_pipeline_record(
             component_role: "internal compiler artifact emission".to_owned(),
             reason: "the internal compiler boundary has no artifact writer wired yet".to_owned(),
         }),
+    }
+}
+
+pub fn handoff_rust_mir_for_compile_unit(
+    request: &RustCompileRequest,
+    parse_stage: &RustParseStageRecord,
+    expansion_stage: &RustExpansionStageRecord,
+    name_resolution_stage: &RustNameResolutionStageRecord,
+    type_check_stage: &RustTypeCheckStageRecord,
+    borrow_check_stage: &RustBorrowCheckStageRecord,
+) -> RustMirHandoffRecord {
+    let component = rustc_component_inventory()
+        .into_iter()
+        .find(|component| component.name == "rustc_middle")
+        .expect("rustc component inventory includes rustc_middle");
+    let available = component.embedded_in_assembly;
+    let required_upstream_crates = vec![
+        "rustc_middle".to_owned(),
+        "rustc_mir_build".to_owned(),
+        "rustc_hir".to_owned(),
+        "rustc_span".to_owned(),
+        "rustc_data_structures".to_owned(),
+    ];
+    let required_upstream_modules = vec![
+        "rustc_middle::mir".to_owned(),
+        "rustc_middle::ty".to_owned(),
+        "rustc_middle::query".to_owned(),
+        "rustc_mir_build::build".to_owned(),
+        "rustc_mir_build::thir".to_owned(),
+    ];
+    let blocker_reason = if available {
+        None
+    } else {
+        Some(format!(
+            "upstream MIR adapter import is blocked: {} is not embedded in rouwdi.wasm; MIR lowering must hand off through {}",
+            component.name, component.upstream_path
+        ))
+    };
+
+    RustMirHandoffRecord {
+        compile_unit: RustCompileUnitIdentity::from(request),
+        source_path: request.source_path.clone(),
+        previous_stage_statuses: vec![
+            RustFrontendStageStatus::Parse {
+                status: parse_stage.status,
+            },
+            RustFrontendStageStatus::MacroExpansion {
+                status: expansion_stage.status,
+            },
+            RustFrontendStageStatus::NameResolution {
+                status: name_resolution_stage.status,
+            },
+            RustFrontendStageStatus::TypeChecking {
+                status: type_check_stage.status,
+            },
+            RustFrontendStageStatus::BorrowChecking {
+                status: borrow_check_stage.status,
+            },
+        ],
+        stage: RustCompilerStage::Mir,
+        status: if available {
+            RustMirHandoffStatus::AdapterAvailable
+        } else {
+            RustMirHandoffStatus::AdapterUnavailable
+        },
+        intended_upstream_component: "rustc_middle".to_owned(),
+        intended_upstream_path: "rustc_middle::mir via rustc_mir_build::build".to_owned(),
+        required_upstream_crates,
+        required_upstream_modules,
+        upstream_mir_adapter_available: available,
+        blocker_category: (!available)
+            .then_some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded),
+        blocker_component: (!available).then(|| component.name.clone()),
+        blocker_component_role: (!available).then(|| component.role.clone()),
+        blocker_component_path: (!available).then(|| component.upstream_path.clone()),
+        blocker_reason,
     }
 }
 
@@ -3252,15 +3467,23 @@ mod tests {
 
         let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
 
-        let RustCompilerPipelineError::MissingStage { missing } = error else {
-            panic!("valid Rust source must advance to the next missing compiler stage");
+        let RustCompilerPipelineError::MirHandoff { handoff } = error else {
+            panic!("valid Rust source must advance to the MIR handoff boundary");
         };
-        assert_eq!(missing.stage, RustCompilerStage::Mir);
+        assert_eq!(handoff.stage, RustCompilerStage::Mir);
+        assert_eq!(handoff.compile_unit.unit_id, request.unit_id);
+        assert_eq!(handoff.source_path, "src/main.rs");
+        assert_eq!(handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+        assert!(!handoff.upstream_mir_adapter_available);
+        assert_eq!(handoff.intended_upstream_component, "rustc_middle");
         assert_eq!(
-            missing.error_code,
-            RustCompilerStageErrorCode::MirNotEmbedded
+            handoff.blocker_category,
+            Some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded)
         );
-        assert_eq!(missing.required_component, "rustc_middle");
+        assert_eq!(handoff.blocker_component.as_deref(), Some("rustc_middle"));
+        assert!(handoff
+            .required_upstream_crates
+            .contains(&"rustc_mir_build".to_owned()));
     }
 
     #[test]
@@ -3664,18 +3887,10 @@ mod tests {
 
         let record = run_rust_compiler_pipeline_record(&request, "fn main() {}\n");
 
-        assert_eq!(record.status, RustCompilerPipelineStatus::MissingStage);
+        assert_eq!(record.status, RustCompilerPipelineStatus::MirHandoffBlocked);
         assert_eq!(
             record.parse_stage.as_ref().unwrap().status,
             RustParseStageStatus::Succeeded
-        );
-        assert_eq!(
-            record.missing_stage.as_ref().unwrap().required_component,
-            "rustc_middle"
-        );
-        assert_eq!(
-            record.missing_stage.as_ref().unwrap().error_code,
-            RustCompilerStageErrorCode::MirNotEmbedded
         );
         assert_eq!(
             record.expansion_stage.as_ref().unwrap().status,
@@ -3693,6 +3908,22 @@ mod tests {
             record.borrow_check_stage.as_ref().unwrap().status,
             RustBorrowCheckStageStatus::Succeeded
         );
+        let mir_handoff = record.mir_handoff.as_ref().unwrap();
+        assert_eq!(mir_handoff.stage, RustCompilerStage::Mir);
+        assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+        assert_eq!(
+            mir_handoff.blocker_component.as_deref(),
+            Some("rustc_middle")
+        );
+        assert!(mir_handoff.previous_stage_statuses.iter().any(|status| {
+            matches!(
+                status,
+                RustFrontendStageStatus::BorrowChecking {
+                    status: RustBorrowCheckStageStatus::Succeeded
+                }
+            )
+        }));
+        assert!(record.missing_stage.is_none());
         assert_eq!(record.artifact, None);
     }
 }

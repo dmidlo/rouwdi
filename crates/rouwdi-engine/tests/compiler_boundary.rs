@@ -1,13 +1,15 @@
 use rouwdi_cargo::{CargoBuildPlan, CompilePhase};
 use rouwdi_engine::{BuildRequest, RouwdiEngine};
-use rouwdi_proof::{RouwdiRunManifest, RunStatus};
+use rouwdi_proof::{
+    ArtifactPipelineRecord, ArtifactPipelineStageStatus, RouwdiRunManifest, RunStatus,
+};
 use rouwdi_rustc::{
     RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
-    RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode,
-    RustExpansionStageRecord, RustExpansionStageStatus, RustNameResolutionDiagnosticCode,
-    RustNameResolutionStageRecord, RustNameResolutionStageStatus, RustParseStageRecord,
-    RustParseStageStatus, RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord,
-    RustTypeCheckStageStatus,
+    RustCompilerPipelineStatus, RustCompilerStage, RustExpansionStageRecord,
+    RustExpansionStageStatus, RustMirHandoffBlockerCategory, RustMirHandoffRecord,
+    RustMirHandoffStatus, RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord,
+    RustNameResolutionStageStatus, RustParseStageRecord, RustParseStageStatus,
+    RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord, RustTypeCheckStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -87,7 +89,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     let record = &manifest.compiler_pipeline[0];
     assert_eq!(record.unit_id, "app:rust:app:wasm32-wasip1");
     assert_eq!(record.source_path, "src/main.rs");
-    assert_eq!(record.status, RustCompilerPipelineStatus::MissingStage);
+    assert_eq!(record.status, RustCompilerPipelineStatus::MirHandoffBlocked);
     assert_eq!(
         record.parse_stage.as_ref().unwrap().status,
         RustParseStageStatus::Succeeded
@@ -100,13 +102,6 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         record.name_resolution_stage.as_ref().unwrap().status,
         RustNameResolutionStageStatus::Succeeded
     );
-    let missing_stage = record.missing_stage.as_ref().unwrap();
-    assert_eq!(missing_stage.stage, RustCompilerStage::Mir);
-    assert_eq!(
-        missing_stage.error_code,
-        RustCompilerStageErrorCode::MirNotEmbedded
-    );
-    assert_eq!(missing_stage.required_component, "rustc_middle");
     assert_eq!(
         record.type_check_stage.as_ref().unwrap().status,
         RustTypeCheckStageStatus::Succeeded
@@ -115,14 +110,78 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         record.borrow_check_stage.as_ref().unwrap().status,
         RustBorrowCheckStageStatus::Succeeded
     );
+    assert!(record.missing_stage.is_none());
+    let mir_handoff = record.mir_handoff.as_ref().unwrap();
+    assert_eq!(mir_handoff.stage, RustCompilerStage::Mir);
+    assert_eq!(mir_handoff.source_path, "src/main.rs");
+    assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+    assert_eq!(
+        mir_handoff.blocker_category,
+        Some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded)
+    );
+    assert_eq!(
+        mir_handoff.blocker_component.as_deref(),
+        Some("rustc_middle")
+    );
+    assert!(mir_handoff
+        .required_upstream_crates
+        .contains(&"rustc_mir_build".to_owned()));
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_middle"
+        item.component == "upstream MIR adapter rustc_middle"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+            && item
+                .reason
+                .contains("upstream MIR adapter import is blocked")
     }));
     assert!(!report
         .bootstrap_diagnostics
         .iter()
         .any(|item| item.component == "rustc frontend semantics"));
+    let mir_handoff_records: Vec<RustMirHandoffRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-mir-handoff.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mir_handoff_records.len(), 1);
+    assert_eq!(
+        mir_handoff_records[0].blocker_component.as_deref(),
+        Some("rustc_middle")
+    );
+    let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/graph/artifact-pipeline.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(artifact_pipeline.len(), 1);
+    assert_eq!(artifact_pipeline[0].target_name, "wasi");
+    assert_eq!(
+        artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Mir)
+    );
+    assert_eq!(
+        artifact_pipeline[0].blocker_component.as_deref(),
+        Some("rustc_middle")
+    );
+    assert_eq!(
+        artifact_pipeline[0].expected_output_path,
+        format!("{}/artifacts/app-wasm32-wasip1.wasm", report.run_root)
+    );
+    assert!(!artifact_pipeline[0].artifact_emitted);
+    assert!(artifact_pipeline[0].compile_units.iter().any(|unit| {
+        unit.unit_id == "app:rust:app:wasm32-wasip1"
+            && unit.source_path == "src/main.rs"
+            && unit.mir_handoff_status == Some(RustMirHandoffStatus::AdapterUnavailable)
+    }));
+    assert!(artifact_pipeline[0].remaining_stages.iter().any(|stage| {
+        stage.stage == RustCompilerStage::Mir
+            && stage.required_component == "rustc_middle"
+            && stage.status == ArtifactPipelineStageStatus::Blocked
+    }));
 }
 
 #[test]
@@ -232,7 +291,7 @@ edition = "2021"
     assert!(pipeline_unit_ids.contains("app:rust:app:wasm32-wasip1"));
     assert!(pipeline_unit_ids.contains("helper:rust:helper:wasm32-wasip1"));
     assert!(manifest.compiler_pipeline.iter().all(|record| {
-        record.status == RustCompilerPipelineStatus::MissingStage
+        record.status == RustCompilerPipelineStatus::MirHandoffBlocked
             && record.parse_stage.as_ref().is_some_and(|parse| {
                 parse.status == RustParseStageStatus::Succeeded
                     && parse.stage == RustCompilerStage::Parse
@@ -259,10 +318,12 @@ edition = "2021"
                     borrow_check.status == RustBorrowCheckStageStatus::Succeeded
                         && borrow_check.stage == RustCompilerStage::BorrowChecking
                 })
-            && record.missing_stage.as_ref().is_some_and(|missing| {
-                missing.stage == RustCompilerStage::Mir
-                    && missing.error_code == RustCompilerStageErrorCode::MirNotEmbedded
+            && record.mir_handoff.as_ref().is_some_and(|handoff| {
+                handoff.stage == RustCompilerStage::Mir
+                    && handoff.status == RustMirHandoffStatus::AdapterUnavailable
+                    && handoff.blocker_component.as_deref() == Some("rustc_middle")
             })
+            && record.missing_stage.is_none()
     }));
     let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
         &storage
@@ -357,6 +418,118 @@ edition = "2021"
     assert!(borrow_check_records
         .iter()
         .all(|record| record.status == RustBorrowCheckStageStatus::Succeeded));
+    let mir_handoff_records: Vec<RustMirHandoffRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-mir-handoff.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    let mir_handoff_unit_ids = mir_handoff_records
+        .iter()
+        .map(|record| record.compile_unit.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(mir_handoff_unit_ids, rust_unit_ids);
+    assert!(mir_handoff_records.iter().all(|record| {
+        record.status == RustMirHandoffStatus::AdapterUnavailable
+            && record.blocker_component.as_deref() == Some("rustc_middle")
+    }));
+    let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/graph/artifact-pipeline.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(artifact_pipeline.len(), 1);
+    assert_eq!(artifact_pipeline[0].target_name, "wasi");
+    let artifact_unit_ids = artifact_pipeline[0]
+        .compile_units
+        .iter()
+        .map(|unit| unit.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(artifact_unit_ids, rust_unit_ids);
+    assert_eq!(
+        artifact_pipeline[0].expected_output_path,
+        format!("{}/artifacts/app-wasm32-wasip1.wasm", report.run_root)
+    );
+    assert!(!artifact_pipeline[0].artifact_emitted);
+}
+
+#[test]
+fn artifact_pipeline_records_every_requested_target_without_emitting_fake_artifacts() {
+    let mut storage = no_deps_wasi_binary_storage();
+    storage
+        .write(
+            "rouwdi.toml",
+            br#"
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "app"
+bin = "app"
+profile = "release"
+
+[source]
+mode = "snapshot"
+root = "."
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+
+[[targets]]
+name = "native"
+triple = "native_host"
+artifact = "executable"
+"#,
+        )
+        .unwrap();
+
+    let report = RouwdiEngine::default()
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/graph/artifact-pipeline.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(artifact_pipeline.len(), 2);
+    assert_eq!(manifest.artifact_pipeline, artifact_pipeline);
+    let targets = artifact_pipeline
+        .iter()
+        .map(|record| record.target_name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(targets, BTreeSet::from(["native", "wasi"]));
+    for record in &artifact_pipeline {
+        assert_eq!(record.blocked_at_stage, Some(RustCompilerStage::Mir));
+        assert_eq!(record.blocker_component.as_deref(), Some("rustc_middle"));
+        assert!(!record.artifact_emitted);
+        assert!(storage.read(&record.expected_output_path).is_err());
+        assert!(record.remaining_stages.iter().any(|stage| {
+            stage.stage == RustCompilerStage::Mir
+                && stage.status == ArtifactPipelineStageStatus::Blocked
+        }));
+    }
+    assert!(artifact_pipeline.iter().any(|record| {
+        record.target_name == "wasi"
+            && record.expected_output_path
+                == format!("{}/artifacts/app-wasm32-wasip1.wasm", report.run_root)
+    }));
+    assert!(artifact_pipeline.iter().any(|record| {
+        record.target_name == "native"
+            && record.expected_output_path
+                == format!("{}/artifacts/app-native_host", report.run_root)
+    }));
+    assert!(manifest.artifacts.is_empty());
 }
 
 #[test]
@@ -463,7 +636,9 @@ fn unresolved_name_stops_at_name_resolution_stage() {
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
+        item.component == "compiler stage rustc_middle"
+            || item.component == "upstream MIR adapter rustc_middle"
+            || item.reason.contains("mir_not_embedded")
     }));
 }
 
@@ -511,7 +686,9 @@ fn typed_invalid_source_stops_at_type_check_stage() {
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
+        item.component == "compiler stage rustc_middle"
+            || item.component == "upstream MIR adapter rustc_middle"
+            || item.reason.contains("mir_not_embedded")
     }));
 }
 
@@ -578,7 +755,9 @@ fn borrow_invalid_source_stops_at_borrow_check_stage() {
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
+        item.component == "compiler stage rustc_middle"
+            || item.component == "upstream MIR adapter rustc_middle"
+            || item.reason.contains("mir_not_embedded")
     }));
 }
 

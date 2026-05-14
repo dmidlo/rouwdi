@@ -4,15 +4,16 @@ use rouwdi_cargo::{
     CompilePhase,
 };
 use rouwdi_compiletime::plan_compile_time;
-use rouwdi_contract::{ContractError, RouwdiContract};
+use rouwdi_contract::{ArtifactKind, ContractError, RouwdiContract};
 use rouwdi_proof::{
     hash_bytes, verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
-    ArtifactManifestEntry, BootstrapDiagnostic, HashEntry, ProofBundle, ProofError, ProofStatus,
-    RouwdiRunManifest, RunStatus, RuntimeProof,
+    ArtifactManifestEntry, ArtifactPipelineCompileUnit, ArtifactPipelineRecord,
+    ArtifactPipelineStageRecord, ArtifactPipelineStageStatus, BootstrapDiagnostic, HashEntry,
+    ProofBundle, ProofError, ProofStatus, RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record,
-    RustBorrowCheckStageStatus, RustCompileRequest, RustCompilerPipelineRecord,
+    RustBorrowCheckStageStatus, RustCompileRequest, RustCompilerPipelineRecord, RustCompilerStage,
     RustExpansionStageStatus, RustExternCrate, RustNameResolutionStageStatus, RustParseStageStatus,
     RustSourceLexProof, RustTypeCheckStageStatus,
 };
@@ -150,7 +151,7 @@ impl RouwdiEngine {
             &cargo_features,
             &contract.project.package,
             &selected_target,
-            selected_target_kind,
+            selected_target_kind.clone(),
             &contract.project.profile,
             &target_triples,
         )?;
@@ -177,6 +178,10 @@ impl RouwdiEngine {
             .iter()
             .filter_map(|record| record.borrow_check_stage.clone())
             .collect::<Vec<_>>();
+        let rust_source_mir_handoff = compiler_pipeline
+            .iter()
+            .filter_map(|record| record.mir_handoff.clone())
+            .collect::<Vec<_>>();
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -190,6 +195,16 @@ impl RouwdiEngine {
             validate_lockfile_against_fetch_plan(lockfile, &source_fetch_plan)?;
         }
         let target_packs = self.target_registry.validate_contract(&contract)?;
+        let run_id = deterministic_run_id(&normalized.sha256, &source_snapshot.tree_sha256);
+        let run_root = source_relative_path(&source_root, &format!(".rouwdi/runs/{run_id}"))?;
+        let artifact_pipeline = plan_artifact_pipeline(
+            &contract,
+            &compiler_pipeline,
+            &run_root,
+            &contract.project.package,
+            &selected_target,
+            selected_target_kind,
+        );
 
         let mut assembly_diagnostics = Vec::new();
         let mut host_diagnostics = Vec::new();
@@ -312,6 +327,23 @@ impl RouwdiEngine {
                     });
                 }
             }
+            if let Some(mir_handoff) = &record.mir_handoff {
+                if !mir_handoff.upstream_mir_adapter_available {
+                    assembly_diagnostics.push(BootstrapDiagnostic {
+                        component: format!(
+                            "upstream MIR adapter {}",
+                            mir_handoff
+                                .blocker_component
+                                .as_deref()
+                                .unwrap_or(mir_handoff.intended_upstream_component.as_str())
+                        ),
+                        required_by: format!("compile unit {}", mir_handoff.compile_unit.unit_id),
+                        reason: mir_handoff.blocker_reason.clone().unwrap_or_else(|| {
+                            "upstream MIR adapter is not embedded in this assembly".to_owned()
+                        }),
+                    });
+                }
+            }
         }
         for record in &compiler_pipeline {
             if let Some(missing_stage) = &record.missing_stage {
@@ -383,10 +415,16 @@ impl RouwdiEngine {
                 } else {
                     ProofStatus::Unsupported
                 },
-                reason: Some(
-                    "artifact was not built because compiler/codegen/linker are not embedded"
-                        .to_owned(),
-                ),
+                reason: artifact_pipeline
+                    .iter()
+                    .find(|record| record.target_name == target.name)
+                    .and_then(|record| record.blocker_reason.clone())
+                    .or_else(|| {
+                        Some(
+                            "artifact was not emitted because upstream compiler payload stages are not embedded"
+                                .to_owned(),
+                        )
+                    }),
             })
             .collect::<Vec<_>>();
         let runtime_proofs = contract
@@ -420,8 +458,6 @@ impl RouwdiEngine {
                 },
             })
             .collect::<Vec<_>>();
-        let run_id = deterministic_run_id(&normalized.sha256, &source_snapshot.tree_sha256);
-        let run_root = source_relative_path(&source_root, &format!(".rouwdi/runs/{run_id}"))?;
         let mut hashes = Vec::new();
         hashes.push(HashEntry {
             label: "contract".to_owned(),
@@ -456,6 +492,7 @@ impl RouwdiEngine {
             compiler_engine: self.target_registry.compiler.clone(),
             target_packs,
             compiler_pipeline,
+            artifact_pipeline: artifact_pipeline.clone(),
             artifacts: Vec::<ArtifactManifestEntry>::new(),
             bootstrap_diagnostics: bootstrap_diagnostics.clone(),
             proof_files: Vec::new(),
@@ -476,6 +513,8 @@ impl RouwdiEngine {
             rust_source_name_resolution,
             rust_source_type_check,
             rust_source_borrow_check,
+            rust_source_mir_handoff,
+            artifact_pipeline,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -566,6 +605,158 @@ fn run_compiler_pipeline(
         records.push(run_rust_compiler_pipeline_record(&request, &source));
     }
     Ok(records)
+}
+
+fn plan_artifact_pipeline(
+    contract: &RouwdiContract,
+    compiler_pipeline: &[RustCompilerPipelineRecord],
+    run_root: &str,
+    package: &str,
+    selected_target: &str,
+    selected_target_kind: CargoTargetKind,
+) -> Vec<ArtifactPipelineRecord> {
+    contract
+        .targets
+        .iter()
+        .map(|target| {
+            let compile_records = compiler_pipeline
+                .iter()
+                .filter(|record| record.triple == target.triple)
+                .collect::<Vec<_>>();
+            let mir_blocker = compile_records
+                .iter()
+                .filter_map(|record| record.mir_handoff.as_ref())
+                .find(|handoff| !handoff.upstream_mir_adapter_available);
+            let compile_units = compile_records
+                .iter()
+                .map(|record| artifact_compile_unit_from_record(record))
+                .collect::<Vec<_>>();
+            let remaining_stages = artifact_pipeline_stage_records(mir_blocker.is_some());
+            let expected_output_path =
+                expected_artifact_path(run_root, selected_target, &target.triple, target.artifact);
+
+            ArtifactPipelineRecord {
+                target_name: target.name.clone(),
+                triple: target.triple.clone(),
+                package: package.to_owned(),
+                cargo_target: selected_target.to_owned(),
+                cargo_target_kind: format!("{:?}", selected_target_kind),
+                expected_artifact_kind: target.artifact,
+                expected_output_path,
+                artifact_emitted: false,
+                compile_units,
+                remaining_stages,
+                blocked_at_stage: mir_blocker.map(|handoff| handoff.stage),
+                blocker_category: mir_blocker.and_then(|handoff| handoff.blocker_category),
+                blocker_component: mir_blocker
+                    .and_then(|handoff| handoff.blocker_component.clone()),
+                blocker_reason: mir_blocker.and_then(|handoff| handoff.blocker_reason.clone()),
+            }
+        })
+        .collect()
+}
+
+fn artifact_compile_unit_from_record(
+    record: &RustCompilerPipelineRecord,
+) -> ArtifactPipelineCompileUnit {
+    ArtifactPipelineCompileUnit {
+        unit_id: record.unit_id.clone(),
+        package: record.package.clone(),
+        target: record.target.clone(),
+        target_kind: record.target_kind.clone(),
+        source_path: record.source_path.clone(),
+        triple: record.triple.clone(),
+        frontend_parse_status: record
+            .parse_stage
+            .as_ref()
+            .map(|stage| format!("{:?}", stage.status)),
+        frontend_expansion_status: record
+            .expansion_stage
+            .as_ref()
+            .map(|stage| format!("{:?}", stage.status)),
+        frontend_name_resolution_status: record
+            .name_resolution_stage
+            .as_ref()
+            .map(|stage| format!("{:?}", stage.status)),
+        frontend_type_check_status: record
+            .type_check_stage
+            .as_ref()
+            .map(|stage| format!("{:?}", stage.status)),
+        frontend_borrow_check_status: record
+            .borrow_check_stage
+            .as_ref()
+            .map(|stage| format!("{:?}", stage.status)),
+        mir_handoff_status: record.mir_handoff.as_ref().map(|handoff| handoff.status),
+        mir_handoff_blocker_component: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.blocker_component.clone()),
+    }
+}
+
+fn artifact_pipeline_stage_records(mir_blocked: bool) -> Vec<ArtifactPipelineStageRecord> {
+    [
+        (
+            RustCompilerStage::Mir,
+            "rustc_middle",
+            "MIR, query model, and compiler metadata",
+        ),
+        (
+            RustCompilerStage::Monomorphization,
+            "rustc_monomorphize",
+            "monomorphization collector",
+        ),
+        (
+            RustCompilerStage::Codegen,
+            "rustc_codegen_llvm",
+            "LLVM-grade codegen backend",
+        ),
+        (
+            RustCompilerStage::Linking,
+            "lld",
+            "native and WebAssembly linker implementation",
+        ),
+        (
+            RustCompilerStage::ArtifactEmission,
+            "rouwdi_artifact_writer",
+            "final artifact writer fed by upstream compiler payload",
+        ),
+    ]
+    .into_iter()
+    .map(|(stage, required_component, component_role)| {
+        let status = if mir_blocked && stage == RustCompilerStage::Mir {
+            ArtifactPipelineStageStatus::Blocked
+        } else if mir_blocked {
+            ArtifactPipelineStageStatus::WaitingOnUpstreamMir
+        } else {
+            ArtifactPipelineStageStatus::Planned
+        };
+        ArtifactPipelineStageRecord {
+            stage,
+            required_component: required_component.to_owned(),
+            component_role: component_role.to_owned(),
+            adapter_available: false,
+            status,
+        }
+    })
+    .collect()
+}
+
+fn expected_artifact_path(
+    run_root: &str,
+    selected_target: &str,
+    triple: &str,
+    artifact: ArtifactKind,
+) -> String {
+    let filename = match artifact {
+        ArtifactKind::Module => format!("{selected_target}-{triple}.wasm"),
+        ArtifactKind::Component => format!("{selected_target}-{triple}.component.wasm"),
+        ArtifactKind::Executable => format!("{selected_target}-{triple}"),
+        ArtifactKind::Staticlib => format!("lib{selected_target}-{triple}.a"),
+        ArtifactKind::Archive => format!("{selected_target}-{triple}.a"),
+        ArtifactKind::Object => format!("{selected_target}-{triple}.o"),
+    };
+    format!("{run_root}/artifacts/{filename}")
 }
 
 fn extern_prelude_for_unit(
@@ -703,7 +894,7 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "compiler stage rustc_middle"
+            .any(|item| item.component == "upstream MIR adapter rustc_middle"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
             .bootstrap_diagnostics
@@ -718,14 +909,31 @@ version = "0.1.0"
         assert_eq!(manifest.compiler_pipeline.len(), 1);
         assert!(manifest.compiler_pipeline[0].parse_stage.is_some());
         assert!(manifest.compiler_pipeline[0].expansion_stage.is_some());
+        assert!(manifest.compiler_pipeline[0].missing_stage.is_none());
         assert_eq!(
             manifest.compiler_pipeline[0]
-                .missing_stage
+                .mir_handoff
                 .as_ref()
                 .unwrap()
-                .required_component,
+                .blocker_component
+                .as_deref(),
+            Some("rustc_middle")
+        );
+        assert_eq!(
+            manifest.compiler_pipeline[0]
+                .mir_handoff
+                .as_ref()
+                .unwrap()
+                .intended_upstream_component,
             "rustc_middle"
         );
+        assert_eq!(manifest.artifact_pipeline.len(), 1);
+        assert_eq!(manifest.artifact_pipeline[0].target_name, "wasi");
+        assert_eq!(
+            manifest.artifact_pipeline[0].expected_output_path,
+            format!("{}/artifacts/app-wasm32-wasip1.wasm", report.run_root)
+        );
+        assert!(!manifest.artifact_pipeline[0].artifact_emitted);
         assert!(manifest.compiler_pipeline[0].type_check_stage.is_some());
         assert!(manifest.compiler_pipeline[0].borrow_check_stage.is_some());
         assert!(storage
@@ -786,6 +994,17 @@ version = "0.1.0"
                 "{}/graph/rust-source-borrow-check.json",
                 report.run_root
             ))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!(
+                "{}/graph/rust-source-mir-handoff.json",
+                report.run_root
+            ))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!("{}/graph/artifact-pipeline.json", report.run_root))
             .unwrap()
             .starts_with(b"["));
         assert!(storage
