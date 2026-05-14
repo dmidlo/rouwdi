@@ -944,14 +944,19 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("bootstrap_target_pack_missing_for_wasm_payload")
+            Some("missing_wasi_sdk")
         );
+        let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
+        assert_eq!(target_pack.target_triple, "wasm32-wasip1");
+        assert!(target_pack.attempted);
+        assert_eq!(target_pack.exit_code, 1);
+        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
+        assert!(!target_pack.std_available);
+        assert!(!target_pack.core_available);
+        assert!(!target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "attempted_blocked");
-        assert_eq!(
-            bridge_attempt.blocker_kind,
-            "bootstrap_target_pack_missing_for_wasm_payload"
-        );
+        assert_eq!(bridge_attempt.blocker_kind, "missing_wasi_sdk");
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff

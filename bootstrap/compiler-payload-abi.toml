@@ -124,10 +124,10 @@ command_exit_code = 1
 command_evidence = "error[E0463]: can't find crate for `std`"
 target_triple = "wasm32-wasip1"
 status = "attempted_blocked"
-blocker_kind = "bootstrap_target_pack_missing_for_wasm_payload"
-blocker_reason = "The first bridge attempt used the real bootstrap MIR adapter crate as input and targeted wasm32-wasip1 through the bootstrap stage0 cargo/rustc. The compile failed before rustc_private linking because the bootstrap sysroot has no wasm32-wasip1 std target pack available. The x.py control command with --target wasm32-wasip1 exited 0 but remained host-bound and emitted only the x86_64-pc-windows-msvc stage1 rlib, so it did not produce a Wasm bridge payload."
-exact_blocker = "Direct bridge command exited 1 with `error[E0463]: can't find crate for std` while compiling third_party/rust/src/tools/rouwdi-mir-adapter-probe for wasm32-wasip1. The selected strategy is real and consumes the rustc-private adapter boundary, but no output artifact is produced until the bootstrap wasm32-wasip1 target pack exists and the bridge build is no longer host-bound."
-next_command = "python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
+blocker_kind = "missing_wasi_sdk"
+blocker_reason = "The first bridge attempt used the real bootstrap MIR adapter crate as input and targeted wasm32-wasip1 through the bootstrap stage0 cargo/rustc. The follow-up target-pack provisioning command `python x.py build library/std --stage 1 --target wasm32-wasip1 -v` was attempted and exited 1 before std/core/alloc could be built because the Rust bootstrap has no `wasi-root` configured and `$WASI_SDK_PATH` is not set. The bridge cannot be retried as a real Wasm payload until that target pack provisioning succeeds."
+exact_blocker = "Target-pack provisioning exited 1 with `Target \"wasm32-wasip1\" does not have a \"wasi-root\" key in bootstrap.toml or `$WASI_SDK_PATH` set`; no wasm32-wasip1 std/core/alloc artifacts were produced under third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib, so rerunning the rustc-private bridge would still fail before producing a loadable Wasm MIR payload."
+next_command = "Set WASI_SDK_PATH or [target.wasm32-wasip1].wasi-root, then rerun: python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
 
 [[bridge.commands_attempted]]
 command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 --target wasm32-wasip1 -v"
@@ -142,6 +142,13 @@ workdir = "third_party/rust"
 exit_code = 1
 classification = "bootstrap_target_pack_missing"
 evidence = "error[E0463]: can't find crate for `std`; error: could not compile `rouwdi-mir-adapter-probe` (lib) due to 1 previous error"
+
+[[bridge.commands_attempted]]
+command = "python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "missing_wasi_sdk"
+evidence = "thread 'main' panicked at src\\bootstrap\\src\\core\\build_steps\\compile.rs:434:13: Target \"wasm32-wasip1\" does not have a \"wasi-root\" key in bootstrap.toml or `$WASI_SDK_PATH` set"
 
 [[bridge.input_artifact_identities]]
 role = "wasm_abi_shim"
@@ -169,6 +176,23 @@ sha256 = "58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1"
 size_bytes = 27097
 target_triple = "x86_64-pc-windows-msvc"
 loadable_by_rouwdi_wasm = false
+
+[target_pack]
+target_triple = "wasm32-wasip1"
+bootstrap_command = "python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+attempted = true
+status = "attempted_blocked"
+exit_code = 1
+sysroot_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
+produced_artifacts = []
+std_available = false
+core_available = false
+alloc_available = false
+blocker_kind = "missing_wasi_sdk"
+exact_blocker = "Rust bootstrap reached wasm32-wasip1 std provisioning and exited 1 before compiling core/alloc/std because no `wasi-root` key exists in bootstrap.toml and `$WASI_SDK_PATH` is not set. The target libdir exists but contains zero produced artifacts."
+next_command = "Set WASI_SDK_PATH or [target.wasm32-wasip1].wasi-root, then rerun: python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
 
 [[symbols]]
 name = "rouwdi_compiler_payload_abi_v1_version"
@@ -225,9 +249,9 @@ artifact_sha256 = "c6c4137b52f718bce4aaced57545e48125468abdc94c239c52aa67250e38a
 artifact_size_bytes = 1364
 bridge_required = true
 bridge_status = "attempted_blocked"
-blocker_kind = "bootstrap_target_pack_missing_for_wasm_payload"
+blocker_kind = "missing_wasi_sdk"
 loadable_as_full_payload = false
-exact_blocker = "The thin ABI shim is the selected route and exposes the v1 symbols without fabricating MIR. The first real bridge attempt consumed the bootstrap MIR adapter rlib identity and tried to compile the rustc-private adapter toward wasm32-wasip1, but the bootstrap sysroot lacks the wasm32-wasip1 std target pack, so no bridge output is loadable."
+exact_blocker = "The thin ABI shim is the selected route and exposes the v1 symbols without fabricating MIR. The first real bridge attempt consumed the bootstrap MIR adapter rlib identity and tried to compile the rustc-private adapter toward wasm32-wasip1. The required target-pack provisioning command has now been attempted and is exactly blocked by missing WASI SDK configuration, so no bridge output is loadable."
 
 [[artifact_routes]]
 route = "wasm32_wasip2_component"

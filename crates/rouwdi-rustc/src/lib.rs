@@ -499,6 +499,7 @@ pub struct RustMirHandoffRecord {
     pub payload_abi_bridge_blocker_kind: Option<String>,
     pub payload_abi_bridge_blocker_reason: Option<String>,
     pub payload_bridge_attempt: Option<rouwdi_rustc_upstream::CompilerPayloadAbiBridge>,
+    pub payload_target_pack: Option<rouwdi_rustc_upstream::CompilerPayloadTargetPackProvisioning>,
     pub payload_loader_exported_artifact_class:
         Option<rouwdi_rustc_upstream::CompilerPayloadArtifactClass>,
     pub payload_loader_metadata_artifact_class:
@@ -1263,6 +1264,9 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_bridge_attempt = payload_loader_inspection
         .as_ref()
         .and_then(|inspection| inspection.bridge_attempt.clone());
+    let payload_target_pack = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.target_pack.clone());
     let payload_loader_exported_artifact_class = payload_loader_inspection
         .as_ref()
         .map(|inspection| inspection.exported_payload.artifact_class);
@@ -1340,8 +1344,23 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_abi_note = payload_loader_inspection
         .as_ref()
         .and_then(|inspection| {
+            let target_pack_note = inspection
+                .target_pack
+                .as_ref()
+                .map(|target_pack| {
+                    format!(
+                        "; target-pack provisioning command `{}` exited {} with blocker {}; std/core/alloc available: {}/{}/{}",
+                        target_pack.bootstrap_command,
+                        target_pack.exit_code,
+                        target_pack.blocker_kind,
+                        target_pack.std_available,
+                        target_pack.core_available,
+                        target_pack.alloc_available
+                    )
+                })
+                .unwrap_or_default();
             Some(format!(
-                "compiler-payload ABI route {}; route status {}; bridge status {}; bridge blocker {}",
+                "compiler-payload ABI route {}; route status {}; bridge status {}; bridge blocker {}{}",
                 inspection.abi_selected_route.as_ref()?,
                 inspection
                     .abi_route_status
@@ -1351,7 +1370,8 @@ pub fn handoff_rust_mir_for_compile_unit(
                 inspection
                     .abi_bridge_blocker_kind
                     .as_deref()
-                    .unwrap_or("unknown")
+                    .unwrap_or("unknown"),
+                target_pack_note
             ))
         })
         .unwrap_or_else(|| "compiler-payload ABI route is not recorded".to_owned());
@@ -1487,6 +1507,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_abi_bridge_blocker_kind,
         payload_abi_bridge_blocker_reason,
         payload_bridge_attempt,
+        payload_target_pack,
         payload_loader_exported_artifact_class,
         payload_loader_metadata_artifact_class,
         payload_loader_exported_hash_status,
@@ -3920,8 +3941,17 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("bootstrap_target_pack_missing_for_wasm_payload")
+            Some("missing_wasi_sdk")
         );
+        let target_pack = handoff.payload_target_pack.as_ref().unwrap();
+        assert_eq!(target_pack.target_triple, "wasm32-wasip1");
+        assert!(target_pack.attempted);
+        assert_eq!(target_pack.exit_code, 1);
+        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
+        assert!(!target_pack.std_available);
+        assert!(!target_pack.core_available);
+        assert!(!target_pack.alloc_available);
+        assert!(target_pack.produced_artifacts.is_empty());
         assert!(handoff.payload_bundle_inspected);
         assert_eq!(
             handoff.payload_bundle_manifest_path.as_deref(),
@@ -3967,18 +3997,13 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("bootstrap_target_pack_missing_for_wasm_payload")
+            Some("missing_wasi_sdk")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "attempted_blocked");
-        assert_eq!(
-            bridge_attempt.blocker_kind,
-            "bootstrap_target_pack_missing_for_wasm_payload"
-        );
+        assert_eq!(bridge_attempt.blocker_kind, "missing_wasi_sdk");
         assert_eq!(bridge_attempt.command_exit_code, Some(1));
-        assert!(bridge_attempt
-            .exact_blocker
-            .contains("can't find crate for std"));
+        assert!(bridge_attempt.exact_blocker.contains("WASI_SDK_PATH"));
         assert!(bridge_attempt.output_artifact_identity.is_none());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4024,7 +4049,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("bootstrap_target_pack_missing_for_wasm_payload")
+            Some("missing_wasi_sdk")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

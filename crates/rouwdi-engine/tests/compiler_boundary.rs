@@ -150,8 +150,17 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("bootstrap_target_pack_missing_for_wasm_payload")
+        Some("missing_wasi_sdk")
     );
+    let target_pack = mir_handoff.payload_target_pack.as_ref().unwrap();
+    assert_eq!(target_pack.target_triple, "wasm32-wasip1");
+    assert!(target_pack.attempted);
+    assert_eq!(target_pack.exit_code, 1);
+    assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
+    assert!(target_pack.produced_artifacts.is_empty());
+    assert!(!target_pack.std_available);
+    assert!(!target_pack.core_available);
+    assert!(!target_pack.alloc_available);
     assert!(mir_handoff.payload_bundle_inspected);
     assert_eq!(
         mir_handoff.payload_abi_manifest_path.as_deref(),
@@ -174,14 +183,11 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(mir_handoff.payload_abi_route_attempted, Some(true));
     assert_eq!(
         mir_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-        Some("bootstrap_target_pack_missing_for_wasm_payload")
+        Some("missing_wasi_sdk")
     );
     let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
     assert_eq!(bridge_attempt.status, "attempted_blocked");
-    assert_eq!(
-        bridge_attempt.blocker_kind,
-        "bootstrap_target_pack_missing_for_wasm_payload"
-    );
+    assert_eq!(bridge_attempt.blocker_kind, "missing_wasi_sdk");
     assert_eq!(bridge_attempt.command_exit_code, Some(1));
     assert!(bridge_attempt
         .input_artifact_identities
