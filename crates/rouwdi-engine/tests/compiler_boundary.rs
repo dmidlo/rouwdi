@@ -150,7 +150,30 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("rustc_private_rlib_not_rouwdi_loadable")
+        Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+    );
+    assert!(mir_handoff.payload_bundle_inspected);
+    assert_eq!(
+        mir_handoff.payload_loader_exported_artifact_class,
+        Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)
+    );
+    assert_eq!(
+        mir_handoff.payload_loader_metadata_artifact_class,
+        Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::MetadataOnly)
+    );
+    assert_eq!(
+        mir_handoff.payload_loader_load_strategy,
+        Some(rouwdi_rustc_upstream::CompilerPayloadLoadStrategy::InspectRlibArchive)
+    );
+    assert_eq!(
+        mir_handoff.payload_loader_loadability_status,
+        Some(
+            rouwdi_rustc_upstream::CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
+        )
+    );
+    assert_eq!(
+        mir_handoff.payload_next_required_artifact_format.as_deref(),
+        Some("wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi")
     );
     assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
     assert_eq!(

@@ -1,4 +1,7 @@
-use rouwdi_rustc_upstream::{mir_handoff_payload_carrier, MirHandoffPayloadCarrier};
+use rouwdi_rustc_upstream::{
+    inspect_compiler_payload_bundle, mir_handoff_payload_carrier, CompilerPayloadLoaderInspection,
+    MirHandoffPayloadCarrier,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -16,6 +19,7 @@ struct CarrierReport {
     local_metadata_artifact: Option<LocalArtifactIdentity>,
     artifact_identity_matches_ledger: Option<bool>,
     metadata_identity_matches_ledger: Option<bool>,
+    payload_loader_inspection: Option<CompilerPayloadLoaderInspection>,
     loadable_by_rouwdi_wasm: bool,
     blocker_kind: Option<String>,
     blocker_reason: Option<String>,
@@ -54,6 +58,14 @@ fn main() -> ExitCode {
         .as_ref()
         .and_then(|carrier| carrier.metadata_artifact.as_ref())
         .and_then(|artifact| locate_artifact(&workspace_root, &artifact.path).ok());
+    let local_artifact_bytes = carrier
+        .as_ref()
+        .and_then(|carrier| carrier.artifact.as_ref())
+        .and_then(|artifact| read_artifact_bytes(&workspace_root, &artifact.path).ok());
+    let local_metadata_artifact_bytes = carrier
+        .as_ref()
+        .and_then(|carrier| carrier.metadata_artifact.as_ref())
+        .and_then(|artifact| read_artifact_bytes(&workspace_root, &artifact.path).ok());
     let artifact_identity_matches_ledger = carrier
         .as_ref()
         .and_then(|carrier| carrier.artifact.as_ref())
@@ -72,15 +84,35 @@ fn main() -> ExitCode {
                     && local.size_bytes == artifact.size_bytes
             })
         });
-    let loadable_by_rouwdi_wasm = carrier
+    let payload_loader_inspection = carrier
         .as_ref()
-        .is_some_and(|carrier| carrier.loaded_into_rouwdi_facade);
-    let blocker_kind = carrier
+        .and_then(|carrier| carrier.payload_bundle.as_ref())
+        .map(|bundle| {
+            inspect_compiler_payload_bundle(
+                bundle,
+                local_artifact_bytes.as_deref(),
+                local_metadata_artifact_bytes.as_deref(),
+            )
+        });
+    let loadable_by_rouwdi_wasm = payload_loader_inspection
         .as_ref()
-        .and_then(|carrier| carrier.load_blocker_kind.clone());
-    let blocker_reason = carrier
+        .is_some_and(|inspection| inspection.loadable_by_rouwdi_wasm);
+    let blocker_kind = payload_loader_inspection
         .as_ref()
-        .and_then(|carrier| carrier.load_blocker_reason.clone());
+        .and_then(|inspection| inspection.loader_blocker_kind.clone())
+        .or_else(|| {
+            carrier
+                .as_ref()
+                .and_then(|carrier| carrier.load_blocker_kind.clone())
+        });
+    let blocker_reason = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.exact_loader_blocker.clone())
+        .or_else(|| {
+            carrier
+                .as_ref()
+                .and_then(|carrier| carrier.load_blocker_reason.clone())
+        });
 
     let report = CarrierReport {
         command: "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json"
@@ -91,6 +123,7 @@ fn main() -> ExitCode {
         local_metadata_artifact,
         artifact_identity_matches_ledger,
         metadata_identity_matches_ledger,
+        payload_loader_inspection,
         loadable_by_rouwdi_wasm,
         blocker_kind,
         blocker_reason,
@@ -161,6 +194,10 @@ fn locate_artifact(
     })
 }
 
+fn read_artifact_bytes(workspace_root: &Path, relative_path: &str) -> io::Result<Vec<u8>> {
+    fs::read(workspace_root.join(relative_path))
+}
+
 fn print_text_report(report: &CarrierReport) {
     if let Some(carrier) = &report.carrier {
         println!(
@@ -185,6 +222,19 @@ fn print_text_report(report: &CarrierReport) {
         }
         if let Some(kind) = &carrier.load_blocker_kind {
             println!("  blocker: {kind}");
+        }
+        if let Some(inspection) = &report.payload_loader_inspection {
+            println!(
+                "  loader: strategy={} loadability={} exported_hash={:?} metadata_hash={:?}",
+                inspection.load_strategy.as_str(),
+                inspection.loadability_status.as_str(),
+                inspection.exported_payload.hash_status,
+                inspection.metadata_artifact.hash_status
+            );
+            println!(
+                "  next-required-artifact: {}",
+                inspection.next_required_artifact_format
+            );
         }
     } else {
         println!("no MIR payload carrier is recorded in the import ledger");

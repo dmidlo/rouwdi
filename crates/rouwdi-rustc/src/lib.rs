@@ -478,6 +478,24 @@ pub struct RustMirHandoffRecord {
     pub payload_carrier_state: Option<String>,
     pub payload_carrier_created: bool,
     pub payload_carrier: Option<rouwdi_rustc_upstream::MirHandoffPayloadCarrier>,
+    pub payload_bundle_inspected: bool,
+    pub payload_bundle_manifest_path: Option<String>,
+    pub payload_bundle_manifest_sha256: Option<String>,
+    pub payload_loader_exported_artifact_class:
+        Option<rouwdi_rustc_upstream::CompilerPayloadArtifactClass>,
+    pub payload_loader_metadata_artifact_class:
+        Option<rouwdi_rustc_upstream::CompilerPayloadArtifactClass>,
+    pub payload_loader_exported_hash_status:
+        Option<rouwdi_rustc_upstream::CompilerPayloadHashStatus>,
+    pub payload_loader_metadata_hash_status:
+        Option<rouwdi_rustc_upstream::CompilerPayloadHashStatus>,
+    pub payload_loader_load_strategy: Option<rouwdi_rustc_upstream::CompilerPayloadLoadStrategy>,
+    pub payload_loader_loadability_status:
+        Option<rouwdi_rustc_upstream::CompilerPayloadLoadabilityStatus>,
+    pub payload_loader_loadable_by_rouwdi_wasm: Option<bool>,
+    pub payload_loader_blocker_kind: Option<String>,
+    pub payload_loader_blocker_reason: Option<String>,
+    pub payload_next_required_artifact_format: Option<String>,
     pub payload_loaded_into_rouwdi_facade: bool,
     pub payload_load_blocker_kind: Option<String>,
     pub payload_load_blocker_reason: Option<String>,
@@ -1159,6 +1177,48 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_carrier_state = payload_carrier
         .as_ref()
         .map(|carrier| carrier.state.as_str().to_owned());
+    let payload_loader_inspection = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.loader_inspection.clone());
+    let payload_bundle_inspected = payload_loader_inspection
+        .as_ref()
+        .is_some_and(|inspection| inspection.payload_bundle_inspected);
+    let payload_bundle_manifest_path = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.bundle_manifest.path.clone());
+    let payload_bundle_manifest_sha256 = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.bundle_manifest.sha256.clone());
+    let payload_loader_exported_artifact_class = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.exported_payload.artifact_class);
+    let payload_loader_metadata_artifact_class = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.metadata_artifact.artifact_class);
+    let payload_loader_exported_hash_status = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.exported_payload.hash_status);
+    let payload_loader_metadata_hash_status = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.metadata_artifact.hash_status);
+    let payload_loader_load_strategy = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.load_strategy);
+    let payload_loader_loadability_status = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.loadability_status);
+    let payload_loader_loadable_by_rouwdi_wasm = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.loadable_by_rouwdi_wasm);
+    let payload_loader_blocker_kind = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.loader_blocker_kind.clone());
+    let payload_loader_blocker_reason = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.exact_loader_blocker.clone());
+    let payload_next_required_artifact_format = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| inspection.next_required_artifact_format.clone());
     let payload_load_blocker_kind = payload_carrier
         .as_ref()
         .and_then(|carrier| carrier.load_blocker_kind.clone());
@@ -1189,12 +1249,26 @@ pub fn handoff_rust_mir_for_compile_unit(
     let blocker_component_path = ledger_blocker
         .map(|blocker| blocker.source_path.clone())
         .or_else(|| payload_adapter.bootstrap_adapter_source_path.clone());
+    let payload_loader_note = payload_loader_inspection
+        .as_ref()
+        .map(|inspection| {
+            format!(
+                "payload bundle inspected from {}; exported payload classified as {}; metadata artifact classified as {}; loader selected {}; loadability {}; next required artifact format {}",
+                inspection.bundle_manifest.path,
+                inspection.exported_payload.artifact_class.as_str(),
+                inspection.metadata_artifact.artifact_class.as_str(),
+                inspection.load_strategy.as_str(),
+                inspection.loadability_status.as_str(),
+                inspection.next_required_artifact_format
+            )
+        })
+        .unwrap_or_else(|| "payload bundle was not available for loader inspection".to_owned());
     let blocker_reason = if available {
         None
     } else if let Some(resolved) = resolved_blocker.as_ref() {
         let blocker = &resolved.blocked_component;
         let mut reason = format!(
-            "upstream MIR payload adapter {} is {}; blocker component {} is {}; adapter feature {}; authoritative probe `{}` in {} exited {} with {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
+            "upstream MIR payload adapter {} is {}; blocker component {} is {}; adapter feature {}; authoritative probe `{}` in {} exited {} with {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; see {} and adapter {}",
             payload_adapter.adapter_symbol,
             payload_adapter.status.as_str(),
             blocker.name,
@@ -1208,6 +1282,7 @@ pub fn handoff_rust_mir_for_compile_unit(
             payload_adapter.normal_workspace_probe_exit_code,
             boundary.required_context_objects.join(", "),
             boundary.embedded_prerequisite_adapters.join(", "),
+            payload_loader_note,
             blocker.exact_blocker,
             rouwdi_rustc_upstream::IMPORT_LEDGER_PATH,
             rouwdi_rustc_upstream::ADAPTER_CRATE
@@ -1221,7 +1296,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         Some(reason)
     } else {
         Some(format!(
-            "upstream MIR payload adapter {} is {}; carrier state {}; bootstrap artifact located {}; payload carrier created {}; payload loaded into rouwdi facade {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
+            "upstream MIR payload adapter {} is {}; carrier state {}; bootstrap artifact located {}; payload carrier created {}; payload loaded into rouwdi facade {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; see {} and adapter {}",
             payload_adapter.adapter_symbol,
             payload_adapter.status.as_str(),
             payload_carrier_state.as_deref().unwrap_or("unrecorded"),
@@ -1237,6 +1312,7 @@ pub fn handoff_rust_mir_for_compile_unit(
             payload_adapter.normal_workspace_probe_exit_code,
             boundary.required_context_objects.join(", "),
             boundary.embedded_prerequisite_adapters.join(", "),
+            payload_loader_note,
             payload_adapter
                 .blocker_reason
                 .clone()
@@ -1296,6 +1372,19 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_carrier_state,
         payload_carrier_created: payload_adapter.payload_carrier_created,
         payload_carrier,
+        payload_bundle_inspected,
+        payload_bundle_manifest_path,
+        payload_bundle_manifest_sha256,
+        payload_loader_exported_artifact_class,
+        payload_loader_metadata_artifact_class,
+        payload_loader_exported_hash_status,
+        payload_loader_metadata_hash_status,
+        payload_loader_load_strategy,
+        payload_loader_loadability_status,
+        payload_loader_loadable_by_rouwdi_wasm,
+        payload_loader_blocker_kind,
+        payload_loader_blocker_reason,
+        payload_next_required_artifact_format,
         payload_loaded_into_rouwdi_facade: payload_adapter.payload_loaded_into_rouwdi_facade,
         payload_load_blocker_kind,
         payload_load_blocker_reason,
@@ -3719,7 +3808,39 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_rlib_not_rouwdi_loadable")
+            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+        );
+        assert!(handoff.payload_bundle_inspected);
+        assert_eq!(
+            handoff.payload_bundle_manifest_path.as_deref(),
+            Some(rouwdi_rustc_upstream::MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
+        );
+        assert_eq!(
+            handoff.payload_loader_exported_artifact_class,
+            Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)
+        );
+        assert_eq!(
+            handoff.payload_loader_metadata_artifact_class,
+            Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::MetadataOnly)
+        );
+        assert_eq!(
+            handoff.payload_loader_exported_hash_status,
+            Some(rouwdi_rustc_upstream::CompilerPayloadHashStatus::NotProvided)
+        );
+        assert_eq!(
+            handoff.payload_loader_load_strategy,
+            Some(rouwdi_rustc_upstream::CompilerPayloadLoadStrategy::InspectRlibArchive)
+        );
+        assert_eq!(
+            handoff.payload_loader_loadability_status,
+            Some(
+                rouwdi_rustc_upstream::CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
+            )
+        );
+        assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(false));
+        assert_eq!(
+            handoff.payload_next_required_artifact_format.as_deref(),
+            Some("wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -3738,7 +3859,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("rustc_private_rlib_not_rouwdi_loadable")
+            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

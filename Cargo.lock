@@ -1925,6 +1925,7 @@ dependencies = [
  "rouwdi-contract",
  "rouwdi-proof",
  "rouwdi-rustc",
+ "rouwdi-rustc-upstream",
  "rouwdi-source",
  "rouwdi-targets",
  "rouwdi-vfs",

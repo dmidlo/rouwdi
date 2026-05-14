@@ -1,5 +1,6 @@
 use rustc_index::{Idx, IndexVec};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const IMPORT_LEDGER_PATH: &str = "bootstrap/upstream-rustc-import.toml";
 pub const ADAPTER_CRATE: &str = "crates/rouwdi-rustc-upstream";
@@ -207,6 +208,8 @@ pub struct MirHandoffPayloadCarrier {
     pub artifact: Option<BootstrapMirAdapterArtifactRecord>,
     pub metadata_artifact: Option<BootstrapMirAdapterArtifactRecord>,
     pub export_manifest: Option<MirPayloadExportManifest>,
+    pub payload_bundle: Option<CompilerPayloadBundle>,
+    pub loader_inspection: Option<CompilerPayloadLoaderInspection>,
     pub bootstrap_artifact_located: bool,
     pub carrier_created: bool,
     pub loaded_into_rouwdi_facade: bool,
@@ -220,6 +223,8 @@ pub struct MirHandoffPayloadCarrier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirPayloadExportManifest {
     pub schema_version: u32,
+    #[serde(default)]
+    pub bundle_format_version: Option<u32>,
     pub adapter_crate: String,
     pub bootstrap_stage: u32,
     pub command: String,
@@ -229,8 +234,174 @@ pub struct MirPayloadExportManifest {
     pub loadable_by_rouwdi_wasm: bool,
     pub loader_blocker_kind: Option<String>,
     pub loader_blocker_reason: Option<String>,
+    #[serde(default)]
+    pub loadability_status: Option<CompilerPayloadLoadabilityStatus>,
+    #[serde(default)]
+    pub exact_loader_blocker: Option<String>,
+    #[serde(default)]
+    pub next_required_artifact_format: Option<String>,
+    #[serde(default)]
+    pub upstream_type_surface: Vec<String>,
+    #[serde(default)]
+    pub provider_surface: Vec<String>,
+    #[serde(default)]
+    pub adapter_entrypoints: Vec<String>,
+    #[serde(default)]
+    pub loadable_export_routes: Vec<CompilerPayloadExportRoute>,
     pub exported_payload: BootstrapMirAdapterArtifactRecord,
     pub metadata_artifact: BootstrapMirAdapterArtifactRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadManifestIdentity {
+    pub path: String,
+    pub schema_version: u32,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadBundle {
+    pub bundle_format_version: u32,
+    pub payload_manifest: CompilerPayloadManifestIdentity,
+    pub exported_rlib_identity: BootstrapMirAdapterArtifactRecord,
+    pub metadata_artifact_identity: BootstrapMirAdapterArtifactRecord,
+    pub bootstrap_command: String,
+    pub stage: u32,
+    pub host_triple: String,
+    pub target_triple: String,
+    pub upstream_type_surface: Vec<String>,
+    pub provider_surface: Vec<String>,
+    pub adapter_entrypoints: Vec<String>,
+    pub loadability_status: CompilerPayloadLoadabilityStatus,
+    pub exact_loader_blocker: String,
+    pub next_required_artifact_format: String,
+    pub loadable_export_routes: Vec<CompilerPayloadExportRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadExportRoute {
+    pub route: String,
+    pub artifact_format: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    pub attempted: bool,
+    pub status: CompilerPayloadExportRouteStatus,
+    #[serde(default)]
+    pub blocker_kind: Option<String>,
+    pub exact_blocker: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadExportRouteStatus {
+    Planned,
+    Blocked,
+    AttemptedBlocked,
+    InspectedUnsupported,
+    Emitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadArtifactClass {
+    MetadataOnly,
+    RlibArchive,
+    NativeDynamicPayload,
+    StaticPayload,
+    WasmModule,
+    WasmComponent,
+    UnsupportedCompilerPrivateArtifact,
+}
+
+impl CompilerPayloadArtifactClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MetadataOnly => "metadata_only",
+            Self::RlibArchive => "rlib_archive",
+            Self::NativeDynamicPayload => "native_dynamic_payload",
+            Self::StaticPayload => "static_payload",
+            Self::WasmModule => "wasm_module",
+            Self::WasmComponent => "wasm_component",
+            Self::UnsupportedCompilerPrivateArtifact => "unsupported_compiler_private_artifact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadHashStatus {
+    NotProvided,
+    Verified,
+    Mismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadLoadStrategy {
+    InspectMetadataOnly,
+    InspectRlibArchive,
+    LoadNativeDynamicPayload,
+    LinkStaticPayload,
+    InstantiateWasmModule,
+    InstantiateWasmComponent,
+    UnsupportedCompilerPrivateArtifact,
+}
+
+impl CompilerPayloadLoadStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InspectMetadataOnly => "inspect_metadata_only",
+            Self::InspectRlibArchive => "inspect_rlib_archive",
+            Self::LoadNativeDynamicPayload => "load_native_dynamic_payload",
+            Self::LinkStaticPayload => "link_static_payload",
+            Self::InstantiateWasmModule => "instantiate_wasm_module",
+            Self::InstantiateWasmComponent => "instantiate_wasm_component",
+            Self::UnsupportedCompilerPrivateArtifact => "unsupported_compiler_private_artifact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadLoadabilityStatus {
+    MetadataOnly,
+    Loadable,
+    Blocked,
+    UnsupportedCompilerPrivateArtifact,
+}
+
+impl CompilerPayloadLoadabilityStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MetadataOnly => "metadata_only",
+            Self::Loadable => "loadable",
+            Self::Blocked => "blocked",
+            Self::UnsupportedCompilerPrivateArtifact => "unsupported_compiler_private_artifact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadArtifactInspection {
+    pub identity: BootstrapMirAdapterArtifactRecord,
+    pub artifact_class: CompilerPayloadArtifactClass,
+    pub hash_status: CompilerPayloadHashStatus,
+    pub computed_sha256: Option<String>,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadLoaderInspection {
+    pub payload_bundle_inspected: bool,
+    pub bundle_manifest: CompilerPayloadManifestIdentity,
+    pub exported_payload: CompilerPayloadArtifactInspection,
+    pub metadata_artifact: CompilerPayloadArtifactInspection,
+    pub load_strategy: CompilerPayloadLoadStrategy,
+    pub loadability_status: CompilerPayloadLoadabilityStatus,
+    pub loadable_by_rouwdi_wasm: bool,
+    pub loader_blocker_kind: Option<String>,
+    pub exact_loader_blocker: String,
+    pub next_required_artifact_format: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +485,12 @@ pub struct BootstrapAdapterProbeRecord {
     pub payload_load_blocker_kind: Option<String>,
     #[serde(default)]
     pub payload_load_blocker_reason: Option<String>,
+    #[serde(default)]
+    pub payload_bundle_format: Option<String>,
+    #[serde(default)]
+    pub payload_loader_status: Option<CompilerPayloadLoadabilityStatus>,
+    #[serde(default)]
+    pub payload_next_required_artifact_format: Option<String>,
     #[serde(default)]
     pub next_artifact_command: Option<String>,
     #[serde(default)]
@@ -528,6 +705,194 @@ pub fn mir_payload_export_manifest() -> MirPayloadExportManifest {
         .expect("bootstrap/mir-payload-export-manifest.toml must remain valid")
 }
 
+pub fn mir_compiler_payload_bundle() -> CompilerPayloadBundle {
+    compiler_payload_bundle_from_manifest(&mir_payload_export_manifest())
+}
+
+pub fn compiler_payload_bundle_from_manifest(
+    manifest: &MirPayloadExportManifest,
+) -> CompilerPayloadBundle {
+    CompilerPayloadBundle {
+        bundle_format_version: manifest.bundle_format_version.unwrap_or(1),
+        payload_manifest: CompilerPayloadManifestIdentity {
+            path: MIR_PAYLOAD_EXPORT_MANIFEST_PATH.to_owned(),
+            schema_version: manifest.schema_version,
+            sha256: sha256_hex(MIR_PAYLOAD_EXPORT_MANIFEST_TOML.as_bytes()),
+        },
+        exported_rlib_identity: manifest.exported_payload.clone(),
+        metadata_artifact_identity: manifest.metadata_artifact.clone(),
+        bootstrap_command: manifest.command.clone(),
+        stage: manifest.bootstrap_stage,
+        host_triple: manifest.host_triple.clone(),
+        target_triple: manifest.target_triple.clone(),
+        upstream_type_surface: if manifest.upstream_type_surface.is_empty() {
+            mir_payload_type_surface()
+        } else {
+            manifest.upstream_type_surface.clone()
+        },
+        provider_surface: if manifest.provider_surface.is_empty() {
+            mir_payload_provider_surface()
+        } else {
+            manifest.provider_surface.clone()
+        },
+        adapter_entrypoints: if manifest.adapter_entrypoints.is_empty() {
+            mir_payload_typechecked_entrypoints()
+        } else {
+            manifest.adapter_entrypoints.clone()
+        },
+        loadability_status: manifest
+            .loadability_status
+            .unwrap_or(CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact),
+        exact_loader_blocker: manifest
+            .exact_loader_blocker
+            .clone()
+            .or_else(|| manifest.loader_blocker_reason.clone())
+            .unwrap_or_else(|| {
+                "compiler payload bundle has no loadable ABI for rouwdi.wasm".to_owned()
+            }),
+        next_required_artifact_format: manifest
+            .next_required_artifact_format
+            .clone()
+            .unwrap_or_else(|| "wasm_component_with_rouwdi_compiler_payload_abi".to_owned()),
+        loadable_export_routes: manifest.loadable_export_routes.clone(),
+    }
+}
+
+pub fn inspect_compiler_payload_bundle(
+    bundle: &CompilerPayloadBundle,
+    exported_payload_bytes: Option<&[u8]>,
+    metadata_artifact_bytes: Option<&[u8]>,
+) -> CompilerPayloadLoaderInspection {
+    let exported_payload =
+        inspect_compiler_payload_artifact(&bundle.exported_rlib_identity, exported_payload_bytes);
+    let metadata_artifact = inspect_compiler_payload_artifact(
+        &bundle.metadata_artifact_identity,
+        metadata_artifact_bytes,
+    );
+    let load_strategy = load_strategy_for_artifact_class(exported_payload.artifact_class);
+    let loadability_status = if bundle.loadability_status
+        == CompilerPayloadLoadabilityStatus::Loadable
+        && matches!(
+            load_strategy,
+            CompilerPayloadLoadStrategy::LoadNativeDynamicPayload
+                | CompilerPayloadLoadStrategy::InstantiateWasmModule
+                | CompilerPayloadLoadStrategy::InstantiateWasmComponent
+        ) {
+        CompilerPayloadLoadabilityStatus::Loadable
+    } else {
+        bundle.loadability_status
+    };
+
+    CompilerPayloadLoaderInspection {
+        payload_bundle_inspected: true,
+        bundle_manifest: bundle.payload_manifest.clone(),
+        exported_payload,
+        metadata_artifact,
+        load_strategy,
+        loadable_by_rouwdi_wasm: loadability_status == CompilerPayloadLoadabilityStatus::Loadable,
+        loadability_status,
+        loader_blocker_kind: (loadability_status != CompilerPayloadLoadabilityStatus::Loadable)
+            .then(|| loadability_status.as_str().to_owned()),
+        exact_loader_blocker: bundle.exact_loader_blocker.clone(),
+        next_required_artifact_format: bundle.next_required_artifact_format.clone(),
+    }
+}
+
+pub fn inspect_compiler_payload_artifact(
+    identity: &BootstrapMirAdapterArtifactRecord,
+    bytes: Option<&[u8]>,
+) -> CompilerPayloadArtifactInspection {
+    let artifact_class = classify_compiler_payload_artifact(identity, bytes);
+    let computed_sha256 = bytes.map(sha256_hex);
+    let size_bytes = bytes.map(|bytes| bytes.len() as u64);
+    let hash_status = match (&computed_sha256, size_bytes) {
+        (Some(hash), Some(size))
+            if hash.eq_ignore_ascii_case(&identity.sha256) && size == identity.size_bytes =>
+        {
+            CompilerPayloadHashStatus::Verified
+        }
+        (Some(_), Some(_)) => CompilerPayloadHashStatus::Mismatch,
+        _ => CompilerPayloadHashStatus::NotProvided,
+    };
+
+    CompilerPayloadArtifactInspection {
+        identity: identity.clone(),
+        artifact_class,
+        hash_status,
+        computed_sha256,
+        size_bytes,
+    }
+}
+
+pub fn classify_compiler_payload_artifact(
+    identity: &BootstrapMirAdapterArtifactRecord,
+    bytes: Option<&[u8]>,
+) -> CompilerPayloadArtifactClass {
+    let format = identity.artifact_format.as_str();
+    let path = identity.path.as_str();
+
+    if format == "rmeta" || path.ends_with(".rmeta") {
+        CompilerPayloadArtifactClass::MetadataOnly
+    } else if format == "rlib" || path.ends_with(".rlib") {
+        CompilerPayloadArtifactClass::RlibArchive
+    } else if matches!(format, "dylib" | "cdylib" | "native_dynamic")
+        || path.ends_with(".dll")
+        || path.ends_with(".so")
+        || path.ends_with(".dylib")
+    {
+        CompilerPayloadArtifactClass::NativeDynamicPayload
+    } else if matches!(format, "staticlib" | "static_payload")
+        || path.ends_with(".a")
+        || path.ends_with(".lib")
+    {
+        CompilerPayloadArtifactClass::StaticPayload
+    } else if matches!(format, "wasm_component" | "component") || path.ends_with(".component.wasm")
+    {
+        CompilerPayloadArtifactClass::WasmComponent
+    } else if matches!(format, "wasm" | "wasm_module" | "module")
+        || path.ends_with(".wasm")
+        || bytes.is_some_and(|bytes| bytes.starts_with(b"\0asm"))
+    {
+        CompilerPayloadArtifactClass::WasmModule
+    } else {
+        CompilerPayloadArtifactClass::UnsupportedCompilerPrivateArtifact
+    }
+}
+
+fn load_strategy_for_artifact_class(
+    artifact_class: CompilerPayloadArtifactClass,
+) -> CompilerPayloadLoadStrategy {
+    match artifact_class {
+        CompilerPayloadArtifactClass::MetadataOnly => {
+            CompilerPayloadLoadStrategy::InspectMetadataOnly
+        }
+        CompilerPayloadArtifactClass::RlibArchive => {
+            CompilerPayloadLoadStrategy::InspectRlibArchive
+        }
+        CompilerPayloadArtifactClass::NativeDynamicPayload => {
+            CompilerPayloadLoadStrategy::LoadNativeDynamicPayload
+        }
+        CompilerPayloadArtifactClass::StaticPayload => {
+            CompilerPayloadLoadStrategy::LinkStaticPayload
+        }
+        CompilerPayloadArtifactClass::WasmModule => {
+            CompilerPayloadLoadStrategy::InstantiateWasmModule
+        }
+        CompilerPayloadArtifactClass::WasmComponent => {
+            CompilerPayloadLoadStrategy::InstantiateWasmComponent
+        }
+        CompilerPayloadArtifactClass::UnsupportedCompilerPrivateArtifact => {
+            CompilerPayloadLoadStrategy::UnsupportedCompilerPrivateArtifact
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    hex::encode(digest.finalize())
+}
+
 pub fn import_component(name: &str) -> Option<UpstreamCompilerComponentImport> {
     import_ledger()
         .components
@@ -645,6 +1010,15 @@ fn mir_payload_type_surface() -> Vec<String> {
     ]
 }
 
+fn mir_payload_provider_surface() -> Vec<String> {
+    vec![
+        "rustc_mir_build::provide(&mut rustc_middle::util::Providers)".to_owned(),
+        "rustc_middle::util::Providers::queries".to_owned(),
+        "rustc_middle::util::Providers::hooks".to_owned(),
+        "rustc_middle::hooks::Providers::build_mir_inner_impl".to_owned(),
+    ]
+}
+
 #[cfg(feature = "real-rustc-mir-payload")]
 fn mir_payload_typechecked_entrypoints() -> Vec<String> {
     real_mir_payload_adapter::typechecked_entrypoints()
@@ -713,6 +1087,12 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
         .as_ref()
         .map(|artifact| artifact.artifact_kind.as_str())
         .unwrap_or("unlocated");
+    let payload_bundle = export_manifest
+        .as_ref()
+        .map(compiler_payload_bundle_from_manifest);
+    let loader_inspection = payload_bundle
+        .as_ref()
+        .map(|bundle| inspect_compiler_payload_bundle(bundle, None, None));
 
     Some(MirHandoffPayloadCarrier {
         carrier_id: format!(
@@ -742,6 +1122,8 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
         artifact: exported_payload,
         metadata_artifact,
         export_manifest,
+        payload_bundle,
+        loader_inspection,
         bootstrap_artifact_located,
         carrier_created,
         loaded_into_rouwdi_facade,
@@ -1269,7 +1651,11 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_rlib_not_rouwdi_loadable")
+            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+        );
+        assert_eq!(
+            carrier.loader_inspection.as_ref().unwrap().load_strategy,
+            CompilerPayloadLoadStrategy::InspectRlibArchive
         );
         assert!(carrier
             .next_artifact_command
@@ -1304,7 +1690,7 @@ mod tests {
         assert!(adapter
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("real rlib payload")));
+            .is_some_and(|reason| reason.contains("compiler-payload bundle")));
     }
 
     #[test]
@@ -1355,12 +1741,22 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_rlib_not_rouwdi_loadable")
+            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("loader for rustc-private rlib")));
+            .is_some_and(|reason| reason.contains("loader boundary")));
+        assert!(carrier.payload_bundle.is_some());
+        assert_eq!(
+            carrier
+                .loader_inspection
+                .as_ref()
+                .unwrap()
+                .exported_payload
+                .artifact_class,
+            CompilerPayloadArtifactClass::RlibArchive
+        );
         assert_eq!(carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(
             carrier.export_manifest_path.as_deref(),
@@ -1393,8 +1789,163 @@ mod tests {
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             manifest.loader_blocker_kind.as_deref(),
-            Some("rustc_private_rlib_not_rouwdi_loadable")
+            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
         );
+        assert_eq!(
+            manifest.loadability_status,
+            Some(CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact)
+        );
+        assert!(manifest
+            .loadable_export_routes
+            .iter()
+            .any(|route| route.route == "wasm32_wasip2_component"
+                && route.status == CompilerPayloadExportRouteStatus::Blocked
+                && route.blocker_kind.as_deref() == Some("wasm_target_incompatibility")));
+    }
+
+    #[test]
+    fn compiler_payload_bundle_records_loader_boundary_and_export_routes() {
+        let bundle = mir_compiler_payload_bundle();
+
+        assert_eq!(bundle.bundle_format_version, 1);
+        assert_eq!(
+            bundle.payload_manifest.path,
+            MIR_PAYLOAD_EXPORT_MANIFEST_PATH
+        );
+        assert_eq!(bundle.payload_manifest.sha256.len(), 64);
+        assert_eq!(bundle.exported_rlib_identity.artifact_format, "rlib");
+        assert_eq!(bundle.metadata_artifact_identity.artifact_format, "rmeta");
+        assert_eq!(bundle.stage, 1);
+        assert_eq!(bundle.host_triple, "x86_64-pc-windows-msvc");
+        assert!(bundle
+            .upstream_type_surface
+            .contains(&"rustc_middle::mir::Body<'tcx>".to_owned()));
+        assert!(bundle
+            .provider_surface
+            .contains(&"rustc_mir_build::provide(&mut rustc_middle::util::Providers)".to_owned()));
+        assert!(bundle
+            .adapter_entrypoints
+            .iter()
+            .any(|entrypoint| entrypoint.contains("mir_handoff_payload_adapter")));
+        assert_eq!(
+            bundle.loadability_status,
+            CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
+        );
+        assert_eq!(
+            bundle.next_required_artifact_format,
+            "wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi"
+        );
+        assert!(bundle.loadable_export_routes.iter().any(|route| {
+            route.route == "explicit_rouwdi_compiler_payload_bundle"
+                && route.attempted
+                && route.status == CompilerPayloadExportRouteStatus::InspectedUnsupported
+                && route.blocker_kind.as_deref() == Some("abi_boundary_absence")
+        }));
+    }
+
+    #[test]
+    fn compiler_payload_loader_classifies_supported_artifact_families_without_executing_them() {
+        fn artifact(format: &str, path: &str) -> BootstrapMirAdapterArtifactRecord {
+            BootstrapMirAdapterArtifactRecord {
+                crate_name: "payload".to_owned(),
+                artifact_kind: format.to_owned(),
+                artifact_format: format.to_owned(),
+                path: path.to_owned(),
+                sha256: "0".repeat(64),
+                size_bytes: 0,
+                host_triple: "x86_64-pc-windows-msvc".to_owned(),
+                profile: "release".to_owned(),
+                emitted_by: "classification-only".to_owned(),
+                loadable_by_rouwdi_wasm: false,
+            }
+        }
+
+        let cases = [
+            (
+                artifact("rmeta", "payload.rmeta"),
+                CompilerPayloadArtifactClass::MetadataOnly,
+            ),
+            (
+                artifact("rlib", "libpayload.rlib"),
+                CompilerPayloadArtifactClass::RlibArchive,
+            ),
+            (
+                artifact("cdylib", "payload.dll"),
+                CompilerPayloadArtifactClass::NativeDynamicPayload,
+            ),
+            (
+                artifact("staticlib", "payload.lib"),
+                CompilerPayloadArtifactClass::StaticPayload,
+            ),
+            (
+                artifact("wasm_module", "payload.wasm"),
+                CompilerPayloadArtifactClass::WasmModule,
+            ),
+            (
+                artifact("wasm_component", "payload.component.wasm"),
+                CompilerPayloadArtifactClass::WasmComponent,
+            ),
+            (
+                artifact("rustc_private_blob", "payload.bin"),
+                CompilerPayloadArtifactClass::UnsupportedCompilerPrivateArtifact,
+            ),
+        ];
+
+        for (identity, expected) in cases {
+            assert_eq!(
+                classify_compiler_payload_artifact(&identity, None),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_payload_loader_hash_verifies_current_rlib_and_rejects_loadability() {
+        let bundle = mir_compiler_payload_bundle();
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("adapter crate lives under workspace/crates/rouwdi-rustc-upstream");
+        let rlib_bytes = std::fs::read(workspace.join(&bundle.exported_rlib_identity.path)).expect(
+            "run `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` first",
+        );
+        let rmeta_bytes = std::fs::read(workspace.join(&bundle.metadata_artifact_identity.path))
+            .expect(
+                "run `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` first",
+            );
+
+        let inspection =
+            inspect_compiler_payload_bundle(&bundle, Some(&rlib_bytes), Some(&rmeta_bytes));
+
+        assert!(inspection.payload_bundle_inspected);
+        assert_eq!(
+            inspection.exported_payload.artifact_class,
+            CompilerPayloadArtifactClass::RlibArchive
+        );
+        assert_eq!(
+            inspection.metadata_artifact.artifact_class,
+            CompilerPayloadArtifactClass::MetadataOnly
+        );
+        assert_eq!(
+            inspection.exported_payload.hash_status,
+            CompilerPayloadHashStatus::Verified
+        );
+        assert_eq!(
+            inspection.metadata_artifact.hash_status,
+            CompilerPayloadHashStatus::Verified
+        );
+        assert_eq!(
+            inspection.load_strategy,
+            CompilerPayloadLoadStrategy::InspectRlibArchive
+        );
+        assert_eq!(
+            inspection.loadability_status,
+            CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
+        );
+        assert!(!inspection.loadable_by_rouwdi_wasm);
+        assert!(inspection
+            .exact_loader_blocker
+            .contains("must not execute or fake-call"));
     }
 
     #[test]
@@ -1432,7 +1983,7 @@ mod tests {
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("real rlib payload")));
+            .is_some_and(|reason| reason.contains("compiler-payload bundle")));
     }
 
     #[test]
@@ -1458,7 +2009,8 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "rustc_private_rlib_not_rouwdi_loadable"
+                && component.blocker_kind
+                    == "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

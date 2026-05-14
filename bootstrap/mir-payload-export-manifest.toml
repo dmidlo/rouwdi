@@ -1,4 +1,5 @@
 schema_version = 1
+bundle_format_version = 1
 adapter_crate = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
 bootstrap_stage = 1
 command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
@@ -6,8 +7,81 @@ host_triple = "x86_64-pc-windows-msvc"
 target_triple = "x86_64-pc-windows-msvc"
 profile = "release"
 loadable_by_rouwdi_wasm = false
-loader_blocker_kind = "rustc_private_rlib_not_rouwdi_loadable"
-loader_blocker_reason = "The bootstrap build now exports a real Rust rlib for rouwdi_mir_adapter_probe, but an rlib is a rustc-private archive tied to the stage1 compiler metadata/linkage model. rouwdi.wasm cannot load it until the loader accepts an explicit compiler payload bundle or the adapter is emitted as a Wasm/component ABI."
+loader_blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
+loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported payload remains not loadable by rouwdi.wasm because it has no explicit rouwdi compiler-payload ABI, no Wasm module/component exports, and no rouwdi-owned loader capable of executing rustc-private rlib archives."
+loadability_status = "unsupported_compiler_private_artifact"
+exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. The next required artifact is a Wasm component/module or explicit rouwdi compiler-payload ABI with declared entrypoints."
+next_required_artifact_format = "wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi"
+upstream_type_surface = [
+  "rustc_middle::mir::Body<'tcx>",
+  "rustc_middle::ty::TyCtxt<'tcx>",
+  "rustc_middle::query::Providers",
+  "rustc_middle::util::Providers",
+  "rustc_session::Session",
+  "rustc_hir::def_id::LocalDefId",
+  "rustc_span::def_id::LocalDefId",
+  "rustc_mir_build::provide",
+  "rustc_middle::hooks::Providers::build_mir_inner_impl",
+]
+provider_surface = [
+  "rustc_mir_build::provide(&mut rustc_middle::util::Providers)",
+  "rustc_middle::util::Providers::queries",
+  "rustc_middle::util::Providers::hooks",
+  "rustc_middle::hooks::Providers::build_mir_inner_impl",
+]
+adapter_entrypoints = [
+  "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
+  "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
+]
+
+[[loadable_export_routes]]
+route = "explicit_rouwdi_compiler_payload_bundle"
+artifact_format = "rouwdi_compiler_payload_bundle"
+command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json --require-located"
+attempted = true
+status = "inspected_unsupported"
+blocker_kind = "abi_boundary_absence"
+exact_blocker = "The explicit bundle format now exists and is consumed by rouwdi's loader boundary, but the payload inside it is still a rustc-private rlib archive without callable rouwdi compiler-payload ABI entrypoints."
+
+[[loadable_export_routes]]
+route = "dylib"
+artifact_format = "native_dynamic_payload"
+attempted = false
+status = "blocked"
+blocker_kind = "crate_type_rule"
+exact_blocker = "third_party/rust/src/tools/rouwdi-mir-adapter-probe/Cargo.toml declares [lib] crate-type = [\"rlib\"], and the registered x.py ToolRustcPrivate build step asks for ToolArtifactKind::Library. No dylib export rule or rouwdi-safe native dynamic ABI boundary is registered."
+
+[[loadable_export_routes]]
+route = "cdylib"
+artifact_format = "native_dynamic_payload"
+attempted = false
+status = "blocked"
+blocker_kind = "rustc_private_restriction"
+exact_blocker = "The adapter depends on rustc_private crates and Rust compiler-private types such as TyCtxt and Body<'tcx>. A cdylib would require a stable extern ABI surface that does not expose those Rust ABI types."
+
+[[loadable_export_routes]]
+route = "staticlib"
+artifact_format = "static_payload"
+attempted = false
+status = "blocked"
+blocker_kind = "dynamic_loading_limitation"
+exact_blocker = "A staticlib is link input, not a standalone rouwdi.wasm-loadable compiler payload. It would still require a rouwdi-owned link step and explicit ABI symbols before it could become a loadable payload."
+
+[[loadable_export_routes]]
+route = "wasm32_wasip1_module"
+artifact_format = "wasm_module"
+attempted = false
+status = "blocked"
+blocker_kind = "wasm_target_incompatibility"
+exact_blocker = "The adapter currently builds in the stage1 host compiler-private environment and depends on rustc_middle, rustc_session, and rustc_mir_build as host compiler crates. No wasm32-wasip1 compiler-private target pack or rouwdi compiler-payload ABI has been emitted."
+
+[[loadable_export_routes]]
+route = "wasm32_wasip2_component"
+artifact_format = "wasm_component"
+attempted = false
+status = "blocked"
+blocker_kind = "wasm_target_incompatibility"
+exact_blocker = "No component export lane exists for rustc_private compiler crates, and the adapter has no WIT/component ABI for TyCtxt, Providers, MIR Body, or provider registration."
 
 [exported_payload]
 crate_name = "rouwdi_mir_adapter_probe"
