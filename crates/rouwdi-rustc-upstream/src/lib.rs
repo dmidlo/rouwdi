@@ -8,8 +8,11 @@ pub const MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL: &str =
     "rouwdi_rustc_upstream::mir_handoff_payload_adapter";
 pub const MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND: &str =
     "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json";
+pub const MIR_PAYLOAD_EXPORT_MANIFEST_PATH: &str = "bootstrap/mir-payload-export-manifest.toml";
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
+const MIR_PAYLOAD_EXPORT_MANIFEST_TOML: &str =
+    include_str!("../../../bootstrap/mir-payload-export-manifest.toml");
 
 macro_rules! count_error_codes {
     ($($code:tt,)*) => {
@@ -126,6 +129,7 @@ pub enum MirHandoffPayloadAdapterStatus {
     Typechecked,
     PayloadCarrierCreated,
     PayloadLoadBlocked,
+    PayloadExportedLoadBlocked,
     TypecheckedByBootstrapProbe,
     BlockedByBootstrapProbe,
     BlockedByNormalWorkspaceCargo,
@@ -137,6 +141,7 @@ impl MirHandoffPayloadAdapterStatus {
             Self::Typechecked => "typechecked",
             Self::PayloadCarrierCreated => "payload_carrier_created",
             Self::PayloadLoadBlocked => "payload_load_blocked",
+            Self::PayloadExportedLoadBlocked => "payload_exported_load_blocked",
             Self::TypecheckedByBootstrapProbe => "typechecked_by_bootstrap_probe",
             Self::BlockedByBootstrapProbe => "blocked_by_bootstrap_probe",
             Self::BlockedByNormalWorkspaceCargo => "blocked_by_normal_workspace_cargo",
@@ -150,6 +155,7 @@ pub enum MirHandoffPayloadCarrierState {
     BootstrapPayloadLocated,
     PayloadCarrierCreated,
     PayloadLoadBlocked,
+    PayloadExportedLoadBlocked,
     PayloadLoaded,
 }
 
@@ -159,6 +165,7 @@ impl MirHandoffPayloadCarrierState {
             Self::BootstrapPayloadLocated => "bootstrap_payload_located",
             Self::PayloadCarrierCreated => "payload_carrier_created",
             Self::PayloadLoadBlocked => "payload_load_blocked",
+            Self::PayloadExportedLoadBlocked => "payload_exported_load_blocked",
             Self::PayloadLoaded => "payload_loaded",
         }
     }
@@ -196,7 +203,10 @@ pub struct MirHandoffPayloadCarrier {
     pub typechecked_entrypoints: Vec<String>,
     pub artifact_locate_command: String,
     pub artifact_build_command: Option<String>,
+    pub export_manifest_path: Option<String>,
     pub artifact: Option<BootstrapMirAdapterArtifactRecord>,
+    pub metadata_artifact: Option<BootstrapMirAdapterArtifactRecord>,
+    pub export_manifest: Option<MirPayloadExportManifest>,
     pub bootstrap_artifact_located: bool,
     pub carrier_created: bool,
     pub loaded_into_rouwdi_facade: bool,
@@ -205,6 +215,22 @@ pub struct MirHandoffPayloadCarrier {
     pub next_artifact_command: Option<String>,
     pub next_artifact_command_exit_code: Option<i32>,
     pub next_artifact_command_evidence: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirPayloadExportManifest {
+    pub schema_version: u32,
+    pub adapter_crate: String,
+    pub bootstrap_stage: u32,
+    pub command: String,
+    pub host_triple: String,
+    pub target_triple: String,
+    pub profile: String,
+    pub loadable_by_rouwdi_wasm: bool,
+    pub loader_blocker_kind: Option<String>,
+    pub loader_blocker_reason: Option<String>,
+    pub exported_payload: BootstrapMirAdapterArtifactRecord,
+    pub metadata_artifact: BootstrapMirAdapterArtifactRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,7 +303,11 @@ pub struct BootstrapAdapterProbeRecord {
     #[serde(default)]
     pub artifact_build_command: Option<String>,
     #[serde(default)]
+    pub export_manifest_path: Option<String>,
+    #[serde(default)]
     pub artifact: Option<BootstrapMirAdapterArtifactRecord>,
+    #[serde(default)]
+    pub metadata_artifact: Option<BootstrapMirAdapterArtifactRecord>,
     #[serde(default)]
     pub payload_loaded_into_rouwdi_facade: Option<bool>,
     #[serde(default)]
@@ -304,7 +334,12 @@ impl BootstrapAdapterProbeRecord {
         self.payload_carrier_created.unwrap_or(false)
             || matches!(
                 self.payload_state.as_deref(),
-                Some("payload_carrier_created" | "payload_load_blocked" | "payload_loaded")
+                Some(
+                    "payload_carrier_created"
+                        | "payload_load_blocked"
+                        | "payload_exported_load_blocked"
+                        | "payload_loaded"
+                )
             )
     }
 }
@@ -488,6 +523,11 @@ pub fn import_ledger() -> UpstreamRustcImportLedger {
         .expect("bootstrap/upstream-rustc-import.toml must remain valid")
 }
 
+pub fn mir_payload_export_manifest() -> MirPayloadExportManifest {
+    toml::from_str(MIR_PAYLOAD_EXPORT_MANIFEST_TOML)
+        .expect("bootstrap/mir-payload-export-manifest.toml must remain valid")
+}
+
 pub fn import_component(name: &str) -> Option<UpstreamCompilerComponentImport> {
     import_ledger()
         .components
@@ -624,6 +664,9 @@ fn parse_payload_carrier_state(value: Option<&str>) -> Option<MirHandoffPayloadC
             Some(MirHandoffPayloadCarrierState::PayloadCarrierCreated)
         }
         Some("payload_load_blocked") => Some(MirHandoffPayloadCarrierState::PayloadLoadBlocked),
+        Some("payload_exported_load_blocked") => {
+            Some(MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked)
+        }
         Some("payload_loaded") => Some(MirHandoffPayloadCarrierState::PayloadLoaded),
         _ => None,
     }
@@ -631,8 +674,23 @@ fn parse_payload_carrier_state(value: Option<&str>) -> Option<MirHandoffPayloadC
 
 pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
     let probe = mir_handoff_bootstrap_adapter_probe()?;
+    let export_manifest = probe
+        .export_manifest_path
+        .as_deref()
+        .filter(|path| *path == MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
+        .map(|_| mir_payload_export_manifest());
     let bootstrap_adapter_typechecked = probe.typechecked();
-    let bootstrap_artifact_located = probe.artifact.is_some();
+    let exported_payload = probe.artifact.clone().or_else(|| {
+        export_manifest
+            .as_ref()
+            .map(|manifest| manifest.exported_payload.clone())
+    });
+    let metadata_artifact = probe.metadata_artifact.clone().or_else(|| {
+        export_manifest
+            .as_ref()
+            .map(|manifest| manifest.metadata_artifact.clone())
+    });
+    let bootstrap_artifact_located = exported_payload.is_some() || metadata_artifact.is_some();
     let loaded_into_rouwdi_facade = probe.payload_loaded_into_rouwdi_facade.unwrap_or(false);
     let carrier_created = probe.payload_carrier_created()
         || bootstrap_artifact_located
@@ -641,6 +699,8 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
     let state = parse_payload_carrier_state(probe.payload_state.as_deref()).unwrap_or_else(|| {
         if loaded_into_rouwdi_facade {
             MirHandoffPayloadCarrierState::PayloadLoaded
+        } else if exported_payload.is_some() && probe.payload_load_blocker_kind.is_some() {
+            MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked
         } else if probe.payload_load_blocker_kind.is_some() {
             MirHandoffPayloadCarrierState::PayloadLoadBlocked
         } else if carrier_created {
@@ -649,8 +709,7 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
             MirHandoffPayloadCarrierState::BootstrapPayloadLocated
         }
     });
-    let artifact_kind = probe
-        .artifact
+    let artifact_kind = exported_payload
         .as_ref()
         .map(|artifact| artifact.artifact_kind.as_str())
         .unwrap_or("unlocated");
@@ -679,7 +738,10 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
             .artifact_locate_command
             .unwrap_or_else(|| MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND.to_owned()),
         artifact_build_command: probe.artifact_build_command,
-        artifact: probe.artifact,
+        export_manifest_path: probe.export_manifest_path,
+        artifact: exported_payload,
+        metadata_artifact,
+        export_manifest,
         bootstrap_artifact_located,
         carrier_created,
         loaded_into_rouwdi_facade,
@@ -712,8 +774,13 @@ pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
     let payload_load_blocked = payload_carrier
         .as_ref()
         .is_some_and(|carrier| carrier.state == MirHandoffPayloadCarrierState::PayloadLoadBlocked);
+    let payload_exported_load_blocked = payload_carrier.as_ref().is_some_and(|carrier| {
+        carrier.state == MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked
+    });
     let status = if typechecked_under_current_build {
         MirHandoffPayloadAdapterStatus::Typechecked
+    } else if payload_exported_load_blocked {
+        MirHandoffPayloadAdapterStatus::PayloadExportedLoadBlocked
     } else if payload_load_blocked {
         MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
     } else if payload_carrier_created {
@@ -1183,7 +1250,7 @@ mod tests {
         assert_eq!(adapter.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             adapter.status,
-            MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
+            MirHandoffPayloadAdapterStatus::PayloadExportedLoadBlocked
         );
         assert!(!adapter.adapter_available);
         assert!(adapter.bootstrap_adapter_typechecked);
@@ -1193,12 +1260,16 @@ mod tests {
         let carrier = adapter.payload_carrier.as_ref().unwrap();
         assert_eq!(
             carrier.state,
-            MirHandoffPayloadCarrierState::PayloadLoadBlocked
+            MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked
         );
-        assert_eq!(carrier.artifact.as_ref().unwrap().artifact_format, "rmeta");
+        assert_eq!(carrier.artifact.as_ref().unwrap().artifact_format, "rlib");
+        assert_eq!(
+            carrier.metadata_artifact.as_ref().unwrap().artifact_format,
+            "rmeta"
+        );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("artifact_format_rmeta_not_loadable_component")
+            Some("rustc_private_rlib_not_rouwdi_loadable")
         );
         assert!(carrier
             .next_artifact_command
@@ -1233,16 +1304,16 @@ mod tests {
         assert!(adapter
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
+            .is_some_and(|reason| reason.contains("real rlib payload")));
     }
 
     #[test]
-    fn mir_handoff_payload_carrier_records_bootstrap_artifact_identity() {
+    fn mir_handoff_payload_carrier_records_bootstrap_exported_payload_identity() {
         let carrier = mir_handoff_payload_carrier().unwrap();
 
         assert_eq!(
             carrier.state,
-            MirHandoffPayloadCarrierState::PayloadLoadBlocked
+            MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked
         );
         assert_eq!(
             carrier.bootstrap_adapter_crate,
@@ -1261,26 +1332,69 @@ mod tests {
             .contains(&"rustc_mir_build::provide(&mut rustc_middle::util::Providers)".to_owned()));
         let artifact = carrier.artifact.as_ref().unwrap();
         assert_eq!(artifact.crate_name, "rouwdi_mir_adapter_probe");
-        assert_eq!(artifact.artifact_kind, "rustc_metadata");
-        assert_eq!(artifact.artifact_format, "rmeta");
-        assert!(artifact
+        assert_eq!(artifact.artifact_kind, "rust_rlib");
+        assert_eq!(artifact.artifact_format, "rlib");
+        assert!(artifact.path.ends_with("librouwdi_mir_adapter_probe.rlib"));
+        assert_eq!(
+            artifact.sha256,
+            "3408dea65b1695dae215b62e886a9f56980c5c1d8fb17a2551ce1ed751cdc19c"
+        );
+        assert_eq!(artifact.size_bytes, 54210);
+        assert!(!artifact.loadable_by_rouwdi_wasm);
+        let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
+        assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
+        assert_eq!(metadata_artifact.artifact_format, "rmeta");
+        assert!(metadata_artifact
             .path
             .ends_with("librouwdi_mir_adapter_probe-346edc2538de29f5.rmeta"));
         assert_eq!(
-            artifact.sha256,
+            metadata_artifact.sha256,
             "58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1"
         );
-        assert_eq!(artifact.size_bytes, 27097);
-        assert!(!artifact.loadable_by_rouwdi_wasm);
+        assert_eq!(metadata_artifact.size_bytes, 27097);
+        assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("artifact_format_rmeta_not_loadable_component")
+            Some("rustc_private_rlib_not_rouwdi_loadable")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
-        assert_eq!(carrier.next_artifact_command_exit_code, Some(1));
+            .is_some_and(|reason| reason.contains("loader for rustc-private rlib")));
+        assert_eq!(carrier.next_artifact_command_exit_code, Some(0));
+        assert_eq!(
+            carrier.export_manifest_path.as_deref(),
+            Some(MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
+        );
+        assert_eq!(
+            carrier.export_manifest.as_ref().unwrap().exported_payload,
+            artifact.clone()
+        );
+    }
+
+    #[test]
+    fn mir_payload_export_manifest_distinguishes_metadata_from_payload() {
+        let manifest = mir_payload_export_manifest();
+
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(
+            manifest.command,
+            "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+        );
+        assert_eq!(manifest.exported_payload.artifact_format, "rlib");
+        assert_eq!(manifest.metadata_artifact.artifact_format, "rmeta");
+        assert_ne!(
+            manifest.exported_payload.path,
+            manifest.metadata_artifact.path
+        );
+        assert_eq!(manifest.exported_payload.size_bytes, 54210);
+        assert_eq!(manifest.metadata_artifact.size_bytes, 27097);
+        assert!(!manifest.exported_payload.loadable_by_rouwdi_wasm);
+        assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
+        assert_eq!(
+            manifest.loader_blocker_kind.as_deref(),
+            Some("rustc_private_rlib_not_rouwdi_loadable")
+        );
     }
 
     #[test]
@@ -1290,12 +1404,12 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.payload_adapter_status,
-            MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
+            MirHandoffPayloadAdapterStatus::PayloadExportedLoadBlocked
         );
         assert!(!boundary.payload_adapter_available);
         assert_eq!(
             boundary.payload_carrier_state,
-            Some(MirHandoffPayloadCarrierState::PayloadLoadBlocked)
+            Some(MirHandoffPayloadCarrierState::PayloadExportedLoadBlocked)
         );
         assert!(boundary.payload_carrier_created);
         assert!(boundary.bootstrap_artifact_located);
@@ -1306,7 +1420,7 @@ mod tests {
         );
         assert_eq!(
             boundary.blocker_import_status.as_deref(),
-            Some("payload_load_blocked")
+            Some("payload_exported_load_blocked")
         );
         assert!(boundary
             .embedded_prerequisite_adapters
@@ -1318,7 +1432,7 @@ mod tests {
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
+            .is_some_and(|reason| reason.contains("real rlib payload")));
     }
 
     #[test]
@@ -1344,7 +1458,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "artifact_format_rmeta_not_loadable_component"
+                && component.blocker_kind == "rustc_private_rlib_not_rouwdi_loadable"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

@@ -3690,7 +3690,10 @@ mod tests {
             handoff.payload_adapter_symbol,
             rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
         );
-        assert_eq!(handoff.payload_adapter_status, "payload_load_blocked");
+        assert_eq!(
+            handoff.payload_adapter_status,
+            "payload_exported_load_blocked"
+        );
         assert_eq!(handoff.payload_adapter_feature, "real-rustc-mir-payload");
         assert!(!handoff.payload_adapter_typechecked);
         assert!(handoff.payload_adapter_bootstrap_typechecked);
@@ -3699,18 +3702,26 @@ mod tests {
         assert!(!handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             handoff.payload_carrier_state.as_deref(),
-            Some("payload_load_blocked")
+            Some("payload_exported_load_blocked")
         );
         let payload_carrier = handoff.payload_carrier.as_ref().unwrap();
         assert_eq!(
             payload_carrier.artifact.as_ref().unwrap().artifact_format,
+            "rlib"
+        );
+        assert_eq!(
+            payload_carrier
+                .metadata_artifact
+                .as_ref()
+                .unwrap()
+                .artifact_format,
             "rmeta"
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("artifact_format_rmeta_not_loadable_component")
+            Some("rustc_private_rlib_not_rouwdi_loadable")
         );
-        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(1));
+        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
         assert!(handoff
             .payload_adapter_probe_command
@@ -3727,11 +3738,11 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("artifact_format_rmeta_not_loadable_component")
+            Some("rustc_private_rlib_not_rouwdi_loadable")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),
-            Some("payload_load_blocked")
+            Some("payload_exported_load_blocked")
         );
         assert!(handoff
             .blocker_probe_command
@@ -3761,7 +3772,7 @@ mod tests {
         assert!(handoff
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("payload_load_blocked")
+            .is_some_and(|reason| reason.contains("payload_exported_load_blocked")
                 && reason.contains("bootstrap artifact located true")
                 && reason.contains("bootstrap authoritative probe")));
     }
@@ -4195,14 +4206,17 @@ mod tests {
             mir_handoff.blocker_component.as_deref(),
             Some("mir_handoff_payload_adapter")
         );
-        assert_eq!(mir_handoff.payload_adapter_status, "payload_load_blocked");
+        assert_eq!(
+            mir_handoff.payload_adapter_status,
+            "payload_exported_load_blocked"
+        );
         assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
         assert!(mir_handoff.payload_adapter_bootstrap_artifact_located);
         assert!(mir_handoff.payload_carrier_created);
         assert!(!mir_handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             mir_handoff.payload_carrier_state.as_deref(),
-            Some("payload_load_blocked")
+            Some("payload_exported_load_blocked")
         );
         assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
         assert_eq!(

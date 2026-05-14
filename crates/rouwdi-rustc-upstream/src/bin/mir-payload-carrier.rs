@@ -13,7 +13,9 @@ struct CarrierReport {
     workspace_root: String,
     carrier: Option<MirHandoffPayloadCarrier>,
     local_artifact: Option<LocalArtifactIdentity>,
+    local_metadata_artifact: Option<LocalArtifactIdentity>,
     artifact_identity_matches_ledger: Option<bool>,
+    metadata_identity_matches_ledger: Option<bool>,
     loadable_by_rouwdi_wasm: bool,
     blocker_kind: Option<String>,
     blocker_reason: Option<String>,
@@ -48,11 +50,24 @@ fn main() -> ExitCode {
         .as_ref()
         .and_then(|carrier| carrier.artifact.as_ref())
         .and_then(|artifact| locate_artifact(&workspace_root, &artifact.path).ok());
+    let local_metadata_artifact = carrier
+        .as_ref()
+        .and_then(|carrier| carrier.metadata_artifact.as_ref())
+        .and_then(|artifact| locate_artifact(&workspace_root, &artifact.path).ok());
     let artifact_identity_matches_ledger = carrier
         .as_ref()
         .and_then(|carrier| carrier.artifact.as_ref())
         .map(|artifact| {
             local_artifact.as_ref().is_some_and(|local| {
+                local.sha256.eq_ignore_ascii_case(&artifact.sha256)
+                    && local.size_bytes == artifact.size_bytes
+            })
+        });
+    let metadata_identity_matches_ledger = carrier
+        .as_ref()
+        .and_then(|carrier| carrier.metadata_artifact.as_ref())
+        .map(|artifact| {
+            local_metadata_artifact.as_ref().is_some_and(|local| {
                 local.sha256.eq_ignore_ascii_case(&artifact.sha256)
                     && local.size_bytes == artifact.size_bytes
             })
@@ -73,7 +88,9 @@ fn main() -> ExitCode {
         workspace_root: workspace_root.display().to_string(),
         carrier,
         local_artifact,
+        local_metadata_artifact,
         artifact_identity_matches_ledger,
+        metadata_identity_matches_ledger,
         loadable_by_rouwdi_wasm,
         blocker_kind,
         blocker_reason,
@@ -157,6 +174,12 @@ fn print_text_report(report: &CarrierReport) {
         if let Some(artifact) = &carrier.artifact {
             println!(
                 "  artifact: {} {} {} bytes sha256={}",
+                artifact.artifact_format, artifact.path, artifact.size_bytes, artifact.sha256
+            );
+        }
+        if let Some(artifact) = &carrier.metadata_artifact {
+            println!(
+                "  metadata: {} {} {} bytes sha256={}",
                 artifact.artifact_format, artifact.path, artifact.size_bytes, artifact.sha256
             );
         }
