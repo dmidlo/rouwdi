@@ -2,6 +2,20 @@
 
 This is the cleaned, stricter, no-backoff version.
 
+## Windows verification target policy
+
+On Windows/MSVC, do not run bare `cargo test --workspace` against Cargo's
+default `target/` directory. Use:
+
+```powershell
+scripts/verify.ps1
+```
+
+The script sets `CARGO_TARGET_DIR=.rouwdi/t`, creates the directory, and runs
+`cargo test --workspace`. If default-target verification hits `LNK1104`, do
+not spend time investigating unless the same failure reproduces under
+`.rouwdi/t`.
+
 The project is **not**:
 
 ```text id="03fxtp"
