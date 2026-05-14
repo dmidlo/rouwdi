@@ -11,6 +11,8 @@ pub const MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND: &str =
     "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json";
 pub const MIR_PAYLOAD_EXPORT_MANIFEST_PATH: &str = "bootstrap/mir-payload-export-manifest.toml";
 pub const COMPILER_PAYLOAD_ABI_MANIFEST_PATH: &str = "bootstrap/compiler-payload-abi.toml";
+pub const RUSTC_PRIVATE_TARGET_PACK_MANIFEST_PATH: &str =
+    "bootstrap/rustc-private-target-pack.toml";
 pub const COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_version";
 pub const COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_stage";
 pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL: &str =
@@ -24,6 +26,8 @@ const MIR_PAYLOAD_EXPORT_MANIFEST_TOML: &str =
     include_str!("../../../bootstrap/mir-payload-export-manifest.toml");
 const COMPILER_PAYLOAD_ABI_MANIFEST_TOML: &str =
     include_str!("../../../bootstrap/compiler-payload-abi.toml");
+const RUSTC_PRIVATE_TARGET_PACK_MANIFEST_TOML: &str =
+    include_str!("../../../bootstrap/rustc-private-target-pack.toml");
 
 macro_rules! count_error_codes {
     ($($code:tt,)*) => {
@@ -445,6 +449,96 @@ pub struct CompilerPayloadAbiBridge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateTargetPackManifest {
+    pub schema_version: u32,
+    pub target_triple: String,
+    pub host_triple: String,
+    pub status: String,
+    pub milestone_state: String,
+    pub exact_blocker: String,
+    pub next_command: String,
+    pub dependency_closure: RustcPrivateDependencyClosure,
+    pub target_loadable_resolution: RustcPrivateTargetLoadableResolution,
+    #[serde(default)]
+    pub root_crates: Vec<RustcPrivateRootCrateAttempt>,
+    #[serde(default)]
+    pub route_discovery_attempts: Vec<RustcPrivateRouteDiscoveryAttempt>,
+    pub bridge_retry: RustcPrivateBridgeRetry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateDependencyClosure {
+    pub metadata_command: String,
+    pub metadata_exit_code: i32,
+    #[serde(default)]
+    pub root_crates: Vec<String>,
+    #[serde(default)]
+    pub transitive_compiler_private_crates: Vec<String>,
+    #[serde(default)]
+    pub per_root: Vec<RustcPrivatePerRootClosure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivatePerRootClosure {
+    pub root: String,
+    #[serde(default)]
+    pub crates: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateRootCrateAttempt {
+    pub name: String,
+    pub command: String,
+    pub workdir: String,
+    pub exit_code: i32,
+    pub requested_target_triple: String,
+    pub emitted_target_triple: String,
+    pub landed_in: String,
+    #[serde(default)]
+    pub produced_rlib_paths: Vec<String>,
+    #[serde(default)]
+    pub produced_rmeta_paths: Vec<String>,
+    pub target_loadable: bool,
+    pub exact_blocker: String,
+    pub next_command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateRouteDiscoveryAttempt {
+    pub name: String,
+    pub command: String,
+    pub workdir: String,
+    pub exit_code: i32,
+    pub classification: String,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateTargetLoadableResolution {
+    pub selected_strategy: String,
+    #[serde(default)]
+    pub rejected_strategies: Vec<String>,
+    pub target_sysroot_path: String,
+    pub target_libdir_path: String,
+    pub target_rustc_private_artifact_count: usize,
+    pub host_artifact_dir: String,
+    pub exact_blocker: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcPrivateBridgeRetry {
+    pub command: String,
+    pub workdir: String,
+    pub exit_code: i32,
+    pub classification: String,
+    pub evidence: String,
+    pub after_root_crate_attempts: bool,
+    #[serde(default)]
+    pub missing_crates: Vec<String>,
+    pub output_artifact: Option<CompilerPayloadBridgeArtifactIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompilerPayloadTargetPackProvisioning {
     pub target_triple: String,
     pub bootstrap_command: String,
@@ -465,6 +559,12 @@ pub struct CompilerPayloadTargetPackProvisioning {
     pub std_available: bool,
     pub core_available: bool,
     pub alloc_available: bool,
+    #[serde(default)]
+    pub rustc_private_manifest_path: Option<String>,
+    #[serde(default)]
+    pub rustc_private_status: Option<String>,
+    #[serde(default)]
+    pub rustc_private_milestone_state: Option<String>,
     pub blocker_kind: String,
     pub exact_blocker: String,
     pub next_command: String,
@@ -1015,6 +1115,11 @@ pub fn mir_payload_export_manifest() -> MirPayloadExportManifest {
 pub fn compiler_payload_abi_manifest() -> CompilerPayloadAbiManifest {
     toml::from_str(COMPILER_PAYLOAD_ABI_MANIFEST_TOML)
         .expect("bootstrap/compiler-payload-abi.toml must remain valid")
+}
+
+pub fn rustc_private_target_pack_manifest() -> RustcPrivateTargetPackManifest {
+    toml::from_str(RUSTC_PRIVATE_TARGET_PACK_MANIFEST_TOML)
+        .expect("bootstrap/rustc-private-target-pack.toml must remain valid")
 }
 
 pub fn compiler_payload_abi_manifest_identity() -> CompilerPayloadManifestIdentity {
@@ -2107,11 +2212,13 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_target_crates_missing")
+            Some("rustc_private_target_crate_route_blocked_missing_ninja")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -2145,8 +2252,8 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(|command| command.contains("rouwdi-mir-adapter-probe")
-                && command.contains("wasm32-wasip1")));
+            .is_some_and(|command| command.contains("compiler/rustc_span")
+                && command.contains("--host wasm32-wasip1")));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -2227,16 +2334,18 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_target_crates_missing")
+            Some("rustc_private_target_crate_route_blocked_missing_ninja")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("rustc_private crates")));
+            .is_some_and(|reason| reason.contains("root rustc-private crate loop")));
         assert!(carrier.payload_bundle.is_some());
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.blocker_kind, "none");
@@ -2252,7 +2361,7 @@ mod tests {
                 .artifact_class,
             CompilerPayloadArtifactClass::RlibArchive
         );
-        assert_eq!(carrier.next_artifact_command_exit_code, Some(101));
+        assert_eq!(carrier.next_artifact_command_exit_code, Some(1));
         assert_eq!(
             carrier.export_manifest_path.as_deref(),
             Some(MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
@@ -2306,11 +2415,13 @@ mod tests {
         assert_eq!(abi.bridge_status, "attempted_blocked");
         assert_eq!(
             abi.bridge_blocker_kind,
-            "rustc_private_target_crates_missing"
+            "rustc_private_target_crate_route_blocked_missing_ninja"
         );
         assert_eq!(
             abi.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -2333,7 +2444,10 @@ mod tests {
         );
         assert_eq!(bridge.command_exit_code, Some(101));
         assert_eq!(bridge.status, "attempted_blocked");
-        assert_eq!(bridge.blocker_kind, "rustc_private_target_crates_missing");
+        assert_eq!(
+            bridge.blocker_kind,
+            "rustc_private_target_crate_route_blocked_missing_ninja"
+        );
         assert!(bridge
             .input_artifact_identities
             .iter()
@@ -2346,6 +2460,77 @@ mod tests {
             .any(|route| route.route == "wasm32_wasip2_component"
                 && route.status == CompilerPayloadExportRouteStatus::Blocked
                 && route.blocker_kind.as_deref() == Some("wasm_target_incompatibility")));
+    }
+
+    #[test]
+    fn rustc_private_target_pack_manifest_records_full_root_loop() {
+        let manifest = rustc_private_target_pack_manifest();
+
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.target_triple, "wasm32-wasip1");
+        assert_eq!(manifest.status, "blocked");
+        assert_eq!(
+            manifest.milestone_state,
+            "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+        );
+        assert_eq!(manifest.dependency_closure.metadata_exit_code, 0);
+        for root in [
+            "rustc_hir",
+            "rustc_middle",
+            "rustc_mir_build",
+            "rustc_session",
+            "rustc_span",
+        ] {
+            assert!(manifest
+                .dependency_closure
+                .root_crates
+                .contains(&root.to_owned()));
+            let attempt = manifest
+                .root_crates
+                .iter()
+                .find(|attempt| attempt.name == root)
+                .unwrap_or_else(|| panic!("missing root attempt for {root}"));
+            assert_eq!(attempt.exit_code, 0);
+            assert_eq!(attempt.requested_target_triple, "wasm32-wasip1");
+            assert_eq!(attempt.emitted_target_triple, "x86_64-pc-windows-msvc");
+            assert!(!attempt.target_loadable);
+            assert!(!attempt.produced_rlib_paths.is_empty());
+            assert!(attempt.exact_blocker.contains("x86_64-pc-windows-msvc"));
+        }
+        assert!(manifest
+            .dependency_closure
+            .transitive_compiler_private_crates
+            .contains(&"rustc_trait_selection".to_owned()));
+        assert!(manifest
+            .dependency_closure
+            .transitive_compiler_private_crates
+            .contains(&"rustc_type_ir_macros".to_owned()));
+        assert_eq!(
+            manifest
+                .target_loadable_resolution
+                .target_rustc_private_artifact_count,
+            0
+        );
+        assert_eq!(
+            manifest.target_loadable_resolution.selected_strategy,
+            "none_available_yet"
+        );
+        assert!(manifest
+            .target_loadable_resolution
+            .exact_blocker
+            .contains("must not be passed as wasm32-wasip1 --extern"));
+        assert!(manifest.route_discovery_attempts.iter().any(|attempt| {
+            attempt.classification == "xpy_stage2_host_wasm_requires_ninja"
+                && attempt.exit_code == 1
+                && attempt.evidence.contains("ninja")
+        }));
+        assert!(manifest.bridge_retry.after_root_crate_attempts);
+        assert_eq!(manifest.bridge_retry.exit_code, 101);
+        assert!(manifest.bridge_retry.output_artifact.is_none());
+        assert!(manifest
+            .bridge_retry
+            .missing_crates
+            .contains(&"rustc_middle".to_owned()));
     }
 
     #[test]
@@ -2403,15 +2588,19 @@ mod tests {
         assert_eq!(manifest.bridge.status, "attempted_blocked");
         assert_eq!(
             manifest.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         assert_eq!(
             manifest.bridge.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         assert_eq!(
             manifest.bridge.blocker_kind,
-            "rustc_private_target_crates_missing"
+            "rustc_private_target_crate_route_blocked_missing_ninja"
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -2455,10 +2644,27 @@ mod tests {
             .bridge
             .commands_attempted
             .iter()
+            .any(|command| command.classification
+                == "rustc_private_target_crates_not_emitted_after_closure_attempt"
+                && command.exit_code == 101
+                && command.evidence.contains("rustc_middle")));
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
             .any(
-                |command| command.classification == "rustc_private_target_crates_missing"
-                    && command.exit_code == 101
-                    && command.evidence.contains("rustc_middle")
+                |command| command.classification == "rustc_private_target_route_host_bound"
+                    && command.exit_code == 0
+                    && command.command.contains("rustc_mir_build")
+            ));
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
+            .any(
+                |command| command.classification == "xpy_stage2_host_wasm_requires_ninja"
+                    && command.exit_code == 1
+                    && command.evidence.contains("ninja")
             ));
         assert!(manifest.bridge.output_artifact_identity.is_none());
 
@@ -2486,7 +2692,7 @@ mod tests {
         assert_eq!(route.bridge_status, "attempted_blocked");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("rustc_private_target_crates_missing")
+            Some("rustc_private_target_crate_route_blocked_missing_ninja")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -2565,7 +2771,10 @@ mod tests {
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "attempted_blocked");
-        assert_eq!(bridge.blocker_kind, "rustc_private_target_crates_missing");
+        assert_eq!(
+            bridge.blocker_kind,
+            "rustc_private_target_crate_route_blocked_missing_ninja"
+        );
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
         assert_eq!(target_pack.blocker_kind, "none");
@@ -2574,7 +2783,9 @@ mod tests {
         assert!(target_pack.alloc_available);
         assert_eq!(
             bundle.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         assert!(bridge.output_artifact_identity.is_none());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
@@ -2699,11 +2910,13 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_target_crates_missing")
+            Some("rustc_private_target_crate_route_blocked_missing_ninja")
         );
         assert_eq!(
             inspection.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -2753,7 +2966,9 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.milestone_state.as_deref(),
-            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+            Some(
+                "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+            )
         );
         assert_eq!(
             boundary.payload_adapter_status,
@@ -2811,7 +3026,8 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "rustc_private_target_crates_missing"
+                && component.blocker_kind
+                    == "rustc_private_target_crate_route_blocked_missing_ninja"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

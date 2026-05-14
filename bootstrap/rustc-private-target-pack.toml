@@ -1,0 +1,360 @@
+schema_version = 1
+target_triple = "wasm32-wasip1"
+host_triple = "x86_64-pc-windows-msvc"
+status = "blocked"
+milestone_state = "rustc_private_target_pack_ready_bridge_blocked_at_stage2_host_wasm_requires_ninja"
+exact_blocker = "All five required root rustc-private crates were attempted with `python x.py build compiler/<crate> --stage 1 --target wasm32-wasip1 -v`. Each command exited 0, but bootstrap invoked Cargo with `--target x86_64-pc-windows-msvc` and emitted host compiler artifacts under stage1-rustc, not target-loadable wasm32-wasip1 artifacts. The wasm32-wasip1 target sysroot still contains zero rustc-private rlibs/rmetas. The discovered wasm-host compiler route is `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v`, but it currently exits 1 before rustc_span emission because Ninja is missing while bootstrap enters LLVM work. The bridge retry after these attempts still exits 101 with E0463 for rustc_hir, rustc_middle, rustc_mir_build, rustc_session, and rustc_span."
+next_command = "Provision repo-local Ninja or configure bootstrap to reuse downloadable CI LLVM for the stage2 wasm-host route, then rerun `python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v` before retrying the full root closure."
+
+[dependency_closure]
+metadata_command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe metadata --format-version 1 --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml"
+metadata_exit_code = 0
+root_crates = [
+  "rustc_hir",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_session",
+  "rustc_span",
+]
+transitive_compiler_private_crates = [
+  "rustc_abi",
+  "rustc_apfloat",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_feature",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_hir_pretty",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_infer",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_next_trait_solver",
+  "rustc_pattern_analysis",
+  "rustc_serialize",
+  "rustc_session",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+  "rustc_trait_selection",
+  "rustc_transmute",
+  "rustc_type_ir",
+  "rustc_type_ir_macros",
+]
+
+[[dependency_closure.per_root]]
+root = "rustc_hir"
+crates = [
+  "rustc_abi",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_serialize",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+]
+
+[[dependency_closure.per_root]]
+root = "rustc_middle"
+crates = [
+  "rustc_abi",
+  "rustc_apfloat",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_feature",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_hir_pretty",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_middle",
+  "rustc_serialize",
+  "rustc_session",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+  "rustc_type_ir",
+  "rustc_type_ir_macros",
+]
+
+[[dependency_closure.per_root]]
+root = "rustc_mir_build"
+crates = [
+  "rustc_abi",
+  "rustc_apfloat",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_feature",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_hir_pretty",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_infer",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_next_trait_solver",
+  "rustc_pattern_analysis",
+  "rustc_serialize",
+  "rustc_session",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+  "rustc_trait_selection",
+  "rustc_transmute",
+  "rustc_type_ir",
+  "rustc_type_ir_macros",
+]
+
+[[dependency_closure.per_root]]
+root = "rustc_session"
+crates = [
+  "rustc_abi",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_feature",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_serialize",
+  "rustc_session",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+]
+
+[[dependency_closure.per_root]]
+root = "rustc_span"
+crates = [
+  "rustc_arena",
+  "rustc_data_structures",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_macros",
+  "rustc_serialize",
+  "rustc_span",
+  "rustc_thread_pool",
+]
+
+[target_loadable_resolution]
+selected_strategy = "none_available_yet"
+rejected_strategies = [
+  "building_with_xpy_target: produced host compiler artifacts, not wasm32-wasip1 target artifacts",
+  "passing_explicit_extern_host_paths: rejected because host x86_64-pc-windows-msvc rlibs are not target-loadable Wasm",
+  "copying_host_artifacts_to_target_pack: forbidden because no command proved target compatibility",
+  "direct_cargo_stage1_rustc: failed before rustc_span because build-script dependencies could not find host core/std in the stage1 sysroot",
+  "xpy_stage1_host_wasm32_wasip1: rejected by bootstrap because stage0 cannot build wasm32-wasip1 std for a wasm host compiler",
+  "xpy_stage2_host_wasm32_wasip1: currently blocked before rustc_span emission by missing Ninja/LLVM work",
+]
+target_sysroot_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
+target_rustc_private_artifact_count = 0
+host_artifact_dir = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+exact_blocker = "No target-loadable rustc-private sysroot or rouwdi compiler-private target-pack exists yet. The only produced root-crate artifacts are host compiler rlibs/rmetas under stage1-rustc. They must not be passed as wasm32-wasip1 --extern inputs or copied into the wasm target pack."
+
+[[root_crates]]
+name = "rustc_span"
+command = "python x.py build compiler/rustc_span --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+requested_target_triple = "wasm32-wasip1"
+emitted_target_triple = "x86_64-pc-windows-msvc"
+landed_in = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+produced_rlib_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/librustc_span.rlib",
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_span-456b6590bd19c436.rlib",
+]
+produced_rmeta_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_span-456b6590bd19c436.rmeta",
+]
+target_loadable = false
+exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_span} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_span artifact landed in the wasm32-wasip1 target libdir."
+next_command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+
+[[root_crates]]
+name = "rustc_session"
+command = "python x.py build compiler/rustc_session --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+requested_target_triple = "wasm32-wasip1"
+emitted_target_triple = "x86_64-pc-windows-msvc"
+landed_in = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+produced_rlib_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/librustc_session.rlib",
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_session-2d6ece072526028d.rlib",
+]
+produced_rmeta_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_session-2d6ece072526028d.rmeta",
+]
+target_loadable = false
+exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_session} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_session artifact landed in the wasm32-wasip1 target libdir."
+next_command = "python x.py build compiler/rustc_session --stage 2 --host wasm32-wasip1 -v after the rustc_span wasm-host route is unblocked"
+
+[[root_crates]]
+name = "rustc_hir"
+command = "python x.py build compiler/rustc_hir --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+requested_target_triple = "wasm32-wasip1"
+emitted_target_triple = "x86_64-pc-windows-msvc"
+landed_in = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+produced_rlib_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/librustc_hir.rlib",
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_hir-7ffd9a9be1f8b3fe.rlib",
+]
+produced_rmeta_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_hir-7ffd9a9be1f8b3fe.rmeta",
+]
+target_loadable = false
+exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_hir} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_hir artifact landed in the wasm32-wasip1 target libdir."
+next_command = "python x.py build compiler/rustc_hir --stage 2 --host wasm32-wasip1 -v after the rustc_span wasm-host route is unblocked"
+
+[[root_crates]]
+name = "rustc_middle"
+command = "python x.py build compiler/rustc_middle --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+requested_target_triple = "wasm32-wasip1"
+emitted_target_triple = "x86_64-pc-windows-msvc"
+landed_in = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+produced_rlib_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/librustc_middle.rlib",
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_middle-080f8e5eac3e7517.rlib",
+]
+produced_rmeta_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_middle-080f8e5eac3e7517.rmeta",
+]
+target_loadable = false
+exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_middle} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_middle artifact landed in the wasm32-wasip1 target libdir."
+next_command = "python x.py build compiler/rustc_middle --stage 2 --host wasm32-wasip1 -v after the rustc_span wasm-host route is unblocked"
+
+[[root_crates]]
+name = "rustc_mir_build"
+command = "python x.py build compiler/rustc_mir_build --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+requested_target_triple = "wasm32-wasip1"
+emitted_target_triple = "x86_64-pc-windows-msvc"
+landed_in = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
+produced_rlib_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/librustc_mir_build.rlib",
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_mir_build-6330fe3bbb76deb0.rlib",
+]
+produced_rmeta_paths = [
+  "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/deps/librustc_mir_build-6330fe3bbb76deb0.rmeta",
+]
+target_loadable = false
+exact_blocker = "The command exited 0, but x.py built `Building stage1 compiler artifacts{rustc_mir_build} (stage0 -> stage1, x86_64-pc-windows-msvc)` and invoked Cargo with `--target x86_64-pc-windows-msvc`; no rustc_mir_build artifact landed in the wasm32-wasip1 target libdir."
+next_command = "python x.py build compiler/rustc_mir_build --stage 2 --host wasm32-wasip1 -v after the rustc_span wasm-host route is unblocked"
+
+[[route_discovery_attempts]]
+name = "direct_cargo_stage1_rustc_span_target_wasm32_wasip1"
+command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml -p rustc_span --target wasm32-wasip1 --release --message-format short"
+workdir = "third_party/rust"
+exit_code = 101
+classification = "direct_cargo_stage1_host_std_missing"
+evidence = "error[E0463]: can't find crate for `core`; error[E0463]: can't find crate for `std`; build-script dependencies such as proc-macro2 failed before rustc_span target emission."
+
+[[route_discovery_attempts]]
+name = "xpy_stage1_host_wasm32_wasip1_rustc_span"
+command = "python x.py build compiler/rustc_span --stage 1 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "xpy_stage1_host_wasm_requires_stage1_compiler"
+evidence = "bootstrap panicked: It is not possible to build the standard library for `wasm32-wasip1` using the stage0 compiler. Build a stage1 compiler for `x86_64-pc-windows-msvc` first or set build.local-rebuild=true."
+
+[[route_discovery_attempts]]
+name = "xpy_stage2_host_wasm32_wasip1_rustc_span"
+command = "python x.py build compiler/rustc_span --stage 2 --host wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "xpy_stage2_host_wasm_requires_ninja"
+evidence = "bootstrap advanced into the stage2 wasm-host route, rebuilt/restored stage1 compiler and wasm32-wasip1 std work, then exited before rustc_span wasm emission with `Couldn't find required command: ninja (or ninja-build)` while entering LLVM work."
+
+[bridge_retry]
+command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
+workdir = "third_party/rust"
+exit_code = 101
+classification = "rustc_private_target_crates_not_emitted"
+evidence = "src/tools/rouwdi-mir-adapter-probe/src/lib.rs emitted error[E0463] for rustc_hir, rustc_middle, rustc_mir_build, rustc_session, and rustc_span after the root crate attempts; no Wasm bridge artifact was produced."
+after_root_crate_attempts = true
+missing_crates = [
+  "rustc_hir",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_session",
+  "rustc_span",
+]
