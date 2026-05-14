@@ -5,6 +5,94 @@ pinned_revision = "800892799d7666fe1dc17abd862100a6cf273718"
 adapter_crate = "crates/rouwdi-rustc-upstream"
 stage0_rustc = "rustc 1.95.0 (59807616e 2026-04-14), host x86_64-pc-windows-msvc"
 
+[[root_blockers]]
+id = "rustc_index"
+component = "rustc_index"
+source_path = "third_party/rust/compiler/rustc_index"
+status = "cleared_by_bootstrap_stage1"
+blocker_kind = "raw_cargo_not_bootstrap"
+summary = "Raw cargo probes reach rustc_index and fail on the unstable new_range_api surface, but the pinned Rust tree's bootstrap-owned stage1 check compiles rustc_index. The blocker was the probe path, not a source blocker."
+primary_probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --mode all rustc_index"
+generated_by_probe = "crates/rouwdi-rustc-upstream/src/bin/upstream-rustc-probe.rs"
+required_probe_mode = "xpy-stage1"
+stage0_rustc = "rustc 1.95.0 (59807616e 2026-04-14), host x86_64-pc-windows-msvc"
+required_env = []
+required_cfg = []
+observed_unstable_features = ["new_range_api"]
+blocked_components = ["rustc_parse", "rustc_expand", "rustc_resolve", "rustc_hir_analysis", "rustc_borrowck", "rustc_middle", "rustc_mir_build"]
+
+[[root_blockers.probe_attempts]]
+name = "raw-rustc-index"
+command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party/rust/compiler/rustc_index/Cargo.toml -p rustc_index"
+exit_code = 101
+outcome = "failed"
+classification = "raw_cargo_stage0_feature_gate_mismatch"
+evidence = "E0658: use of unstable library feature new_range_api in compiler/rustc_index/src/idx.rs"
+
+[[root_blockers.probe_attempts]]
+name = "bootstrap-cfg-rustc-index"
+command = "$env:RUSTC_BOOTSTRAP='1'; $env:RUSTFLAGS='--cfg=bootstrap'; cargo check --manifest-path third_party/rust/compiler/rustc_index/Cargo.toml -p rustc_index"
+exit_code = 101
+outcome = "failed"
+classification = "raw_cargo_stage0_feature_gate_mismatch"
+evidence = "--cfg=bootstrap does not make raw Cargo equivalent to x.py; rustc_index still fails on new_range_api"
+
+[[root_blockers.probe_attempts]]
+name = "no-default-features-rustc-index"
+command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party/rust/compiler/rustc_index/Cargo.toml -p rustc_index --no-default-features"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "rustc_index compiles when its default/nightly feature surface is disabled, isolating the failing raw-Cargo surface"
+
+[[root_blockers.probe_attempts]]
+name = "injected-new-range-api-rustc-index"
+command = "$env:RUSTC_BOOTSTRAP='1'; $env:RUSTFLAGS='-Zcrate-attr=feature(new_range_api)'; cargo check --manifest-path third_party/rust/compiler/rustc_index/Cargo.toml -p rustc_index"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "Injecting feature(new_range_api) makes rustc_index compile under raw Cargo, proving the exact feature gate requirement"
+
+[[root_blockers.probe_attempts]]
+name = "xpy-stage0-rustc-index"
+command = "python x.py check compiler/rustc_index --stage 0 -v"
+exit_code = 1
+outcome = "failed"
+classification = "xpy_stage0_check_not_supported"
+evidence = "bootstrap rejects stage0 compiler crate checks unless build.local-rebuild=true is configured"
+
+[[root_blockers.probe_attempts]]
+name = "xpy-stage1-rustc-index"
+command = "python x.py check compiler/rustc_index --stage 1 -v"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "Checking stage1 compiler artifacts{rustc_index}; Build completed successfully"
+
+[[root_blockers.probe_attempts]]
+name = "retry-rustc-parse-xpy-stage1"
+command = "python x.py check compiler/rustc_parse --stage 1 -v"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "Checking stage1 compiler artifacts{rustc_parse}; Build completed successfully"
+
+[[root_blockers.probe_attempts]]
+name = "retry-rustc-middle-xpy-stage1"
+command = "python x.py check compiler/rustc_middle --stage 1 -v"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "Checking stage1 compiler artifacts{rustc_middle}; Build completed successfully"
+
+[[root_blockers.probe_attempts]]
+name = "retry-rustc-mir-build-xpy-stage1"
+command = "python x.py check compiler/rustc_mir_build --stage 1 -v"
+exit_code = 0
+outcome = "passed"
+classification = "compiled"
+evidence = "Checking stage1 compiler artifacts{rustc_mir_build}; Build completed successfully"
+
 [[components]]
 name = "rustc_lexer"
 source_path = "third_party/rust/compiler/rustc_lexer"
@@ -28,6 +116,17 @@ blocker_kind = "none"
 exact_blocker = ""
 
 [[components]]
+name = "rustc_index"
+source_path = "third_party/rust/compiler/rustc_index"
+desired_role = "upstream index vector and interval table infrastructure shared by rustc_parse, rustc_middle, and MIR import surfaces"
+import_status = "bootstrap_probe_passed"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_index"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_index, but rouwdi-rustc-upstream has not embedded or exposed rustc_index through the adapter API yet. Raw Cargo remains an invalid probe path for this crate; see root_blocker rustc_index."
+
+[[components]]
 name = "rust_analyzer_parser"
 source_path = "third_party/rust/src/tools/rust-analyzer/crates/parser"
 desired_role = "temporary upstream-adjacent parser scaffolding used only until rustc_parse is imported"
@@ -42,85 +141,92 @@ exact_blocker = "The current parser is from rust-analyzer, not rustc_parse. It r
 name = "rustc_parse"
 source_path = "third_party/rust/compiler/rustc_parse"
 desired_role = "canonical rustc parser and AST construction, replacing the current rust-analyzer parser scaffolding"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_parse\\Cargo.toml -p rustc_parse"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. The pinned Rust source requires a matching bootstrap compiler/config before rustc_parse can compile through the adapter."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_parse"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_parse after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_parse through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_expand"
 source_path = "third_party/rust/compiler/rustc_expand"
 desired_role = "canonical macro expansion and builtin macro integration"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_expand\\Cargo.toml -p rustc_expand"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_expand cannot be imported until the shared rustc_index blocker is cleared."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_expand"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_expand after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_expand through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_resolve"
 source_path = "third_party/rust/compiler/rustc_resolve"
 desired_role = "canonical rustc name resolution"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_resolve\\Cargo.toml -p rustc_resolve"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_resolve cannot be imported until the shared rustc_index blocker is cleared."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_resolve"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_resolve after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_resolve through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_hir_analysis"
 source_path = "third_party/rust/compiler/rustc_hir_analysis"
 desired_role = "canonical type checking, well-formedness, and coherence analysis"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_hir_analysis\\Cargo.toml -p rustc_hir_analysis"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_hir_analysis cannot be imported until the shared rustc_index blocker is cleared."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_hir_analysis"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_hir_analysis after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_hir_analysis through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_borrowck"
 source_path = "third_party/rust/compiler/rustc_borrowck"
 desired_role = "canonical MIR borrow checking"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_borrowck\\Cargo.toml -p rustc_borrowck"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_borrowck cannot be imported until the shared rustc_index blocker is cleared."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_borrowck"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_borrowck after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_borrowck through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_middle"
 source_path = "third_party/rust/compiler/rustc_middle"
 desired_role = "MIR data structures, ty context, query model, and compiler metadata needed by the MIR handoff"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_middle\\Cargo.toml -p rustc_middle"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "Without RUSTC_BOOTSTRAP, the probe stops in rustc_macros/build.rs with exit code 101: attempting to build the compiler without going through bootstrap. With RUSTC_BOOTSTRAP=1, the probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. The pinned Rust source requires a matching bootstrap compiler/config before rustc_middle can compile through the adapter."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_middle"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_middle after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_middle::mir/ty/query through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[components]]
 name = "rustc_mir_build"
 source_path = "third_party/rust/compiler/rustc_mir_build"
 desired_role = "HIR/THIR to MIR lowering and MIR construction for the current handoff"
-import_status = "blocked"
+import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_mir_build\\Cargo.toml -p rustc_mir_build"
-blocker_kind = "stage0_feature_gate_mismatch"
-exact_blocker = "rustc_mir_build depends on rustc_middle and the same rustc_index dependency surface; the current probe fails before rustc_mir_build at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api."
+probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_mir_build"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_mir_build after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_mir_build through the adapter API yet."
 immediate_dependency_blocker = "rustc_index"
+shared_blocker = "rustc_index"
 
 [[frontend_stages]]
 stage = "lex"

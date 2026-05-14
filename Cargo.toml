@@ -14,7 +14,7 @@ members = [
     "runners/rouwdi",
 ]
 resolver = "2"
-exclude = ["examples/hello-dual", "third_party/rust/src/tools/rust-analyzer"]
+exclude = ["examples/hello-dual", "third_party/rust"]
 
 [workspace.package]
 edition = "2021"
