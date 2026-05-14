@@ -316,6 +316,80 @@ pub struct RustTypeCheckStageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustBorrowCheckDiagnostic {
+    pub offset: u64,
+    pub len: u32,
+    pub code: RustBorrowCheckDiagnosticCode,
+    pub reference_local: Option<String>,
+    pub borrowed_local: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustBorrowCheckDiagnosticCode {
+    BorrowedLocalEscapesScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustBorrowCheckStageStatus {
+    Succeeded,
+    Failed,
+}
+
+impl RustBorrowCheckStageStatus {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustBorrowLocal {
+    pub local_id: String,
+    pub name: String,
+    pub scope_path: String,
+    pub offset: u64,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustBorrowReference {
+    pub reference_local_id: String,
+    pub reference_local: String,
+    pub reference_scope_path: String,
+    pub borrowed_local_id: String,
+    pub borrowed_local: String,
+    pub borrowed_scope_path: String,
+    pub assignment_scope_path: String,
+    pub borrow_offset: u64,
+    pub borrow_len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustBorrowCheckStageRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+    pub stage: RustCompilerStage,
+    pub status: RustBorrowCheckStageStatus,
+    pub borrow_checker_engine: String,
+    pub borrow_checker_source: String,
+    pub type_check_stage_status: RustTypeCheckStageStatus,
+    pub scope_count: usize,
+    pub local_count: usize,
+    pub reference_count: usize,
+    pub diagnostic_count: usize,
+    pub locals: Vec<RustBorrowLocal>,
+    pub references: Vec<RustBorrowReference>,
+    pub diagnostics: Vec<RustBorrowCheckDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCompileRequest {
     pub unit_id: String,
     pub package: String,
@@ -472,6 +546,9 @@ pub enum RustCompilerPipelineError {
     TypeCheckStage {
         type_check: Box<RustTypeCheckStageRecord>,
     },
+    BorrowCheckStage {
+        borrow_check: Box<RustBorrowCheckStageRecord>,
+    },
 }
 
 impl fmt::Display for RustCompilerPipelineError {
@@ -504,6 +581,11 @@ impl fmt::Display for RustCompilerPipelineError {
                 "compiler stage type_checking failed for compile unit {}: {} diagnostic(s)",
                 type_check.unit_id, type_check.diagnostic_count
             ),
+            Self::BorrowCheckStage { borrow_check } => write!(
+                formatter,
+                "compiler stage borrow_checking failed for compile unit {}: {} diagnostic(s)",
+                borrow_check.unit_id, borrow_check.diagnostic_count
+            ),
         }
     }
 }
@@ -519,6 +601,7 @@ pub enum RustCompilerPipelineStatus {
     ExpansionError,
     NameResolutionError,
     TypeCheckError,
+    BorrowCheckError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +619,7 @@ pub struct RustCompilerPipelineRecord {
     pub expansion_stage: Option<RustExpansionStageRecord>,
     pub name_resolution_stage: Option<RustNameResolutionStageRecord>,
     pub type_check_stage: Option<RustTypeCheckStageRecord>,
+    pub borrow_check_stage: Option<RustBorrowCheckStageRecord>,
     pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
@@ -555,6 +639,11 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "rouwdi_type_check",
             "crates/rouwdi-rustc/src/lib.rs",
             "stage-local Rust type checking for macro-free compile units",
+        ),
+        embedded_component(
+            "rouwdi_borrow_check",
+            "crates/rouwdi-rustc/src/lib.rs",
+            "stage-local lexical borrow checking for macro-free compile units",
         ),
         pending_component(
             "rustc_parse",
@@ -645,6 +734,15 @@ pub fn run_rust_compiler_pipeline(
                 ),
             })
         }
+        RustCompilerPipelineStatus::BorrowCheckError => {
+            Err(RustCompilerPipelineError::BorrowCheckStage {
+                borrow_check: Box::new(
+                    record
+                        .borrow_check_stage
+                        .expect("borrow-check error pipeline record includes borrow-check stage"),
+                ),
+            })
+        }
         RustCompilerPipelineStatus::MissingStage => Err(RustCompilerPipelineError::MissingStage {
             missing: Box::new(
                 record
@@ -676,6 +774,7 @@ pub fn run_rust_compiler_pipeline_record(
             expansion_stage: None,
             name_resolution_stage: None,
             type_check_stage: None,
+            borrow_check_stage: None,
             missing_stage: None,
         };
     }
@@ -696,6 +795,7 @@ pub fn run_rust_compiler_pipeline_record(
             expansion_stage: Some(expansion_stage),
             name_resolution_stage: None,
             type_check_stage: None,
+            borrow_check_stage: None,
             missing_stage: None,
         };
     }
@@ -725,6 +825,7 @@ pub fn run_rust_compiler_pipeline_record(
             expansion_stage: Some(expansion_stage),
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: None,
+            borrow_check_stage: None,
             missing_stage: None,
         };
     }
@@ -751,6 +852,35 @@ pub fn run_rust_compiler_pipeline_record(
             expansion_stage: Some(expansion_stage),
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: Some(type_check_stage),
+            borrow_check_stage: None,
+            missing_stage: None,
+        };
+    }
+
+    let borrow_check_stage = borrow_check_rust_for_compile_unit(
+        request,
+        source,
+        &parse_stage,
+        &expansion_stage,
+        &name_resolution_stage,
+        &type_check_stage,
+    );
+    if !borrow_check_stage.status.is_success() {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::BorrowCheckError,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
+            name_resolution_stage: Some(name_resolution_stage),
+            type_check_stage: Some(type_check_stage),
+            borrow_check_stage: Some(borrow_check_stage),
             missing_stage: None,
         };
     }
@@ -770,6 +900,7 @@ pub fn run_rust_compiler_pipeline_record(
             expansion_stage: Some(expansion_stage),
             name_resolution_stage: Some(name_resolution_stage),
             type_check_stage: Some(type_check_stage),
+            borrow_check_stage: Some(borrow_check_stage),
             missing_stage: Some(missing),
         };
     }
@@ -788,6 +919,7 @@ pub fn run_rust_compiler_pipeline_record(
         expansion_stage: Some(expansion_stage),
         name_resolution_stage: Some(name_resolution_stage),
         type_check_stage: Some(type_check_stage),
+        borrow_check_stage: Some(borrow_check_stage),
         missing_stage: Some(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -1024,6 +1156,51 @@ pub fn type_check_rust_for_compile_unit(
         diagnostic_count: state.diagnostics.len(),
         typed_items: state.typed_items,
         typed_expressions: state.typed_expressions,
+        diagnostics: state.diagnostics,
+    }
+}
+
+pub fn borrow_check_rust_for_compile_unit(
+    request: &RustCompileRequest,
+    source: &str,
+    _parse_stage: &RustParseStageRecord,
+    _expansion_stage: &RustExpansionStageRecord,
+    _name_resolution_stage: &RustNameResolutionStageRecord,
+    type_check_stage: &RustTypeCheckStageRecord,
+) -> RustBorrowCheckStageRecord {
+    let tokens = expansion_tokens(source);
+    let mut state = BorrowCheckState::new(source);
+    let functions = collect_function_signatures(source, &tokens);
+    for function in &functions {
+        state.check_function(function, &tokens);
+    }
+
+    let status = if state.diagnostics.is_empty() {
+        RustBorrowCheckStageStatus::Succeeded
+    } else {
+        RustBorrowCheckStageStatus::Failed
+    };
+
+    RustBorrowCheckStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::BorrowChecking,
+        status,
+        borrow_checker_engine: "rouwdi-rustc-borrow-check".to_owned(),
+        borrow_checker_source: "rustc_lexer token stream plus stage-local lexical lifetime graph"
+            .to_owned(),
+        type_check_stage_status: type_check_stage.status,
+        scope_count: state.scopes.len(),
+        local_count: state.local_records.len(),
+        reference_count: state.reference_records.len(),
+        diagnostic_count: state.diagnostics.len(),
+        locals: state.local_records,
+        references: state.reference_records,
         diagnostics: state.diagnostics,
     }
 }
@@ -1590,6 +1767,380 @@ impl<'a> TypeCheckState<'a> {
             ),
         });
     }
+}
+
+#[derive(Debug, Clone)]
+struct BorrowScope {
+    path: String,
+    local_ids: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct BorrowTrackedLocal {
+    name: String,
+    scope_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct BorrowReferenceState {
+    record_index: usize,
+    borrowed_local_id: usize,
+    expired: bool,
+}
+
+struct BorrowCheckState<'a> {
+    source: &'a str,
+    scopes: Vec<BorrowScope>,
+    scope_stack: Vec<usize>,
+    locals: Vec<BorrowTrackedLocal>,
+    locals_by_name: BTreeMap<String, Vec<usize>>,
+    references_by_local_id: BTreeMap<usize, BorrowReferenceState>,
+    local_records: Vec<RustBorrowLocal>,
+    reference_records: Vec<RustBorrowReference>,
+    diagnostics: Vec<RustBorrowCheckDiagnostic>,
+}
+
+impl<'a> BorrowCheckState<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            scopes: Vec::new(),
+            scope_stack: Vec::new(),
+            locals: Vec::new(),
+            locals_by_name: BTreeMap::new(),
+            references_by_local_id: BTreeMap::new(),
+            local_records: Vec::new(),
+            reference_records: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn check_function(&mut self, function: &FunctionSignature, tokens: &[ExpansionToken]) {
+        let (Some(body_start), Some(body_end)) = (function.body_start, function.body_end) else {
+            return;
+        };
+
+        let scope = self.enter_scope(format!("fn {}", function.name));
+        self.check_block_contents(tokens, body_start + 1, body_end);
+        self.exit_scope(scope);
+    }
+
+    fn check_block_contents(&mut self, tokens: &[ExpansionToken], start: usize, end: usize) {
+        let mut index = start;
+        while index < end {
+            if tokens[index].text == "fn" {
+                if let Some(nested) = parse_function_signature_at(self.source, tokens, index) {
+                    index = nested.next_index;
+                    continue;
+                }
+            }
+
+            if tokens[index].text == "let" {
+                index = self.check_let_statement(tokens, index, end);
+                continue;
+            }
+
+            if tokens[index].kind == rustc_lexer::TokenKind::OpenBrace {
+                if let Some(close) = find_matching_delimiter(
+                    tokens,
+                    index,
+                    rustc_lexer::TokenKind::OpenBrace,
+                    rustc_lexer::TokenKind::CloseBrace,
+                ) {
+                    let scope = self.enter_child_scope();
+                    self.check_block_contents(tokens, index + 1, close);
+                    self.exit_scope(scope);
+                    index = close + 1;
+                    continue;
+                }
+            }
+
+            if let Some(statement_end) = find_statement_end(tokens, index, end) {
+                self.check_statement(tokens, index, statement_end);
+                index = statement_end + 1;
+            } else {
+                self.check_statement(tokens, index, end);
+                index = end;
+            }
+        }
+    }
+
+    fn check_let_statement(
+        &mut self,
+        tokens: &[ExpansionToken],
+        let_index: usize,
+        body_end: usize,
+    ) -> usize {
+        let statement_end = find_statement_end(tokens, let_index + 1, body_end).unwrap_or(body_end);
+        let mut name_index = let_index + 1;
+        if tokens
+            .get(name_index)
+            .is_some_and(|token| token.text == "mut")
+        {
+            name_index += 1;
+        }
+        if name_index >= statement_end || !is_identifier_like(&tokens[name_index].kind) {
+            return statement_end.saturating_add(1);
+        }
+
+        let local_id = self.declare_local(token_symbol(&tokens[name_index]), &tokens[name_index]);
+        let initializer = first_token_matching(tokens, name_index + 1, statement_end, |token| {
+            token.kind == rustc_lexer::TokenKind::Eq
+        })
+        .map(|eq| (eq + 1, statement_end));
+
+        if let Some((start, end)) = initializer {
+            self.check_expired_reference_uses(tokens, start, end);
+            self.assign_expression_to_local(local_id, tokens, start, end);
+        }
+
+        statement_end.saturating_add(1)
+    }
+
+    fn check_statement(&mut self, tokens: &[ExpansionToken], start: usize, end: usize) {
+        let (start, end) = trim_expression_tokens(tokens, start, end);
+        if start >= end {
+            return;
+        }
+
+        if is_identifier_like(&tokens[start].kind)
+            && tokens
+                .get(start + 1)
+                .is_some_and(|token| token.kind == rustc_lexer::TokenKind::Eq)
+        {
+            let name = token_symbol(&tokens[start]);
+            let Some(local_id) = self.current_local_id(&name) else {
+                self.check_expired_reference_uses(tokens, start + 2, end);
+                return;
+            };
+            self.check_expired_reference_uses(tokens, start + 2, end);
+            self.assign_expression_to_local(local_id, tokens, start + 2, end);
+            return;
+        }
+
+        if tokens[start].text == "return" {
+            self.check_expired_reference_uses(tokens, start + 1, end);
+            return;
+        }
+
+        self.check_expired_reference_uses(tokens, start, end);
+    }
+
+    fn assign_expression_to_local(
+        &mut self,
+        reference_local_id: usize,
+        tokens: &[ExpansionToken],
+        start: usize,
+        end: usize,
+    ) {
+        let Some((borrowed_name, borrow_start, borrow_end)) =
+            borrowed_local_in_expression(tokens, start, end)
+        else {
+            self.references_by_local_id.remove(&reference_local_id);
+            return;
+        };
+        let Some(borrowed_local_id) = self.current_local_id(&borrowed_name) else {
+            self.references_by_local_id.remove(&reference_local_id);
+            return;
+        };
+
+        let reference = self.reference_record(
+            reference_local_id,
+            borrowed_local_id,
+            tokens,
+            borrow_start,
+            borrow_end,
+        );
+        let record_index = self.reference_records.len();
+        self.reference_records.push(reference);
+        self.references_by_local_id.insert(
+            reference_local_id,
+            BorrowReferenceState {
+                record_index,
+                borrowed_local_id,
+                expired: false,
+            },
+        );
+    }
+
+    fn check_expired_reference_uses(
+        &mut self,
+        tokens: &[ExpansionToken],
+        start: usize,
+        end: usize,
+    ) {
+        for index in start..end {
+            if !is_identifier_like(&tokens[index].kind) {
+                continue;
+            }
+            let name = token_symbol(&tokens[index]);
+            let Some(local_id) = self.current_local_id(&name) else {
+                continue;
+            };
+            let Some(reference_state) = self.references_by_local_id.get(&local_id) else {
+                continue;
+            };
+            if !reference_state.expired {
+                continue;
+            }
+            let Some(reference_record) = self
+                .reference_records
+                .get(reference_state.record_index)
+                .cloned()
+            else {
+                continue;
+            };
+            self.diagnostics.push(RustBorrowCheckDiagnostic {
+                offset: tokens[index].offset,
+                len: tokens[index].len,
+                code: RustBorrowCheckDiagnosticCode::BorrowedLocalEscapesScope,
+                reference_local: Some(reference_record.reference_local.clone()),
+                borrowed_local: Some(reference_record.borrowed_local.clone()),
+                message: format!(
+                    "borrowed local `{}` does not live long enough: reference `{}` is used after `{}` left {}",
+                    reference_record.borrowed_local,
+                    reference_record.reference_local,
+                    reference_record.borrowed_local,
+                    reference_record.borrowed_scope_path
+                ),
+            });
+        }
+    }
+
+    fn enter_scope(&mut self, path: String) -> usize {
+        let index = self.scopes.len();
+        self.scopes.push(BorrowScope {
+            path,
+            local_ids: Vec::new(),
+        });
+        self.scope_stack.push(index);
+        index
+    }
+
+    fn enter_child_scope(&mut self) -> usize {
+        let parent_path = self
+            .current_scope_index()
+            .map(|index| self.scopes[index].path.clone())
+            .unwrap_or_else(|| "crate".to_owned());
+        let path = format!("{parent_path}::block{}", self.scopes.len());
+        self.enter_scope(path)
+    }
+
+    fn exit_scope(&mut self, scope_index: usize) {
+        let local_ids = self.scopes[scope_index].local_ids.clone();
+        let local_id_set = local_ids.iter().copied().collect::<BTreeSet<_>>();
+
+        for local_id in &local_ids {
+            self.references_by_local_id.remove(local_id);
+        }
+        for reference_state in self.references_by_local_id.values_mut() {
+            if local_id_set.contains(&reference_state.borrowed_local_id) {
+                reference_state.expired = true;
+            }
+        }
+        for local_id in local_ids {
+            let name = self.locals[local_id].name.clone();
+            if let Some(stack) = self.locals_by_name.get_mut(&name) {
+                if stack.last().copied() == Some(local_id) {
+                    stack.pop();
+                } else {
+                    stack.retain(|candidate| *candidate != local_id);
+                }
+                if stack.is_empty() {
+                    self.locals_by_name.remove(&name);
+                }
+            }
+        }
+        if self.scope_stack.last().copied() == Some(scope_index) {
+            self.scope_stack.pop();
+        }
+    }
+
+    fn declare_local(&mut self, name: String, token: &ExpansionToken) -> usize {
+        let scope_index = self
+            .current_scope_index()
+            .expect("borrow checker declares locals inside an active scope");
+        let local_id = self.locals.len();
+        let local_record = RustBorrowLocal {
+            local_id: format!("local{local_id}"),
+            name: name.clone(),
+            scope_path: self.scopes[scope_index].path.clone(),
+            offset: token.offset,
+            len: token.len,
+        };
+        self.locals.push(BorrowTrackedLocal {
+            name: name.clone(),
+            scope_index,
+        });
+        self.local_records.push(local_record);
+        self.scopes[scope_index].local_ids.push(local_id);
+        self.locals_by_name.entry(name).or_default().push(local_id);
+        local_id
+    }
+
+    fn current_scope_index(&self) -> Option<usize> {
+        self.scope_stack.last().copied()
+    }
+
+    fn current_local_id(&self, name: &str) -> Option<usize> {
+        self.locals_by_name
+            .get(name)
+            .and_then(|stack| stack.last().copied())
+    }
+
+    fn reference_record(
+        &self,
+        reference_local_id: usize,
+        borrowed_local_id: usize,
+        tokens: &[ExpansionToken],
+        borrow_start: usize,
+        borrow_end: usize,
+    ) -> RustBorrowReference {
+        let reference_local = &self.locals[reference_local_id];
+        let borrowed_local = &self.locals[borrowed_local_id];
+        let assignment_scope_path = self
+            .current_scope_index()
+            .map(|index| self.scopes[index].path.clone())
+            .unwrap_or_else(|| "crate".to_owned());
+        let (borrow_offset, borrow_len) = token_span(tokens, borrow_start, borrow_end);
+        RustBorrowReference {
+            reference_local_id: format!("local{reference_local_id}"),
+            reference_local: reference_local.name.clone(),
+            reference_scope_path: self.scopes[reference_local.scope_index].path.clone(),
+            borrowed_local_id: format!("local{borrowed_local_id}"),
+            borrowed_local: borrowed_local.name.clone(),
+            borrowed_scope_path: self.scopes[borrowed_local.scope_index].path.clone(),
+            assignment_scope_path,
+            borrow_offset,
+            borrow_len,
+        }
+    }
+}
+
+fn borrowed_local_in_expression(
+    tokens: &[ExpansionToken],
+    start: usize,
+    end: usize,
+) -> Option<(String, usize, usize)> {
+    let mut index = start;
+    while index < end {
+        if tokens[index].kind != rustc_lexer::TokenKind::And {
+            index += 1;
+            continue;
+        }
+        let mut name_index = index + 1;
+        if tokens
+            .get(name_index)
+            .is_some_and(|token| token.text == "mut")
+        {
+            name_index += 1;
+        }
+        if name_index < end && is_identifier_like(&tokens[name_index].kind) {
+            return Some((token_symbol(&tokens[name_index]), index, name_index + 1));
+        }
+        index += 1;
+    }
+    None
 }
 
 fn collect_function_signatures(source: &str, tokens: &[ExpansionToken]) -> Vec<FunctionSignature> {
@@ -2593,9 +3144,8 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
     None
 }
 
-fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 5] {
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 4] {
     [
-        (RustCompilerStage::BorrowChecking, "rustc_borrowck"),
         (RustCompilerStage::Mir, "rustc_middle"),
         (RustCompilerStage::Monomorphization, "rustc_monomorphize"),
         (RustCompilerStage::Codegen, "rustc_codegen_llvm"),
@@ -2672,6 +3222,9 @@ mod tests {
         assert!(inventory.iter().any(|component| {
             component.name == "rouwdi_name_resolution" && component.embedded_in_assembly
         }));
+        assert!(inventory.iter().any(|component| {
+            component.name == "rouwdi_borrow_check" && component.embedded_in_assembly
+        }));
         assert!(inventory
             .iter()
             .any(|component| component.name == "rustc_codegen_llvm"
@@ -2694,7 +3247,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_pipeline_advances_to_borrowck_after_type_check_success() {
+    fn compiler_pipeline_advances_to_mir_after_borrow_check_success() {
         let request = compile_request();
 
         let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
@@ -2702,12 +3255,12 @@ mod tests {
         let RustCompilerPipelineError::MissingStage { missing } = error else {
             panic!("valid Rust source must advance to the next missing compiler stage");
         };
-        assert_eq!(missing.stage, RustCompilerStage::BorrowChecking);
+        assert_eq!(missing.stage, RustCompilerStage::Mir);
         assert_eq!(
             missing.error_code,
-            RustCompilerStageErrorCode::BorrowckNotEmbedded
+            RustCompilerStageErrorCode::MirNotEmbedded
         );
-        assert_eq!(missing.required_component, "rustc_borrowck");
+        assert_eq!(missing.required_component, "rustc_middle");
     }
 
     #[test]
@@ -2864,6 +3417,93 @@ mod tests {
     }
 
     #[test]
+    fn borrow_check_stage_accepts_macro_free_no_deps_source() {
+        let request = compile_request();
+        let source = "fn main() {}\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+        let name_resolution = resolve_rust_names_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &RustNameResolutionContext::empty(),
+        );
+        let type_check = type_check_rust_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &name_resolution,
+        );
+
+        let borrow_check = borrow_check_rust_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &name_resolution,
+            &type_check,
+        );
+
+        assert_eq!(borrow_check.stage, RustCompilerStage::BorrowChecking);
+        assert_eq!(borrow_check.status, RustBorrowCheckStageStatus::Succeeded);
+        assert_eq!(borrow_check.diagnostic_count, 0);
+        assert!(borrow_check.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn borrow_check_stage_reports_lexical_lifetime_escape_locally() {
+        let request = compile_request();
+        let source = "fn main() { let r; { let x = 1; r = &x; } let _y = r; }\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+        let name_resolution = resolve_rust_names_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &RustNameResolutionContext::empty(),
+        );
+        let type_check = type_check_rust_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &name_resolution,
+        );
+
+        let borrow_check = borrow_check_rust_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &name_resolution,
+            &type_check,
+        );
+
+        assert_eq!(parse.status, RustParseStageStatus::Succeeded);
+        assert_eq!(
+            expansion.status,
+            RustExpansionStageStatus::NoExpansionRequired
+        );
+        assert_eq!(
+            name_resolution.status,
+            RustNameResolutionStageStatus::Succeeded
+        );
+        assert_eq!(type_check.status, RustTypeCheckStageStatus::Succeeded);
+        assert_eq!(borrow_check.status, RustBorrowCheckStageStatus::Failed);
+        assert!(borrow_check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == RustBorrowCheckDiagnosticCode::BorrowedLocalEscapesScope
+                && diagnostic.reference_local.as_deref() == Some("r")
+                && diagnostic.borrowed_local.as_deref() == Some("x")
+        }));
+        assert!(borrow_check.references.iter().any(|reference| {
+            reference.reference_local == "r" && reference.borrowed_local == "x"
+        }));
+    }
+
+    #[test]
     fn expansion_stage_succeeds_when_no_expansion_is_required() {
         let request = compile_request();
         let parse = parse_rust_source_for_compile_unit(&request, "fn main() {}\n");
@@ -2978,6 +3618,27 @@ mod tests {
     }
 
     #[test]
+    fn compiler_pipeline_returns_borrow_check_error_for_lexical_lifetime_escape() {
+        let request = compile_request();
+
+        let error = run_rust_compiler_pipeline(
+            &request,
+            "fn main() { let r; { let x = 1; r = &x; } let _y = r; }\n",
+        )
+        .unwrap_err();
+
+        let RustCompilerPipelineError::BorrowCheckStage { borrow_check } = error else {
+            panic!("borrow-invalid Rust source must stop in the borrow-checking stage");
+        };
+        assert_eq!(borrow_check.status, RustBorrowCheckStageStatus::Failed);
+        assert!(borrow_check.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == RustBorrowCheckDiagnosticCode::BorrowedLocalEscapesScope
+                && diagnostic.reference_local.as_deref() == Some("r")
+                && diagnostic.borrowed_local.as_deref() == Some("x")
+        }));
+    }
+
+    #[test]
     fn compiler_stage_error_codes_are_stable_boundary_values() {
         assert_eq!(
             RustCompilerStageErrorCode::for_stage(RustCompilerStage::Parse).as_str(),
@@ -2998,7 +3659,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_pipeline_record_preserves_type_check_and_borrowck_boundary() {
+    fn compiler_pipeline_record_preserves_borrow_check_and_mir_boundary() {
         let request = compile_request();
 
         let record = run_rust_compiler_pipeline_record(&request, "fn main() {}\n");
@@ -3010,11 +3671,11 @@ mod tests {
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().required_component,
-            "rustc_borrowck"
+            "rustc_middle"
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().error_code,
-            RustCompilerStageErrorCode::BorrowckNotEmbedded
+            RustCompilerStageErrorCode::MirNotEmbedded
         );
         assert_eq!(
             record.expansion_stage.as_ref().unwrap().status,
@@ -3027,6 +3688,10 @@ mod tests {
         assert_eq!(
             record.type_check_stage.as_ref().unwrap().status,
             RustTypeCheckStageStatus::Succeeded
+        );
+        assert_eq!(
+            record.borrow_check_stage.as_ref().unwrap().status,
+            RustBorrowCheckStageStatus::Succeeded
         );
         assert_eq!(record.artifact, None);
     }

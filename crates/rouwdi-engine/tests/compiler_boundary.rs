@@ -2,6 +2,7 @@ use rouwdi_cargo::{CargoBuildPlan, CompilePhase};
 use rouwdi_engine::{BuildRequest, RouwdiEngine};
 use rouwdi_proof::{RouwdiRunManifest, RunStatus};
 use rouwdi_rustc::{
+    RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
     RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode,
     RustExpansionStageRecord, RustExpansionStageStatus, RustNameResolutionDiagnosticCode,
     RustNameResolutionStageRecord, RustNameResolutionStageStatus, RustParseStageRecord,
@@ -100,18 +101,22 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         RustNameResolutionStageStatus::Succeeded
     );
     let missing_stage = record.missing_stage.as_ref().unwrap();
-    assert_eq!(missing_stage.stage, RustCompilerStage::BorrowChecking);
+    assert_eq!(missing_stage.stage, RustCompilerStage::Mir);
     assert_eq!(
         missing_stage.error_code,
-        RustCompilerStageErrorCode::BorrowckNotEmbedded
+        RustCompilerStageErrorCode::MirNotEmbedded
     );
-    assert_eq!(missing_stage.required_component, "rustc_borrowck");
+    assert_eq!(missing_stage.required_component, "rustc_middle");
     assert_eq!(
         record.type_check_stage.as_ref().unwrap().status,
         RustTypeCheckStageStatus::Succeeded
     );
+    assert_eq!(
+        record.borrow_check_stage.as_ref().unwrap().status,
+        RustBorrowCheckStageStatus::Succeeded
+    );
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_borrowck"
+        item.component == "compiler stage rustc_middle"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report
@@ -247,9 +252,16 @@ edition = "2021"
                 type_check.status == RustTypeCheckStageStatus::Succeeded
                     && type_check.stage == RustCompilerStage::TypeChecking
             })
+            && record
+                .borrow_check_stage
+                .as_ref()
+                .is_some_and(|borrow_check| {
+                    borrow_check.status == RustBorrowCheckStageStatus::Succeeded
+                        && borrow_check.stage == RustCompilerStage::BorrowChecking
+                })
             && record.missing_stage.as_ref().is_some_and(|missing| {
-                missing.stage == RustCompilerStage::BorrowChecking
-                    && missing.error_code == RustCompilerStageErrorCode::BorrowckNotEmbedded
+                missing.stage == RustCompilerStage::Mir
+                    && missing.error_code == RustCompilerStageErrorCode::MirNotEmbedded
             })
     }));
     let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
@@ -328,6 +340,23 @@ edition = "2021"
     assert!(type_check_records
         .iter()
         .all(|record| record.status == RustTypeCheckStageStatus::Succeeded));
+    let borrow_check_records: Vec<RustBorrowCheckStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-borrow-check.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    let borrow_check_unit_ids = borrow_check_records
+        .iter()
+        .map(|record| record.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(borrow_check_unit_ids, rust_unit_ids);
+    assert!(borrow_check_records
+        .iter()
+        .all(|record| record.status == RustBorrowCheckStageStatus::Succeeded));
 }
 
 #[test]
@@ -434,8 +463,7 @@ fn unresolved_name_stops_at_name_resolution_stage() {
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_borrowck"
-            || item.reason.contains("borrowck_not_embedded")
+        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
     }));
 }
 
@@ -483,8 +511,74 @@ fn typed_invalid_source_stops_at_type_check_stage() {
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_borrowck"
-            || item.reason.contains("borrowck_not_embedded")
+        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
+    }));
+}
+
+#[test]
+fn borrow_invalid_source_stops_at_borrow_check_stage() {
+    let mut storage = no_deps_wasi_binary_storage();
+    storage
+        .write(
+            "src/main.rs",
+            b"fn main() { let r; { let x = 1; r = &x; } let _y = r; }\n",
+        )
+        .unwrap();
+
+    let report = RouwdiEngine::default()
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let borrow_check_records: Vec<RustBorrowCheckStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-borrow-check.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(manifest.compiler_pipeline.len(), 1);
+    let record = &manifest.compiler_pipeline[0];
+    assert_eq!(record.status, RustCompilerPipelineStatus::BorrowCheckError);
+    assert!(record.missing_stage.is_none());
+    assert_eq!(
+        record.parse_stage.as_ref().unwrap().status,
+        RustParseStageStatus::Succeeded
+    );
+    assert_eq!(
+        record.expansion_stage.as_ref().unwrap().status,
+        RustExpansionStageStatus::NoExpansionRequired
+    );
+    assert_eq!(
+        record.name_resolution_stage.as_ref().unwrap().status,
+        RustNameResolutionStageStatus::Succeeded
+    );
+    assert_eq!(
+        record.type_check_stage.as_ref().unwrap().status,
+        RustTypeCheckStageStatus::Succeeded
+    );
+    let borrow_check = record.borrow_check_stage.as_ref().unwrap();
+    assert_eq!(borrow_check.status, RustBorrowCheckStageStatus::Failed);
+    assert!(borrow_check.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == RustBorrowCheckDiagnosticCode::BorrowedLocalEscapesScope
+            && diagnostic.reference_local.as_deref() == Some("r")
+            && diagnostic.borrowed_local.as_deref() == Some("x")
+    }));
+    assert_eq!(borrow_check_records.len(), 1);
+    assert_eq!(
+        borrow_check_records[0].status,
+        RustBorrowCheckStageStatus::Failed
+    );
+    assert!(report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "Rust borrow-check stage"
+            && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+    }));
+    assert!(!report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "compiler stage rustc_middle" || item.reason.contains("mir_not_embedded")
     }));
 }
 
