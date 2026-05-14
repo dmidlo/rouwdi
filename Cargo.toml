@@ -6,6 +6,7 @@ members = [
     "crates/rouwdi-engine",
     "crates/rouwdi-proof",
     "crates/rouwdi-rustc",
+    "crates/rouwdi-rustc-upstream",
     "crates/rouwdi-source",
     "crates/rouwdi-targets",
     "crates/rouwdi-vfs",

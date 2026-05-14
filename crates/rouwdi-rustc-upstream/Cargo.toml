@@ -1,5 +1,5 @@
 [package]
-name = "rouwdi-rustc"
+name = "rouwdi-rustc-upstream"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-ra_parser.workspace = true
-rouwdi-rustc-upstream = { path = "../rouwdi-rustc-upstream" }
-rustc_lexer.workspace = true
+rustc_error_codes = { path = "../../third_party/rust/compiler/rustc_error_codes" }
 serde.workspace = true
+toml.workspace = true

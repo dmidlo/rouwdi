@@ -1,0 +1,171 @@
+[ledger]
+schema_version = 1
+source_tree = "third_party/rust"
+pinned_revision = "800892799d7666fe1dc17abd862100a6cf273718"
+adapter_crate = "crates/rouwdi-rustc-upstream"
+stage0_rustc = "rustc 1.95.0 (59807616e 2026-04-14), host x86_64-pc-windows-msvc"
+
+[[components]]
+name = "rustc_lexer"
+source_path = "third_party/rust/compiler/rustc_lexer"
+desired_role = "canonical Rust tokenization already used by the existing frontend ratchet"
+import_status = "upstream_backed"
+attempted = true
+adapter_path = "crates/rouwdi-rustc"
+probe_command = "cargo check -p rouwdi-rustc"
+blocker_kind = "none"
+exact_blocker = ""
+
+[[components]]
+name = "rustc_error_codes"
+source_path = "third_party/rust/compiler/rustc_error_codes"
+desired_role = "upstream compiler diagnostic code table imported as the first adapter payload beyond lexer/parser"
+import_status = "imported"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "cargo check -p rouwdi-rustc-upstream"
+blocker_kind = "none"
+exact_blocker = ""
+
+[[components]]
+name = "rust_analyzer_parser"
+source_path = "third_party/rust/src/tools/rust-analyzer/crates/parser"
+desired_role = "temporary upstream-adjacent parser scaffolding used only until rustc_parse is imported"
+import_status = "temporary_scaffolding"
+attempted = true
+adapter_path = "crates/rouwdi-rustc"
+probe_command = "cargo check -p rouwdi-rustc"
+blocker_kind = "not_canonical_rustc_parse"
+exact_blocker = "The current parser is from rust-analyzer, not rustc_parse. It remains only to preserve the existing parse ratchet until rustc_parse is imported."
+
+[[components]]
+name = "rustc_parse"
+source_path = "third_party/rust/compiler/rustc_parse"
+desired_role = "canonical rustc parser and AST construction, replacing the current rust-analyzer parser scaffolding"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_parse\\Cargo.toml -p rustc_parse"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. The pinned Rust source requires a matching bootstrap compiler/config before rustc_parse can compile through the adapter."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_expand"
+source_path = "third_party/rust/compiler/rustc_expand"
+desired_role = "canonical macro expansion and builtin macro integration"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_expand\\Cargo.toml -p rustc_expand"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_expand cannot be imported until the shared rustc_index blocker is cleared."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_resolve"
+source_path = "third_party/rust/compiler/rustc_resolve"
+desired_role = "canonical rustc name resolution"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_resolve\\Cargo.toml -p rustc_resolve"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_resolve cannot be imported until the shared rustc_index blocker is cleared."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_hir_analysis"
+source_path = "third_party/rust/compiler/rustc_hir_analysis"
+desired_role = "canonical type checking, well-formedness, and coherence analysis"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_hir_analysis\\Cargo.toml -p rustc_hir_analysis"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_hir_analysis cannot be imported until the shared rustc_index blocker is cleared."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_borrowck"
+source_path = "third_party/rust/compiler/rustc_borrowck"
+desired_role = "canonical MIR borrow checking"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_borrowck\\Cargo.toml -p rustc_borrowck"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "The RUSTC_BOOTSTRAP probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. rustc_borrowck cannot be imported until the shared rustc_index blocker is cleared."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_middle"
+source_path = "third_party/rust/compiler/rustc_middle"
+desired_role = "MIR data structures, ty context, query model, and compiler metadata needed by the MIR handoff"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_middle\\Cargo.toml -p rustc_middle"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "Without RUSTC_BOOTSTRAP, the probe stops in rustc_macros/build.rs with exit code 101: attempting to build the compiler without going through bootstrap. With RUSTC_BOOTSTRAP=1, the probe reaches rustc_index and fails at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api. The pinned Rust source requires a matching bootstrap compiler/config before rustc_middle can compile through the adapter."
+immediate_dependency_blocker = "rustc_index"
+
+[[components]]
+name = "rustc_mir_build"
+source_path = "third_party/rust/compiler/rustc_mir_build"
+desired_role = "HIR/THIR to MIR lowering and MIR construction for the current handoff"
+import_status = "blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "$env:RUSTC_BOOTSTRAP='1'; cargo check --manifest-path third_party\\rust\\compiler\\rustc_mir_build\\Cargo.toml -p rustc_mir_build"
+blocker_kind = "stage0_feature_gate_mismatch"
+exact_blocker = "rustc_mir_build depends on rustc_middle and the same rustc_index dependency surface; the current probe fails before rustc_mir_build at compiler/rustc_index/src/idx.rs with E0658: use of unstable library feature new_range_api."
+immediate_dependency_blocker = "rustc_index"
+
+[[frontend_stages]]
+stage = "lex"
+classification = "upstream_backed_adapter"
+current_engine = "rustc_lexer"
+upstream_replacement = "rustc_lexer"
+ledger_component = "rustc_lexer"
+notes = "Lexing already uses the pinned upstream rustc_lexer path through the existing rouwdi-rustc crate."
+
+[[frontend_stages]]
+stage = "parse"
+classification = "temporary_upstream_adjacent_adapter"
+current_engine = "rust-analyzer parser from third_party/rust/src/tools/rust-analyzer/crates/parser"
+upstream_replacement = "rustc_parse"
+ledger_component = "rustc_parse"
+notes = "This stage is scaffolding for syntax ratchet records only and must be replaced by rustc_parse before claiming rustc frontend semantics."
+
+[[frontend_stages]]
+stage = "macro_expansion"
+classification = "temporary_scaffolding"
+current_engine = "rouwdi macro-free detector"
+upstream_replacement = "rustc_expand"
+ledger_component = "rustc_expand"
+notes = "This stage only records that macro expansion is required or not required; it does not expand macros."
+
+[[frontend_stages]]
+stage = "name_resolution"
+classification = "temporary_scaffolding"
+current_engine = "rouwdi token-stream module/import resolver"
+upstream_replacement = "rustc_resolve"
+ledger_component = "rustc_resolve"
+notes = "This local resolver is limited to macro-free compile units and is not canonical rustc name resolution."
+
+[[frontend_stages]]
+stage = "type_check"
+classification = "temporary_scaffolding"
+current_engine = "rouwdi local type checker"
+upstream_replacement = "rustc_hir_analysis"
+ledger_component = "rustc_hir_analysis"
+notes = "This local checker only preserves the frontend ratchet boundary and must not be extended into local Rust semantics."
+
+[[frontend_stages]]
+stage = "borrow_check"
+classification = "temporary_scaffolding"
+current_engine = "rouwdi lexical borrow graph"
+upstream_replacement = "rustc_borrowck"
+ledger_component = "rustc_borrowck"
+notes = "This local checker only preserves the frontend ratchet boundary and must not be extended into local Rust semantics."

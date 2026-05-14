@@ -9,6 +9,10 @@ pub struct RustcComponentStatus {
     pub role: String,
     pub embedded_in_assembly: bool,
     pub required_for_complete_semantics: bool,
+    pub import_status: String,
+    pub import_ledger_path: Option<String>,
+    pub adapter_crate: Option<String>,
+    pub blocker: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +456,10 @@ pub struct RustMirHandoffRecord {
     pub previous_stage_statuses: Vec<RustFrontendStageStatus>,
     pub stage: RustCompilerStage,
     pub status: RustMirHandoffStatus,
+    pub import_ledger_path: String,
+    pub import_adapter_crate: String,
+    pub blocker_import_status: Option<String>,
+    pub blocker_probe_command: Option<String>,
     pub intended_upstream_component: String,
     pub intended_upstream_path: String,
     pub required_upstream_crates: Vec<String>,
@@ -717,22 +725,32 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
         embedded_component(
             "rustc_lexer",
             "third_party/rust/compiler/rustc_lexer",
-            "real upstream Rust tokenization",
+            "upstream-backed adapter: real upstream Rust tokenization",
+        ),
+        embedded_component(
+            "rust_analyzer_parser",
+            "third_party/rust/src/tools/rust-analyzer/crates/parser",
+            "temporary upstream-adjacent parser scaffolding; not rustc_parse AST construction",
         ),
         embedded_component(
             "rouwdi_name_resolution",
             "crates/rouwdi-rustc/src/lib.rs",
-            "stage-local Rust name resolution for macro-free compile units",
+            "temporary scaffolding: stage-local Rust name resolution for macro-free compile units",
         ),
         embedded_component(
             "rouwdi_type_check",
             "crates/rouwdi-rustc/src/lib.rs",
-            "stage-local Rust type checking for macro-free compile units",
+            "temporary scaffolding: stage-local Rust type checking for macro-free compile units",
         ),
         embedded_component(
             "rouwdi_borrow_check",
             "crates/rouwdi-rustc/src/lib.rs",
-            "stage-local lexical borrow checking for macro-free compile units",
+            "temporary scaffolding: stage-local lexical borrow checking for macro-free compile units",
+        ),
+        imported_component(
+            "rustc_error_codes",
+            "third_party/rust/compiler/rustc_error_codes",
+            "upstream compiler diagnostic code table imported through rouwdi-rustc-upstream",
         ),
         pending_component(
             "rustc_parse",
@@ -1081,11 +1099,12 @@ pub fn handoff_rust_mir_for_compile_unit(
     type_check_stage: &RustTypeCheckStageRecord,
     borrow_check_stage: &RustBorrowCheckStageRecord,
 ) -> RustMirHandoffRecord {
-    let component = rustc_component_inventory()
-        .into_iter()
-        .find(|component| component.name == "rustc_middle")
-        .expect("rustc component inventory includes rustc_middle");
-    let available = component.embedded_in_assembly;
+    let component = rouwdi_rustc_upstream::import_component("rustc_middle")
+        .expect("upstream rustc import ledger includes rustc_middle");
+    let mir_build = rouwdi_rustc_upstream::import_component("rustc_mir_build")
+        .expect("upstream rustc import ledger includes rustc_mir_build");
+    let blocker = rouwdi_rustc_upstream::mir_handoff_blocker();
+    let available = component.is_imported() && mir_build.is_imported();
     let required_upstream_crates = vec![
         "rustc_middle".to_owned(),
         "rustc_mir_build".to_owned(),
@@ -1103,10 +1122,15 @@ pub fn handoff_rust_mir_for_compile_unit(
     let blocker_reason = if available {
         None
     } else {
-        Some(format!(
-            "upstream MIR adapter import is blocked: {} is not embedded in rouwdi.wasm; MIR lowering must hand off through {}",
-            component.name, component.upstream_path
-        ))
+        blocker.as_ref().map(|blocker| {
+            format!(
+                "upstream MIR adapter import is blocked by {}: {}; see {} and adapter {}",
+                blocker.name,
+                blocker.exact_blocker,
+                rouwdi_rustc_upstream::IMPORT_LEDGER_PATH,
+                rouwdi_rustc_upstream::ADAPTER_CRATE
+            )
+        })
     };
 
     RustMirHandoffRecord {
@@ -1135,6 +1159,14 @@ pub fn handoff_rust_mir_for_compile_unit(
         } else {
             RustMirHandoffStatus::AdapterUnavailable
         },
+        import_ledger_path: rouwdi_rustc_upstream::IMPORT_LEDGER_PATH.to_owned(),
+        import_adapter_crate: rouwdi_rustc_upstream::ADAPTER_CRATE.to_owned(),
+        blocker_import_status: blocker
+            .as_ref()
+            .map(|blocker| blocker.import_status.clone()),
+        blocker_probe_command: blocker
+            .as_ref()
+            .map(|blocker| blocker.probe_command.clone()),
         intended_upstream_component: "rustc_middle".to_owned(),
         intended_upstream_path: "rustc_middle::mir via rustc_mir_build::build".to_owned(),
         required_upstream_crates,
@@ -1142,9 +1174,9 @@ pub fn handoff_rust_mir_for_compile_unit(
         upstream_mir_adapter_available: available,
         blocker_category: (!available)
             .then_some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded),
-        blocker_component: (!available).then(|| component.name.clone()),
-        blocker_component_role: (!available).then(|| component.role.clone()),
-        blocker_component_path: (!available).then(|| component.upstream_path.clone()),
+        blocker_component: blocker.as_ref().map(|blocker| blocker.name.clone()),
+        blocker_component_role: blocker.as_ref().map(|blocker| blocker.desired_role.clone()),
+        blocker_component_path: blocker.as_ref().map(|blocker| blocker.source_path.clone()),
         blocker_reason,
     }
 }
@@ -3375,16 +3407,44 @@ fn embedded_component(name: &str, upstream_path: &str, role: &str) -> RustcCompo
         role: role.to_owned(),
         embedded_in_assembly: true,
         required_for_complete_semantics: true,
+        import_status: "upstream_backed".to_owned(),
+        import_ledger_path: Some(rouwdi_rustc_upstream::IMPORT_LEDGER_PATH.to_owned()),
+        adapter_crate: None,
+        blocker: None,
+    }
+}
+
+fn imported_component(name: &str, upstream_path: &str, role: &str) -> RustcComponentStatus {
+    RustcComponentStatus {
+        name: name.to_owned(),
+        upstream_path: upstream_path.to_owned(),
+        role: role.to_owned(),
+        embedded_in_assembly: true,
+        required_for_complete_semantics: true,
+        import_status: "imported".to_owned(),
+        import_ledger_path: Some(rouwdi_rustc_upstream::IMPORT_LEDGER_PATH.to_owned()),
+        adapter_crate: Some(rouwdi_rustc_upstream::ADAPTER_CRATE.to_owned()),
+        blocker: None,
     }
 }
 
 fn pending_component(name: &str, upstream_path: &str, role: &str) -> RustcComponentStatus {
+    let ledger_entry = rouwdi_rustc_upstream::import_component(name);
     RustcComponentStatus {
         name: name.to_owned(),
         upstream_path: upstream_path.to_owned(),
         role: role.to_owned(),
         embedded_in_assembly: false,
         required_for_complete_semantics: true,
+        import_status: ledger_entry
+            .as_ref()
+            .map(|component| component.import_status.clone())
+            .unwrap_or_else(|| "not_attempted".to_owned()),
+        import_ledger_path: Some(rouwdi_rustc_upstream::IMPORT_LEDGER_PATH.to_owned()),
+        adapter_crate: ledger_entry
+            .as_ref()
+            .map(|component| component.adapter_path.clone()),
+        blocker: ledger_entry.map(|component| component.exact_blocker),
     }
 }
 
@@ -3476,6 +3536,16 @@ mod tests {
         assert_eq!(handoff.status, RustMirHandoffStatus::AdapterUnavailable);
         assert!(!handoff.upstream_mir_adapter_available);
         assert_eq!(handoff.intended_upstream_component, "rustc_middle");
+        assert_eq!(
+            handoff.import_ledger_path,
+            "bootstrap/upstream-rustc-import.toml"
+        );
+        assert_eq!(handoff.import_adapter_crate, "crates/rouwdi-rustc-upstream");
+        assert_eq!(handoff.blocker_import_status.as_deref(), Some("blocked"));
+        assert!(handoff
+            .blocker_probe_command
+            .as_deref()
+            .is_some_and(|command| command.contains("rustc_middle")));
         assert_eq!(
             handoff.blocker_category,
             Some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded)
@@ -3914,6 +3984,14 @@ mod tests {
         assert_eq!(
             mir_handoff.blocker_component.as_deref(),
             Some("rustc_middle")
+        );
+        assert_eq!(
+            mir_handoff.import_ledger_path,
+            "bootstrap/upstream-rustc-import.toml"
+        );
+        assert_eq!(
+            mir_handoff.import_adapter_crate,
+            "crates/rouwdi-rustc-upstream"
         );
         assert!(mir_handoff.previous_stage_statuses.iter().any(|status| {
             matches!(

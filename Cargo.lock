@@ -1443,8 +1443,18 @@ name = "rouwdi-rustc"
 version = "0.1.0"
 dependencies = [
  "parser",
+ "rouwdi-rustc-upstream",
  "rustc_lexer",
  "serde",
+]
+
+[[package]]
+name = "rouwdi-rustc-upstream"
+version = "0.1.0"
+dependencies = [
+ "rustc_error_codes",
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -1505,6 +1515,10 @@ name = "rustc-literal-escaper"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab03008eb631b703dd16978282ae36c73282e7922fe101a4bd072a40ecea7b8b"
+
+[[package]]
+name = "rustc_error_codes"
+version = "0.0.0"
 
 [[package]]
 name = "rustc_lexer"
