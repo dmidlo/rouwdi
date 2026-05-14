@@ -3,7 +3,9 @@ use rouwdi_cargo::{
 };
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
-use rouwdi_rustc::{RustCompilerPipelineRecord, RustParseStageRecord, RustSourceLexProof};
+use rouwdi_rustc::{
+    RustCompilerPipelineRecord, RustExpansionStageRecord, RustParseStageRecord, RustSourceLexProof,
+};
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
 use rouwdi_vfs::{Storage, VfsError};
@@ -144,6 +146,7 @@ pub struct ProofBundle {
     pub compile_time_plan: CompileTimePlan,
     pub rust_source_lex: Vec<RustSourceLexProof>,
     pub rust_source_parse: Vec<RustParseStageRecord>,
+    pub rust_source_expansion: Vec<RustExpansionStageRecord>,
     pub cargo_lockfile: Option<CargoLockfile>,
     pub interface_proofs: Vec<ArtifactInterfaceProof>,
     pub runtime_proofs: Vec<RuntimeProof>,
@@ -201,6 +204,10 @@ impl ProofBundle {
             (
                 "graph/rust-source-parse.json",
                 serde_json::to_vec_pretty(&self.rust_source_parse)?,
+            ),
+            (
+                "graph/rust-source-expansion.json",
+                serde_json::to_vec_pretty(&self.rust_source_expansion)?,
             ),
             (
                 "toolchain/rouwdi-engine.json",

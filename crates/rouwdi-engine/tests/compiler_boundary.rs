@@ -3,7 +3,7 @@ use rouwdi_engine::{BuildRequest, RouwdiEngine};
 use rouwdi_proof::{RouwdiRunManifest, RunStatus};
 use rouwdi_rustc::{
     RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode,
-    RustParseStageRecord, RustParseStageStatus,
+    RustExpansionStageRecord, RustExpansionStageStatus, RustParseStageRecord, RustParseStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -64,9 +64,7 @@ version = "0.1.0"
 "#,
         )
         .unwrap();
-    storage
-        .write("src/main.rs", b"fn main() { println!(\"hello\"); }\n")
-        .unwrap();
+    storage.write("src/main.rs", b"fn main() {}\n").unwrap();
     storage
 }
 
@@ -90,15 +88,19 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         record.parse_stage.as_ref().unwrap().status,
         RustParseStageStatus::Succeeded
     );
+    assert_eq!(
+        record.expansion_stage.as_ref().unwrap().status,
+        RustExpansionStageStatus::NoExpansionRequired
+    );
     let missing_stage = record.missing_stage.as_ref().unwrap();
-    assert_eq!(missing_stage.stage, RustCompilerStage::MacroExpansion);
+    assert_eq!(missing_stage.stage, RustCompilerStage::NameResolution);
     assert_eq!(
         missing_stage.error_code,
-        RustCompilerStageErrorCode::MacroExpansionNotEmbedded
+        RustCompilerStageErrorCode::NameResolutionNotEmbedded
     );
-    assert_eq!(missing_stage.required_component, "rustc_expand");
+    assert_eq!(missing_stage.required_component, "rustc_resolve");
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_expand"
+        item.component == "compiler stage rustc_resolve"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report
@@ -219,9 +221,13 @@ edition = "2021"
                 parse.status == RustParseStageStatus::Succeeded
                     && parse.stage == RustCompilerStage::Parse
             })
+            && record.expansion_stage.as_ref().is_some_and(|expansion| {
+                expansion.status == RustExpansionStageStatus::NoExpansionRequired
+                    && expansion.stage == RustCompilerStage::MacroExpansion
+            })
             && record.missing_stage.as_ref().is_some_and(|missing| {
-                missing.stage == RustCompilerStage::MacroExpansion
-                    && missing.error_code == RustCompilerStageErrorCode::MacroExpansionNotEmbedded
+                missing.stage == RustCompilerStage::NameResolution
+                    && missing.error_code == RustCompilerStageErrorCode::NameResolutionNotEmbedded
             })
     }));
     let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
@@ -238,6 +244,78 @@ edition = "2021"
     assert!(parse_records
         .iter()
         .all(|record| record.status == RustParseStageStatus::Succeeded));
+    let expansion_records: Vec<RustExpansionStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-expansion.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    let expansion_unit_ids = expansion_records
+        .iter()
+        .map(|record| record.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(expansion_unit_ids, rust_unit_ids);
+    assert!(expansion_records
+        .iter()
+        .all(|record| record.status == RustExpansionStageStatus::NoExpansionRequired));
+}
+
+#[test]
+fn macro_invocation_stops_at_expansion_stage() {
+    let mut storage = no_deps_wasi_binary_storage();
+    storage
+        .write("src/main.rs", b"fn main() { println!(\"hello\"); }\n")
+        .unwrap();
+
+    let report = RouwdiEngine::default()
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let expansion_records: Vec<RustExpansionStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-expansion.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(manifest.compiler_pipeline.len(), 1);
+    let record = &manifest.compiler_pipeline[0];
+    assert_eq!(record.status, RustCompilerPipelineStatus::ExpansionError);
+    assert!(record.missing_stage.is_none());
+    assert_eq!(
+        record.expansion_stage.as_ref().unwrap().status,
+        RustExpansionStageStatus::ExpansionRequired
+    );
+    assert!(record
+        .expansion_stage
+        .as_ref()
+        .unwrap()
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.feature == "macro_invocation"
+            && diagnostic.message.contains("rustc_expand is not embedded")));
+    assert_eq!(expansion_records.len(), 1);
+    assert_eq!(
+        expansion_records[0].status,
+        RustExpansionStageStatus::ExpansionRequired
+    );
+    assert!(report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "Rust macro expansion stage"
+            && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+            && item.reason.contains("macro_invocation")
+    }));
+    assert!(!report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "compiler stage rustc_expand"
+            || item.reason.contains("macro_expansion_not_embedded")
+    }));
 }
 
 #[test]

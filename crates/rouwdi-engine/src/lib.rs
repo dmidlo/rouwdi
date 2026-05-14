@@ -12,7 +12,7 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
-    RustCompilerPipelineRecord, RustParseStageStatus, RustSourceLexProof,
+    RustCompilerPipelineRecord, RustExpansionStageStatus, RustParseStageStatus, RustSourceLexProof,
 };
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
@@ -159,6 +159,10 @@ impl RouwdiEngine {
             .iter()
             .filter_map(|record| record.parse_stage.clone())
             .collect::<Vec<_>>();
+        let rust_source_expansion = compiler_pipeline
+            .iter()
+            .filter_map(|record| record.expansion_stage.clone())
+            .collect::<Vec<_>>();
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -236,6 +240,23 @@ impl RouwdiEngine {
                         reason: format!(
                             "internal Rust parser reported {} diagnostic(s) for {}",
                             parse_stage.diagnostic_count, parse_stage.source_path
+                        ),
+                    });
+                }
+            }
+            if let Some(expansion_stage) = &record.expansion_stage {
+                if expansion_stage.status == RustExpansionStageStatus::ExpansionRequired {
+                    let required_features = expansion_stage
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.feature.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    assembly_diagnostics.push(BootstrapDiagnostic {
+                        component: "Rust macro expansion stage".to_owned(),
+                        required_by: format!("compile unit {}", expansion_stage.unit_id),
+                        reason: format!(
+                            "internal Rust expansion requires embedded support for {required_features}"
                         ),
                     });
                 }
@@ -400,6 +421,7 @@ impl RouwdiEngine {
             compile_time_plan,
             rust_source_lex,
             rust_source_parse,
+            rust_source_expansion,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -588,7 +610,7 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "compiler stage rustc_expand"
+            .any(|item| item.component == "compiler stage rustc_resolve"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
             .bootstrap_diagnostics
@@ -602,13 +624,14 @@ version = "0.1.0"
             serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.compiler_pipeline.len(), 1);
         assert!(manifest.compiler_pipeline[0].parse_stage.is_some());
+        assert!(manifest.compiler_pipeline[0].expansion_stage.is_some());
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .missing_stage
                 .as_ref()
                 .unwrap()
                 .required_component,
-            "rustc_expand"
+            "rustc_resolve"
         );
         assert!(storage
             .read(&format!("{}/source/source-cache.json", report.run_root))
@@ -640,6 +663,13 @@ version = "0.1.0"
             .starts_with(b"["));
         assert!(storage
             .read(&format!("{}/graph/rust-source-parse.json", report.run_root))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!(
+                "{}/graph/rust-source-expansion.json",
+                report.run_root
+            ))
             .unwrap()
             .starts_with(b"["));
         assert!(storage

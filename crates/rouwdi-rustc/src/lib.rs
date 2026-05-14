@@ -67,6 +67,46 @@ pub struct RustParseStageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustExpansionDiagnostic {
+    pub offset: u64,
+    pub len: u32,
+    pub feature: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustExpansionStageStatus {
+    NoExpansionRequired,
+    ExpansionRequired,
+}
+
+impl RustExpansionStageStatus {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::NoExpansionRequired)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustExpansionStageRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+    pub stage: RustCompilerStage,
+    pub status: RustExpansionStageStatus,
+    pub expansion_engine: String,
+    pub expansion_source: String,
+    pub parse_stage_status: RustParseStageStatus,
+    pub parse_token_count: usize,
+    pub diagnostic_count: usize,
+    pub diagnostics: Vec<RustExpansionDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCompileRequest {
     pub unit_id: String,
     pub package: String,
@@ -213,6 +253,9 @@ pub enum RustCompilerPipelineError {
     ParseStage {
         parse: Box<RustParseStageRecord>,
     },
+    ExpansionStage {
+        expansion: Box<RustExpansionStageRecord>,
+    },
 }
 
 impl fmt::Display for RustCompilerPipelineError {
@@ -230,6 +273,11 @@ impl fmt::Display for RustCompilerPipelineError {
                 "compiler stage parse failed for compile unit {}: {} diagnostic(s)",
                 parse.unit_id, parse.diagnostic_count
             ),
+            Self::ExpansionStage { expansion } => write!(
+                formatter,
+                "compiler stage macro_expansion failed for compile unit {}: {} diagnostic(s)",
+                expansion.unit_id, expansion.diagnostic_count
+            ),
         }
     }
 }
@@ -242,6 +290,7 @@ pub enum RustCompilerPipelineStatus {
     Artifact,
     MissingStage,
     ParseError,
+    ExpansionError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +305,7 @@ pub struct RustCompilerPipelineRecord {
     pub status: RustCompilerPipelineStatus,
     pub artifact: Option<RustCompileArtifactRecord>,
     pub parse_stage: Option<RustParseStageRecord>,
+    pub expansion_stage: Option<RustExpansionStageRecord>,
     pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
@@ -330,6 +380,15 @@ pub fn run_rust_compiler_pipeline(
                     .expect("parse error pipeline record includes parse stage"),
             ),
         }),
+        RustCompilerPipelineStatus::ExpansionError => {
+            Err(RustCompilerPipelineError::ExpansionStage {
+                expansion: Box::new(
+                    record
+                        .expansion_stage
+                        .expect("expansion error pipeline record includes expansion stage"),
+                ),
+            })
+        }
         RustCompilerPipelineStatus::MissingStage => Err(RustCompilerPipelineError::MissingStage {
             missing: Box::new(
                 record
@@ -358,6 +417,25 @@ pub fn run_rust_compiler_pipeline_record(
             status: RustCompilerPipelineStatus::ParseError,
             artifact: None,
             parse_stage: Some(parse_stage),
+            expansion_stage: None,
+            missing_stage: None,
+        };
+    }
+
+    let expansion_stage = expand_rust_source_for_compile_unit(request, source, &parse_stage);
+    if !expansion_stage.status.is_success() {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::ExpansionError,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
             missing_stage: None,
         };
     }
@@ -374,6 +452,7 @@ pub fn run_rust_compiler_pipeline_record(
             status: RustCompilerPipelineStatus::MissingStage,
             artifact: None,
             parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
             missing_stage: Some(missing),
         };
     }
@@ -389,6 +468,7 @@ pub fn run_rust_compiler_pipeline_record(
         status: RustCompilerPipelineStatus::MissingStage,
         artifact: None,
         parse_stage: Some(parse_stage),
+        expansion_stage: Some(expansion_stage),
         missing_stage: Some(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -513,6 +593,35 @@ pub fn parse_rust_source_for_compile_unit(
     }
 }
 
+pub fn expand_rust_source_for_compile_unit(
+    request: &RustCompileRequest,
+    source: &str,
+    parse_stage: &RustParseStageRecord,
+) -> RustExpansionStageRecord {
+    let diagnostics = expansion_required_diagnostics(source);
+    RustExpansionStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::MacroExpansion,
+        status: if diagnostics.is_empty() {
+            RustExpansionStageStatus::NoExpansionRequired
+        } else {
+            RustExpansionStageStatus::ExpansionRequired
+        },
+        expansion_engine: "rouwdi-rustc-expansion-gate".to_owned(),
+        expansion_source: "parse-stage source context plus rustc_lexer token scan".to_owned(),
+        parse_stage_status: parse_stage.status,
+        parse_token_count: parse_stage.token_count,
+        diagnostic_count: diagnostics.len(),
+        diagnostics,
+    }
+}
+
 fn lexical_error_message(kind: rustc_lexer::TokenKind) -> Option<String> {
     use rustc_lexer::{LiteralKind, TokenKind};
 
@@ -558,6 +667,127 @@ fn lexical_error_message(kind: rustc_lexer::TokenKind) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpansionToken {
+    kind: rustc_lexer::TokenKind,
+    text: String,
+    offset: u64,
+    len: u32,
+}
+
+fn expansion_required_diagnostics(source: &str) -> Vec<RustExpansionDiagnostic> {
+    use rustc_lexer::TokenKind;
+
+    let tokens = expansion_tokens(source);
+    let mut diagnostics = Vec::new();
+
+    for window in tokens.windows(2) {
+        let left = &window[0];
+        let right = &window[1];
+        if is_identifier_like(&left.kind) && right.kind == TokenKind::Bang {
+            let feature = if left.text == "macro_rules" {
+                "macro_definition"
+            } else {
+                "macro_invocation"
+            };
+            diagnostics.push(RustExpansionDiagnostic {
+                offset: left.offset,
+                len: right
+                    .offset
+                    .saturating_add(u64::from(right.len))
+                    .saturating_sub(left.offset) as u32,
+                feature: feature.to_owned(),
+                message: format!(
+                    "{feature} requires embedded Rust macro expansion; rustc_expand is not embedded in rouwdi.wasm yet"
+                ),
+            });
+        }
+    }
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != TokenKind::Pound {
+            continue;
+        }
+        let Some(open) = tokens.get(index + 1) else {
+            continue;
+        };
+        let attr_index = if open.kind == TokenKind::Bang {
+            match tokens.get(index + 2) {
+                Some(inner_open) if inner_open.kind == TokenKind::OpenBracket => index + 3,
+                _ => continue,
+            }
+        } else if open.kind == TokenKind::OpenBracket {
+            index + 2
+        } else {
+            continue;
+        };
+        let Some(attribute) = tokens.get(attr_index) else {
+            continue;
+        };
+        if !is_identifier_like(&attribute.kind) {
+            continue;
+        }
+        let feature = match attribute.text.as_str() {
+            "derive" => Some("derive_attribute_expansion"),
+            "cfg" => Some("cfg_attribute_expansion"),
+            "cfg_attr" => Some("cfg_attr_attribute_expansion"),
+            "macro_use" => Some("macro_use_attribute_expansion"),
+            "proc_macro" | "proc_macro_attribute" | "proc_macro_derive" => {
+                Some("proc_macro_attribute_expansion")
+            }
+            _ => None,
+        };
+        if let Some(feature) = feature {
+            diagnostics.push(RustExpansionDiagnostic {
+                offset: token.offset,
+                len: attribute
+                    .offset
+                    .saturating_add(u64::from(attribute.len))
+                    .saturating_sub(token.offset) as u32,
+                feature: feature.to_owned(),
+                message: format!(
+                    "{feature} requires embedded Rust macro expansion; rustc_expand is not embedded in rouwdi.wasm yet"
+                ),
+            });
+        }
+    }
+
+    diagnostics
+}
+
+fn expansion_tokens(source: &str) -> Vec<ExpansionToken> {
+    use rustc_lexer::TokenKind;
+
+    let mut offset = 0u64;
+    let mut tokens = Vec::new();
+    for token in rustc_lexer::tokenize(source, rustc_lexer::FrontmatterAllowed::No) {
+        let text = source
+            .get(offset as usize..offset as usize + token.len as usize)
+            .unwrap_or_default()
+            .to_owned();
+        match token.kind {
+            TokenKind::Whitespace
+            | TokenKind::LineComment { .. }
+            | TokenKind::BlockComment { .. } => {}
+            kind => tokens.push(ExpansionToken {
+                kind,
+                text,
+                offset,
+                len: token.len,
+            }),
+        }
+        offset += u64::from(token.len);
+    }
+    tokens
+}
+
+fn is_identifier_like(kind: &rustc_lexer::TokenKind) -> bool {
+    matches!(
+        kind,
+        rustc_lexer::TokenKind::Ident | rustc_lexer::TokenKind::RawIdent
+    )
+}
+
 fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingRustCompilerStage> {
     let inventory = rustc_component_inventory();
     for (stage, component_name) in compiler_stage_components() {
@@ -585,9 +815,8 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
     None
 }
 
-fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 8] {
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 7] {
     [
-        (RustCompilerStage::MacroExpansion, "rustc_expand"),
         (RustCompilerStage::NameResolution, "rustc_resolve"),
         (RustCompilerStage::TypeChecking, "rustc_hir_analysis"),
         (RustCompilerStage::BorrowChecking, "rustc_borrowck"),
@@ -693,12 +922,74 @@ mod tests {
         let RustCompilerPipelineError::MissingStage { missing } = error else {
             panic!("valid Rust source must advance to the next missing compiler stage");
         };
-        assert_eq!(missing.stage, RustCompilerStage::MacroExpansion);
+        assert_eq!(missing.stage, RustCompilerStage::NameResolution);
         assert_eq!(
             missing.error_code,
-            RustCompilerStageErrorCode::MacroExpansionNotEmbedded
+            RustCompilerStageErrorCode::NameResolutionNotEmbedded
         );
-        assert_eq!(missing.required_component, "rustc_expand");
+        assert_eq!(missing.required_component, "rustc_resolve");
+    }
+
+    #[test]
+    fn expansion_stage_succeeds_when_no_expansion_is_required() {
+        let request = compile_request();
+        let parse = parse_rust_source_for_compile_unit(&request, "fn main() {}\n");
+
+        let expansion = expand_rust_source_for_compile_unit(&request, "fn main() {}\n", &parse);
+
+        assert_eq!(expansion.stage, RustCompilerStage::MacroExpansion);
+        assert_eq!(
+            expansion.status,
+            RustExpansionStageStatus::NoExpansionRequired
+        );
+        assert!(expansion.status.is_success());
+        assert_eq!(
+            expansion.parse_stage_status,
+            RustParseStageStatus::Succeeded
+        );
+        assert_eq!(expansion.parse_token_count, parse.token_count);
+        assert_eq!(expansion.diagnostic_count, 0);
+        assert!(expansion.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn expansion_stage_rejects_macro_invocation_locally() {
+        let request = compile_request();
+        let source = "fn main() { println!(\"hello\"); }\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+
+        assert_eq!(
+            expansion.status,
+            RustExpansionStageStatus::ExpansionRequired
+        );
+        assert!(!expansion.status.is_success());
+        assert_eq!(expansion.diagnostic_count, 1);
+        assert_eq!(expansion.diagnostics[0].feature, "macro_invocation");
+        assert!(expansion.diagnostics[0]
+            .message
+            .contains("rustc_expand is not embedded"));
+    }
+
+    #[test]
+    fn compiler_pipeline_returns_expansion_stage_error_for_macro_invocation() {
+        let request = compile_request();
+
+        let error = run_rust_compiler_pipeline(&request, "fn main() { println!(\"hello\"); }\n")
+            .unwrap_err();
+
+        let RustCompilerPipelineError::ExpansionStage { expansion } = error else {
+            panic!("macro-using Rust source must stop in the expansion stage");
+        };
+        assert_eq!(
+            expansion.status,
+            RustExpansionStageStatus::ExpansionRequired
+        );
+        assert!(expansion
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.feature == "macro_invocation"));
     }
 
     #[test]
@@ -748,11 +1039,15 @@ mod tests {
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().required_component,
-            "rustc_expand"
+            "rustc_resolve"
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().error_code,
-            RustCompilerStageErrorCode::MacroExpansionNotEmbedded
+            RustCompilerStageErrorCode::NameResolutionNotEmbedded
+        );
+        assert_eq!(
+            record.expansion_stage.as_ref().unwrap().status,
+            RustExpansionStageStatus::NoExpansionRequired
         );
         assert_eq!(record.artifact, None);
     }
