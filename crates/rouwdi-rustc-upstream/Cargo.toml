@@ -14,8 +14,10 @@ rustc_middle = { path = "../../third_party/rust/compiler/rustc_middle", optional
 rustc_mir_build = { path = "../../third_party/rust/compiler/rustc_mir_build", optional = true }
 rustc_session = { path = "../../third_party/rust/compiler/rustc_session", optional = true }
 rustc_span = { path = "../../third_party/rust/compiler/rustc_span", optional = true }
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true
 
 [features]

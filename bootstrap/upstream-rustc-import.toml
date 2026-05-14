@@ -99,12 +99,22 @@ adapter_crate = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
 source_path = "third_party/rust/src/tools/rouwdi-mir-adapter-probe/src/lib.rs"
 command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
 workdir = "third_party/rust"
+stage = 1
 exit_code = 0
 outcome = "passed"
 classification = "bootstrap_adapter_typechecked"
 evidence = "Checking stage1 rouwdi-mir-adapter-probe (stage0 -> stage1, x86_64-pc-windows-msvc); Finished release profile for rouwdi-mir-adapter-probe; Build completed successfully in 0:00:21"
 authoritative = true
 normal_workspace_probe_command = "cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload"
+payload_state = "payload_load_blocked"
+payload_carrier_created = true
+artifact_locate_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json"
+payload_loaded_into_rouwdi_facade = false
+payload_load_blocker_kind = "artifact_format_rmeta_not_loadable_component"
+payload_load_blocker_reason = "The bootstrap stage1 check located only rustc metadata (`.rmeta`) for rouwdi_mir_adapter_probe. That records a compiler-private typechecked metadata artifact, but it is not an rlib/dylib/cdylib/wasm component with an exported ABI that rouwdi.wasm can load. The next boundary is exporting a loadable artifact with an explicit ABI/component model instead of loading rustc metadata directly."
+next_artifact_command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+next_artifact_command_exit_code = 1
+next_artifact_command_evidence = "x.py rejected the candidate build command with `ERROR: no build rules matched [src\\tools\\rouwdi-mir-adapter-probe]`; producing a loadable payload requires registering a bootstrap build step or equivalent stage1 artifact export path for this tool crate."
 typechecked_entrypoints = [
   "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
   "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
@@ -144,6 +154,18 @@ required_upstream_modules = [
   "rustc_span::def_id",
   "rustc_mir_build",
 ]
+
+[bootstrap_adapter_probes.artifact]
+crate_name = "rouwdi_mir_adapter_probe"
+artifact_kind = "rustc_metadata"
+artifact_format = "rmeta"
+path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/deps/librouwdi_mir_adapter_probe-346edc2538de29f5.rmeta"
+sha256 = "58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1"
+size_bytes = 27097
+host_triple = "x86_64-pc-windows-msvc"
+profile = "release"
+emitted_by = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+loadable_by_rouwdi_wasm = false
 
 [[components]]
 name = "rustc_lexer"
@@ -264,9 +286,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "bootstrap_payload_not_loaded_into_rouwdi_wasm"
-exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0. The previous normal workspace Cargo feature-gate failure remains a non-authoritative control probe only. The remaining blocker is carrying the bootstrap-checked MIR payload into the rouwdi.wasm compiler facade without fabricating MIR bodies or artifacts."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.bootstrap_payload_not_loaded_into_current_facade"
+blocker_kind = "artifact_format_rmeta_not_loadable_component"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 and located `third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/deps/librouwdi_mir_adapter_probe-346edc2538de29f5.rmeta` (sha256 58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1). The artifact is rustc `.rmeta` metadata, not an rlib/dylib/cdylib/wasm component with an exported ABI for rouwdi.wasm to load. Candidate command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` currently exits 1 because no bootstrap build rule matches this tool path, so the next work is a stage1 artifact export/build step, not fake MIR body fabrication."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.artifact_format_rmeta_not_loadable_component"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative MIR payload type probe is third_party/rust/src/tools/rouwdi-mir-adapter-probe, registered as an x.py check step and recorded in [[bootstrap_adapter_probes]]. It type-checks the adapter boundary against real rustc_middle MIR/query/session types and the rustc_mir_build provider surface under stage1 bootstrap."
 
@@ -278,9 +300,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "bootstrap_payload_not_loaded_into_rouwdi_wasm"
-exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 under stage1 bootstrap. The remaining blocker is integrating that bootstrap-checked provider surface into rouwdi.wasm's compiler facade; normal workspace Cargo is no longer the authoritative MIR payload probe."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.bootstrap_payload_not_loaded_into_current_facade"
+blocker_kind = "artifact_format_rmeta_not_loadable_component"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 under stage1 bootstrap and located a rustc `.rmeta` payload metadata artifact. That `.rmeta` is exact type-checked compiler metadata, but it is not a loadable rouwdi.wasm payload because it has no exported ABI/component boundary and is tied to the rustc-private stage1 metadata/linkage model. Candidate command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 1 with no matching bootstrap build rule; the next command path requires registering or adding a bootstrap export step that produces a loadable rlib/dylib/cdylib/wasm/component artifact."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.artifact_format_rmeta_not_loadable_component"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative bootstrap adapter probe in third_party/rust/src/tools/rouwdi-mir-adapter-probe type-checks rustc_mir_build::provide(&mut rustc_middle::util::Providers) and the MIR build hook surface in the pinned Rust stage1 bootstrap environment."
 

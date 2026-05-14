@@ -473,7 +473,17 @@ pub struct RustMirHandoffRecord {
     pub payload_adapter_normal_workspace_probe_exit_code: i32,
     pub payload_adapter_bootstrap_crate: Option<String>,
     pub payload_adapter_bootstrap_source_path: Option<String>,
+    pub payload_adapter_bootstrap_artifact_located: bool,
     pub payload_adapter_blocker_kind: Option<String>,
+    pub payload_carrier_state: Option<String>,
+    pub payload_carrier_created: bool,
+    pub payload_carrier: Option<rouwdi_rustc_upstream::MirHandoffPayloadCarrier>,
+    pub payload_loaded_into_rouwdi_facade: bool,
+    pub payload_load_blocker_kind: Option<String>,
+    pub payload_load_blocker_reason: Option<String>,
+    pub payload_next_artifact_command: Option<String>,
+    pub payload_next_artifact_command_exit_code: Option<i32>,
+    pub payload_next_artifact_command_evidence: Option<String>,
     pub blocker_import_status: Option<String>,
     pub blocker_probe_command: Option<String>,
     pub shared_blocker_component: Option<String>,
@@ -1145,6 +1155,25 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_adapter.adapter_available && component.is_imported() && mir_build.is_imported();
     let required_upstream_crates = payload_adapter.required_upstream_crates.clone();
     let required_upstream_modules = boundary.required_upstream_modules.clone();
+    let payload_carrier = payload_adapter.payload_carrier.clone();
+    let payload_carrier_state = payload_carrier
+        .as_ref()
+        .map(|carrier| carrier.state.as_str().to_owned());
+    let payload_load_blocker_kind = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.load_blocker_kind.clone());
+    let payload_load_blocker_reason = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.load_blocker_reason.clone());
+    let payload_next_artifact_command = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.next_artifact_command.clone());
+    let payload_next_artifact_command_exit_code = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.next_artifact_command_exit_code);
+    let payload_next_artifact_command_evidence = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.next_artifact_command_evidence.clone());
     let blocker_component_name = ledger_blocker
         .map(|blocker| blocker.name.clone())
         .or_else(|| payload_adapter.blocker_component.clone());
@@ -1192,9 +1221,13 @@ pub fn handoff_rust_mir_for_compile_unit(
         Some(reason)
     } else {
         Some(format!(
-            "upstream MIR payload adapter {} is {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
+            "upstream MIR payload adapter {} is {}; carrier state {}; bootstrap artifact located {}; payload carrier created {}; payload loaded into rouwdi facade {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
             payload_adapter.adapter_symbol,
             payload_adapter.status.as_str(),
+            payload_carrier_state.as_deref().unwrap_or("unrecorded"),
+            payload_adapter.bootstrap_artifact_located,
+            payload_adapter.payload_carrier_created,
+            payload_adapter.payload_loaded_into_rouwdi_facade,
             payload_adapter.authoritative_probe_command,
             payload_adapter.authoritative_probe_workdir,
             payload_adapter.authoritative_probe_exit_code,
@@ -1258,7 +1291,17 @@ pub fn handoff_rust_mir_for_compile_unit(
             .normal_workspace_probe_exit_code,
         payload_adapter_bootstrap_crate: payload_adapter.bootstrap_adapter_crate,
         payload_adapter_bootstrap_source_path: payload_adapter.bootstrap_adapter_source_path,
+        payload_adapter_bootstrap_artifact_located: payload_adapter.bootstrap_artifact_located,
         payload_adapter_blocker_kind: payload_adapter.blocker_kind,
+        payload_carrier_state,
+        payload_carrier_created: payload_adapter.payload_carrier_created,
+        payload_carrier,
+        payload_loaded_into_rouwdi_facade: payload_adapter.payload_loaded_into_rouwdi_facade,
+        payload_load_blocker_kind,
+        payload_load_blocker_reason,
+        payload_next_artifact_command,
+        payload_next_artifact_command_exit_code,
+        payload_next_artifact_command_evidence,
         blocker_import_status,
         blocker_probe_command,
         shared_blocker_component: shared_root.map(|root| root.id.clone()),
@@ -3647,13 +3690,27 @@ mod tests {
             handoff.payload_adapter_symbol,
             rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
         );
-        assert_eq!(
-            handoff.payload_adapter_status,
-            "typechecked_by_bootstrap_probe"
-        );
+        assert_eq!(handoff.payload_adapter_status, "payload_load_blocked");
         assert_eq!(handoff.payload_adapter_feature, "real-rustc-mir-payload");
         assert!(!handoff.payload_adapter_typechecked);
         assert!(handoff.payload_adapter_bootstrap_typechecked);
+        assert!(handoff.payload_adapter_bootstrap_artifact_located);
+        assert!(handoff.payload_carrier_created);
+        assert!(!handoff.payload_loaded_into_rouwdi_facade);
+        assert_eq!(
+            handoff.payload_carrier_state.as_deref(),
+            Some("payload_load_blocked")
+        );
+        let payload_carrier = handoff.payload_carrier.as_ref().unwrap();
+        assert_eq!(
+            payload_carrier.artifact.as_ref().unwrap().artifact_format,
+            "rmeta"
+        );
+        assert_eq!(
+            payload_carrier.load_blocker_kind.as_deref(),
+            Some("artifact_format_rmeta_not_loadable_component")
+        );
+        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(1));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
         assert!(handoff
             .payload_adapter_probe_command
@@ -3670,11 +3727,11 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("bootstrap_adapter_not_loaded_into_current_facade")
+            Some("artifact_format_rmeta_not_loadable_component")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),
-            Some("bootstrap_adapter_typechecked")
+            Some("payload_load_blocked")
         );
         assert!(handoff
             .blocker_probe_command
@@ -3704,7 +3761,8 @@ mod tests {
         assert!(handoff
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("typechecked_by_bootstrap_probe")
+            .is_some_and(|reason| reason.contains("payload_load_blocked")
+                && reason.contains("bootstrap artifact located true")
                 && reason.contains("bootstrap authoritative probe")));
     }
 
@@ -4137,11 +4195,15 @@ mod tests {
             mir_handoff.blocker_component.as_deref(),
             Some("mir_handoff_payload_adapter")
         );
-        assert_eq!(
-            mir_handoff.payload_adapter_status,
-            "typechecked_by_bootstrap_probe"
-        );
+        assert_eq!(mir_handoff.payload_adapter_status, "payload_load_blocked");
         assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
+        assert!(mir_handoff.payload_adapter_bootstrap_artifact_located);
+        assert!(mir_handoff.payload_carrier_created);
+        assert!(!mir_handoff.payload_loaded_into_rouwdi_facade);
+        assert_eq!(
+            mir_handoff.payload_carrier_state.as_deref(),
+            Some("payload_load_blocked")
+        );
         assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
         assert_eq!(
             mir_handoff.payload_adapter_probe_classification,

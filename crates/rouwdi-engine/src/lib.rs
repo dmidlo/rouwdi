@@ -928,8 +928,16 @@ version = "0.1.0"
                 .as_ref()
                 .unwrap()
                 .payload_adapter_status,
-            "typechecked_by_bootstrap_probe"
+            "payload_load_blocked"
         );
+        let manifest_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+        assert_eq!(
+            manifest_handoff.payload_carrier_state.as_deref(),
+            Some("payload_load_blocked")
+        );
+        assert!(manifest_handoff.payload_adapter_bootstrap_artifact_located);
+        assert!(manifest_handoff.payload_carrier_created);
+        assert!(!manifest_handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff

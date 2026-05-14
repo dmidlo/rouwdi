@@ -1966,6 +1966,7 @@ dependencies = [
 name = "rouwdi-rustc-upstream"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "rustc_error_codes",
  "rustc_hir",
  "rustc_index",
@@ -1975,6 +1976,7 @@ dependencies = [
  "rustc_span",
  "serde",
  "serde_json",
+ "sha2",
  "toml 0.8.23",
 ]
 

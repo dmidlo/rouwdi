@@ -6,6 +6,8 @@ pub const ADAPTER_CRATE: &str = "crates/rouwdi-rustc-upstream";
 pub const RUSTC_INDEX_ADAPTER_SYMBOL: &str = "rouwdi_rustc_upstream::rustc_index_adapter_surface";
 pub const MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL: &str =
     "rouwdi_rustc_upstream::mir_handoff_payload_adapter";
+pub const MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND: &str =
+    "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json";
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
 
@@ -102,6 +104,10 @@ pub struct MirHandoffAdapterBoundary {
     pub payload_adapter_status: MirHandoffPayloadAdapterStatus,
     pub payload_adapter_available: bool,
     pub payload_adapter_feature: String,
+    pub payload_carrier_state: Option<MirHandoffPayloadCarrierState>,
+    pub payload_carrier_created: bool,
+    pub bootstrap_artifact_located: bool,
+    pub payload_loaded_into_rouwdi_facade: bool,
     pub payload_adapter_blocker_kind: Option<String>,
     pub payload_adapter_blocker_reason: Option<String>,
     pub intended_components: Vec<String>,
@@ -118,6 +124,8 @@ pub struct MirHandoffAdapterBoundary {
 #[serde(rename_all = "snake_case")]
 pub enum MirHandoffPayloadAdapterStatus {
     Typechecked,
+    PayloadCarrierCreated,
+    PayloadLoadBlocked,
     TypecheckedByBootstrapProbe,
     BlockedByBootstrapProbe,
     BlockedByNormalWorkspaceCargo,
@@ -127,11 +135,76 @@ impl MirHandoffPayloadAdapterStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Typechecked => "typechecked",
+            Self::PayloadCarrierCreated => "payload_carrier_created",
+            Self::PayloadLoadBlocked => "payload_load_blocked",
             Self::TypecheckedByBootstrapProbe => "typechecked_by_bootstrap_probe",
             Self::BlockedByBootstrapProbe => "blocked_by_bootstrap_probe",
             Self::BlockedByNormalWorkspaceCargo => "blocked_by_normal_workspace_cargo",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirHandoffPayloadCarrierState {
+    BootstrapPayloadLocated,
+    PayloadCarrierCreated,
+    PayloadLoadBlocked,
+    PayloadLoaded,
+}
+
+impl MirHandoffPayloadCarrierState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BootstrapPayloadLocated => "bootstrap_payload_located",
+            Self::PayloadCarrierCreated => "payload_carrier_created",
+            Self::PayloadLoadBlocked => "payload_load_blocked",
+            Self::PayloadLoaded => "payload_loaded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapMirAdapterArtifactRecord {
+    pub crate_name: String,
+    pub artifact_kind: String,
+    pub artifact_format: String,
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub host_triple: String,
+    pub profile: String,
+    pub emitted_by: String,
+    pub loadable_by_rouwdi_wasm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirHandoffPayloadCarrier {
+    pub carrier_id: String,
+    pub state: MirHandoffPayloadCarrierState,
+    pub adapter_symbol: String,
+    pub bootstrap_adapter_crate: String,
+    pub bootstrap_adapter_source_path: String,
+    pub xpy_command: String,
+    pub xpy_stage: u32,
+    pub bootstrap_probe_kind: String,
+    pub bootstrap_probe_exit_code: i32,
+    pub bootstrap_probe_classification: String,
+    pub bootstrap_adapter_typechecked: bool,
+    pub upstream_type_surface: Vec<String>,
+    pub provider_surface: Vec<String>,
+    pub typechecked_entrypoints: Vec<String>,
+    pub artifact_locate_command: String,
+    pub artifact_build_command: Option<String>,
+    pub artifact: Option<BootstrapMirAdapterArtifactRecord>,
+    pub bootstrap_artifact_located: bool,
+    pub carrier_created: bool,
+    pub loaded_into_rouwdi_facade: bool,
+    pub load_blocker_kind: Option<String>,
+    pub load_blocker_reason: Option<String>,
+    pub next_artifact_command: Option<String>,
+    pub next_artifact_command_exit_code: Option<i32>,
+    pub next_artifact_command_evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +213,10 @@ pub struct MirHandoffPayloadAdapter {
     pub status: MirHandoffPayloadAdapterStatus,
     pub adapter_available: bool,
     pub typechecked_under_current_build: bool,
+    pub bootstrap_artifact_located: bool,
+    pub payload_carrier_created: bool,
+    pub payload_loaded_into_rouwdi_facade: bool,
+    pub payload_carrier: Option<MirHandoffPayloadCarrier>,
     pub cargo_feature: String,
     pub authoritative_probe_kind: String,
     pub authoritative_probe_command: String,
@@ -172,6 +249,8 @@ pub struct BootstrapAdapterProbeRecord {
     pub source_path: String,
     pub command: String,
     pub workdir: String,
+    #[serde(default)]
+    pub stage: Option<u32>,
     pub exit_code: i32,
     pub outcome: String,
     pub classification: String,
@@ -189,6 +268,28 @@ pub struct BootstrapAdapterProbeRecord {
     pub required_upstream_crates: Vec<String>,
     #[serde(default)]
     pub required_upstream_modules: Vec<String>,
+    #[serde(default)]
+    pub payload_state: Option<String>,
+    #[serde(default)]
+    pub payload_carrier_created: Option<bool>,
+    #[serde(default)]
+    pub artifact_locate_command: Option<String>,
+    #[serde(default)]
+    pub artifact_build_command: Option<String>,
+    #[serde(default)]
+    pub artifact: Option<BootstrapMirAdapterArtifactRecord>,
+    #[serde(default)]
+    pub payload_loaded_into_rouwdi_facade: Option<bool>,
+    #[serde(default)]
+    pub payload_load_blocker_kind: Option<String>,
+    #[serde(default)]
+    pub payload_load_blocker_reason: Option<String>,
+    #[serde(default)]
+    pub next_artifact_command: Option<String>,
+    #[serde(default)]
+    pub next_artifact_command_exit_code: Option<i32>,
+    #[serde(default)]
+    pub next_artifact_command_evidence: Option<String>,
 }
 
 impl BootstrapAdapterProbeRecord {
@@ -197,6 +298,14 @@ impl BootstrapAdapterProbeRecord {
             && self.exit_code == 0
             && self.outcome == "passed"
             && self.classification == "bootstrap_adapter_typechecked"
+    }
+
+    pub fn payload_carrier_created(&self) -> bool {
+        self.payload_carrier_created.unwrap_or(false)
+            || matches!(
+                self.payload_state.as_deref(),
+                Some("payload_carrier_created" | "payload_load_blocked" | "payload_loaded")
+            )
     }
 }
 
@@ -506,16 +615,109 @@ fn mir_payload_typechecked_entrypoints() -> Vec<String> {
     Vec::new()
 }
 
+fn parse_payload_carrier_state(value: Option<&str>) -> Option<MirHandoffPayloadCarrierState> {
+    match value {
+        Some("bootstrap_payload_located") => {
+            Some(MirHandoffPayloadCarrierState::BootstrapPayloadLocated)
+        }
+        Some("payload_carrier_created") => {
+            Some(MirHandoffPayloadCarrierState::PayloadCarrierCreated)
+        }
+        Some("payload_load_blocked") => Some(MirHandoffPayloadCarrierState::PayloadLoadBlocked),
+        Some("payload_loaded") => Some(MirHandoffPayloadCarrierState::PayloadLoaded),
+        _ => None,
+    }
+}
+
+pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
+    let probe = mir_handoff_bootstrap_adapter_probe()?;
+    let bootstrap_adapter_typechecked = probe.typechecked();
+    let bootstrap_artifact_located = probe.artifact.is_some();
+    let loaded_into_rouwdi_facade = probe.payload_loaded_into_rouwdi_facade.unwrap_or(false);
+    let carrier_created = probe.payload_carrier_created()
+        || bootstrap_artifact_located
+        || loaded_into_rouwdi_facade
+        || probe.payload_load_blocker_kind.is_some();
+    let state = parse_payload_carrier_state(probe.payload_state.as_deref()).unwrap_or_else(|| {
+        if loaded_into_rouwdi_facade {
+            MirHandoffPayloadCarrierState::PayloadLoaded
+        } else if probe.payload_load_blocker_kind.is_some() {
+            MirHandoffPayloadCarrierState::PayloadLoadBlocked
+        } else if carrier_created {
+            MirHandoffPayloadCarrierState::PayloadCarrierCreated
+        } else {
+            MirHandoffPayloadCarrierState::BootstrapPayloadLocated
+        }
+    });
+    let artifact_kind = probe
+        .artifact
+        .as_ref()
+        .map(|artifact| artifact.artifact_kind.as_str())
+        .unwrap_or("unlocated");
+
+    Some(MirHandoffPayloadCarrier {
+        carrier_id: format!(
+            "{}.stage{}.{}",
+            probe.name,
+            probe.stage.unwrap_or(1),
+            artifact_kind
+        ),
+        state,
+        adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
+        bootstrap_adapter_crate: probe.adapter_crate,
+        bootstrap_adapter_source_path: probe.source_path,
+        xpy_command: probe.command,
+        xpy_stage: probe.stage.unwrap_or(1),
+        bootstrap_probe_kind: "bootstrap_xpy_stage1".to_owned(),
+        bootstrap_probe_exit_code: probe.exit_code,
+        bootstrap_probe_classification: probe.classification,
+        bootstrap_adapter_typechecked,
+        upstream_type_surface: probe.upstream_type_surface,
+        provider_surface: probe.provider_surface,
+        typechecked_entrypoints: probe.typechecked_entrypoints,
+        artifact_locate_command: probe
+            .artifact_locate_command
+            .unwrap_or_else(|| MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND.to_owned()),
+        artifact_build_command: probe.artifact_build_command,
+        artifact: probe.artifact,
+        bootstrap_artifact_located,
+        carrier_created,
+        loaded_into_rouwdi_facade,
+        load_blocker_kind: probe.payload_load_blocker_kind,
+        load_blocker_reason: probe.payload_load_blocker_reason,
+        next_artifact_command: probe.next_artifact_command,
+        next_artifact_command_exit_code: probe.next_artifact_command_exit_code,
+        next_artifact_command_evidence: probe.next_artifact_command_evidence,
+    })
+}
+
 pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
     let index_surface = rustc_index_adapter_surface();
     let blocker = mir_handoff_blocker();
     let bootstrap_probe = mir_handoff_bootstrap_adapter_probe();
+    let payload_carrier = mir_handoff_payload_carrier();
     let bootstrap_adapter_typechecked = bootstrap_probe
         .as_ref()
         .is_some_and(BootstrapAdapterProbeRecord::typechecked);
     let typechecked_under_current_build = cfg!(feature = "real-rustc-mir-payload");
+    let payload_carrier_created = payload_carrier
+        .as_ref()
+        .is_some_and(|carrier| carrier.carrier_created);
+    let bootstrap_artifact_located = payload_carrier
+        .as_ref()
+        .is_some_and(|carrier| carrier.bootstrap_artifact_located);
+    let payload_loaded_into_rouwdi_facade = payload_carrier
+        .as_ref()
+        .is_some_and(|carrier| carrier.loaded_into_rouwdi_facade);
+    let payload_load_blocked = payload_carrier
+        .as_ref()
+        .is_some_and(|carrier| carrier.state == MirHandoffPayloadCarrierState::PayloadLoadBlocked);
     let status = if typechecked_under_current_build {
         MirHandoffPayloadAdapterStatus::Typechecked
+    } else if payload_load_blocked {
+        MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
+    } else if payload_carrier_created {
+        MirHandoffPayloadAdapterStatus::PayloadCarrierCreated
     } else if bootstrap_adapter_typechecked {
         MirHandoffPayloadAdapterStatus::TypecheckedByBootstrapProbe
     } else if bootstrap_probe.is_some() {
@@ -566,13 +768,26 @@ pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
                 "normal workspace Cargo cannot type-check compiler-private MIR crates".to_owned()
             }
         });
-    let integration_blocker = !typechecked_under_current_build && bootstrap_adapter_typechecked;
+    let integration_blocker = !payload_loaded_into_rouwdi_facade && bootstrap_adapter_typechecked;
+    let carrier_blocker_kind = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.load_blocker_kind.clone());
+    let carrier_blocker_reason = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.load_blocker_reason.clone());
+    let carrier_state_label = payload_carrier
+        .as_ref()
+        .map(|carrier| carrier.state.as_str().to_owned());
 
     MirHandoffPayloadAdapter {
         adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
         status,
-        adapter_available: typechecked_under_current_build,
+        adapter_available: payload_loaded_into_rouwdi_facade,
         typechecked_under_current_build,
+        bootstrap_artifact_located,
+        payload_carrier_created,
+        payload_loaded_into_rouwdi_facade,
+        payload_carrier,
         cargo_feature: "real-rustc-mir-payload".to_owned(),
         authoritative_probe_kind: authoritative_probe_kind.to_owned(),
         authoritative_probe_command,
@@ -607,7 +822,11 @@ pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
         blocker_import_status: blocker
             .as_ref()
             .map(|component| component.import_status.clone())
-            .or_else(|| integration_blocker.then(|| "bootstrap_adapter_typechecked".to_owned())),
+            .or_else(|| integration_blocker.then(|| {
+                carrier_state_label
+                    .clone()
+                    .unwrap_or_else(|| "bootstrap_adapter_typechecked".to_owned())
+            })),
         blocker_probe_command: blocker
             .as_ref()
             .map(|component| component.probe_command.clone())
@@ -623,11 +842,15 @@ pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
         blocker_kind: blocker
             .as_ref()
             .map(|component| component.blocker_kind.clone())
+            .or(carrier_blocker_kind)
             .or_else(|| {
                 integration_blocker
                     .then(|| "bootstrap_adapter_not_loaded_into_current_facade".to_owned())
             }),
-        blocker_reason: blocker.map(|component| component.exact_blocker).or_else(|| {
+        blocker_reason: blocker
+            .map(|component| component.exact_blocker)
+            .or(carrier_blocker_reason)
+            .or_else(|| {
             integration_blocker.then(|| {
                 let probe = bootstrap_probe
                     .as_ref()
@@ -688,6 +911,13 @@ pub fn mir_handoff_adapter_boundary() -> MirHandoffAdapterBoundary {
         payload_adapter_status: payload_adapter.status,
         payload_adapter_available: payload_adapter.adapter_available,
         payload_adapter_feature: payload_adapter.cargo_feature.clone(),
+        payload_carrier_state: payload_adapter
+            .payload_carrier
+            .as_ref()
+            .map(|carrier| carrier.state),
+        payload_carrier_created: payload_adapter.payload_carrier_created,
+        bootstrap_artifact_located: payload_adapter.bootstrap_artifact_located,
+        payload_loaded_into_rouwdi_facade: payload_adapter.payload_loaded_into_rouwdi_facade,
         payload_adapter_blocker_kind: payload_adapter.blocker_kind.clone(),
         payload_adapter_blocker_reason: payload_adapter.blocker_reason.clone(),
         intended_components: vec!["rustc_middle".to_owned(), "rustc_mir_build".to_owned()],
@@ -953,10 +1183,27 @@ mod tests {
         assert_eq!(adapter.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             adapter.status,
-            MirHandoffPayloadAdapterStatus::TypecheckedByBootstrapProbe
+            MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
         );
         assert!(!adapter.adapter_available);
         assert!(adapter.bootstrap_adapter_typechecked);
+        assert!(adapter.bootstrap_artifact_located);
+        assert!(adapter.payload_carrier_created);
+        assert!(!adapter.payload_loaded_into_rouwdi_facade);
+        let carrier = adapter.payload_carrier.as_ref().unwrap();
+        assert_eq!(
+            carrier.state,
+            MirHandoffPayloadCarrierState::PayloadLoadBlocked
+        );
+        assert_eq!(carrier.artifact.as_ref().unwrap().artifact_format, "rmeta");
+        assert_eq!(
+            carrier.load_blocker_kind.as_deref(),
+            Some("artifact_format_rmeta_not_loadable_component")
+        );
+        assert!(carrier
+            .next_artifact_command
+            .as_deref()
+            .is_some_and(|command| command.contains("x.py build")));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -986,7 +1233,54 @@ mod tests {
         assert!(adapter
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("bootstrap-owned MIR payload adapter")));
+            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
+    }
+
+    #[test]
+    fn mir_handoff_payload_carrier_records_bootstrap_artifact_identity() {
+        let carrier = mir_handoff_payload_carrier().unwrap();
+
+        assert_eq!(
+            carrier.state,
+            MirHandoffPayloadCarrierState::PayloadLoadBlocked
+        );
+        assert_eq!(
+            carrier.bootstrap_adapter_crate,
+            "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
+        );
+        assert_eq!(carrier.xpy_stage, 1);
+        assert!(carrier.bootstrap_adapter_typechecked);
+        assert!(carrier.bootstrap_artifact_located);
+        assert!(carrier.carrier_created);
+        assert!(!carrier.loaded_into_rouwdi_facade);
+        assert!(carrier
+            .upstream_type_surface
+            .contains(&"rustc_middle::mir::Body<'tcx>".to_owned()));
+        assert!(carrier
+            .provider_surface
+            .contains(&"rustc_mir_build::provide(&mut rustc_middle::util::Providers)".to_owned()));
+        let artifact = carrier.artifact.as_ref().unwrap();
+        assert_eq!(artifact.crate_name, "rouwdi_mir_adapter_probe");
+        assert_eq!(artifact.artifact_kind, "rustc_metadata");
+        assert_eq!(artifact.artifact_format, "rmeta");
+        assert!(artifact
+            .path
+            .ends_with("librouwdi_mir_adapter_probe-346edc2538de29f5.rmeta"));
+        assert_eq!(
+            artifact.sha256,
+            "58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1"
+        );
+        assert_eq!(artifact.size_bytes, 27097);
+        assert!(!artifact.loadable_by_rouwdi_wasm);
+        assert_eq!(
+            carrier.load_blocker_kind.as_deref(),
+            Some("artifact_format_rmeta_not_loadable_component")
+        );
+        assert!(carrier
+            .load_blocker_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
+        assert_eq!(carrier.next_artifact_command_exit_code, Some(1));
     }
 
     #[test]
@@ -996,16 +1290,23 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.payload_adapter_status,
-            MirHandoffPayloadAdapterStatus::TypecheckedByBootstrapProbe
+            MirHandoffPayloadAdapterStatus::PayloadLoadBlocked
         );
         assert!(!boundary.payload_adapter_available);
+        assert_eq!(
+            boundary.payload_carrier_state,
+            Some(MirHandoffPayloadCarrierState::PayloadLoadBlocked)
+        );
+        assert!(boundary.payload_carrier_created);
+        assert!(boundary.bootstrap_artifact_located);
+        assert!(!boundary.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             boundary.blocker_component.as_deref(),
             Some("mir_handoff_payload_adapter")
         );
         assert_eq!(
             boundary.blocker_import_status.as_deref(),
-            Some("bootstrap_adapter_typechecked")
+            Some("payload_load_blocked")
         );
         assert!(boundary
             .embedded_prerequisite_adapters
@@ -1017,7 +1318,7 @@ mod tests {
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("bootstrap-owned MIR payload adapter")));
+            .is_some_and(|reason| reason.contains("not an rlib/dylib/cdylib/wasm component")));
     }
 
     #[test]
@@ -1043,7 +1344,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "bootstrap_payload_not_loaded_into_rouwdi_wasm"
+                && component.blocker_kind == "artifact_format_rmeta_not_loadable_component"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

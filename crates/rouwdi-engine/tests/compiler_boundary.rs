@@ -123,11 +123,24 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         mir_handoff.blocker_component.as_deref(),
         Some("mir_handoff_payload_adapter")
     );
-    assert_eq!(
-        mir_handoff.payload_adapter_status,
-        "typechecked_by_bootstrap_probe"
-    );
+    assert_eq!(mir_handoff.payload_adapter_status, "payload_load_blocked");
     assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
+    assert!(mir_handoff.payload_adapter_bootstrap_artifact_located);
+    assert!(mir_handoff.payload_carrier_created);
+    assert!(!mir_handoff.payload_loaded_into_rouwdi_facade);
+    assert_eq!(
+        mir_handoff.payload_carrier_state.as_deref(),
+        Some("payload_load_blocked")
+    );
+    let payload_carrier = mir_handoff.payload_carrier.as_ref().unwrap();
+    assert_eq!(
+        payload_carrier.artifact.as_ref().unwrap().artifact_format,
+        "rmeta"
+    );
+    assert_eq!(
+        payload_carrier.load_blocker_kind.as_deref(),
+        Some("artifact_format_rmeta_not_loadable_component")
+    );
     assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
     assert_eq!(
         mir_handoff.payload_adapter_probe_classification,
@@ -447,6 +460,15 @@ edition = "2021"
     assert!(mir_handoff_records.iter().all(|record| {
         record.status == RustMirHandoffStatus::AdapterUnavailable
             && record.blocker_component.as_deref() == Some("mir_handoff_payload_adapter")
+            && record.payload_carrier_state.as_deref() == Some("payload_load_blocked")
+            && record.payload_adapter_bootstrap_artifact_located
+            && record.payload_carrier_created
+            && !record.payload_loaded_into_rouwdi_facade
+            && record.payload_carrier.as_ref().is_some_and(|carrier| {
+                carrier.artifact.as_ref().is_some_and(|artifact| {
+                    artifact.artifact_format == "rmeta" && !artifact.loadable_by_rouwdi_wasm
+                })
+            })
     }));
     let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
         &storage
