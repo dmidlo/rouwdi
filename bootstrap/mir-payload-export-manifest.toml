@@ -8,10 +8,10 @@ target_triple = "x86_64-pc-windows-msvc"
 profile = "release"
 loadable_by_rouwdi_wasm = false
 loader_blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported payload remains not loadable by rouwdi.wasm because it has no explicit rouwdi compiler-payload ABI, no Wasm module/component exports, and no rouwdi-owned loader capable of executing rustc-private rlib archives."
+loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported rlib remains not loadable by rouwdi.wasm. Compiler-payload ABI v1 and the selected wasm32-wasip1 shim route now exist, but the rustc-private-to-Wasm MIR bridge is missing."
 loadability_status = "unsupported_compiler_private_artifact"
-exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. The next required artifact is a Wasm component/module or explicit rouwdi compiler-payload ABI with declared entrypoints."
-next_required_artifact_format = "wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi"
+exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI artifact. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. The next required artifact route is no longer generic ABI definition; it is the missing bridge connecting the wasm32-wasip1 ABI shim to the rustc-private MIR payload."
+next_required_artifact_format = "rustc_private_to_wasm_mir_handoff_bridge"
 upstream_type_surface = [
   "rustc_middle::mir::Body<'tcx>",
   "rustc_middle::ty::TyCtxt<'tcx>",
@@ -32,7 +32,23 @@ provider_surface = [
 adapter_entrypoints = [
   "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
   "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
+  "rouwdi_compiler_payload_abi_v1_version() -> u32",
+  "rouwdi_compiler_payload_abi_v1_stage() -> u32",
+  "rouwdi_compiler_payload_abi_v1_descriptor_ptr() -> usize",
+  "rouwdi_compiler_payload_abi_v1_descriptor_len() -> usize",
+  "rouwdi_mir_handoff_payload_v1_execute(input_ptr: usize, input_len: usize, output_ptr_out: usize, output_len_out: usize, error_ptr_out: usize, error_len_out: usize) -> i32",
 ]
+
+[compiler_payload_abi]
+manifest_path = "bootstrap/compiler-payload-abi.toml"
+abi_name = "rouwdi.compiler-payload.mir-handoff"
+abi_version = 1
+supported_stage = "mir_handoff"
+selected_route = "wasm32_wasip1_module"
+selected_route_status = "shim_emitted_bridge_missing"
+bridge_status = "missing"
+bridge_blocker_kind = "rustc_private_to_wasm_bridge_missing"
+bridge_blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols, but no bridge connects it to the rustc-private stage1 rlib that owns TyCtxt, Providers, and real MIR Body access."
 
 [[loadable_export_routes]]
 route = "explicit_rouwdi_compiler_payload_bundle"
@@ -70,10 +86,11 @@ exact_blocker = "A staticlib is link input, not a standalone rouwdi.wasm-loadabl
 [[loadable_export_routes]]
 route = "wasm32_wasip1_module"
 artifact_format = "wasm_module"
-attempted = false
-status = "blocked"
-blocker_kind = "wasm_target_incompatibility"
-exact_blocker = "The adapter currently builds in the stage1 host compiler-private environment and depends on rustc_middle, rustc_session, and rustc_mir_build as host compiler crates. No wasm32-wasip1 compiler-private target pack or rouwdi compiler-payload ABI has been emitted."
+command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release"
+attempted = true
+status = "attempted_blocked"
+blocker_kind = "rustc_private_to_wasm_bridge_missing"
+exact_blocker = "The selected wasm32-wasip1 route now emits a thin rouwdi compiler-payload ABI shim at target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. It is not a complete MIR payload because the rustc-private adapter still exists only as a bootstrap rlib and no bridge connects TyCtxt, Providers, or real MIR Body access into the Wasm ABI."
 
 [[loadable_export_routes]]
 route = "wasm32_wasip2_component"

@@ -1,0 +1,195 @@
+schema_version = 1
+abi_name = "rouwdi.compiler-payload.mir-handoff"
+abi_version = 1
+abi_status = "defined"
+supported_stage = "mir_handoff"
+primary_format = "wasm_module"
+supported_formats = ["wasm_module", "wasm_component"]
+selected_route = "wasm32_wasip1_module"
+symbol_prefix = "rouwdi_"
+
+[payload_identity]
+kind = "compiler_payload"
+name = "rouwdi-mir-handoff-payload"
+abi_id = "rouwdi.compiler-payload.mir-handoff.v1"
+purpose = "MIR handoff from rouwdi compiler orchestration into an upstream rustc-backed payload"
+
+[required_upstream]
+components = [
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_session",
+  "rustc_hir",
+  "rustc_span",
+]
+type_surface = [
+  "rustc_middle::mir::Body<'tcx>",
+  "rustc_middle::ty::TyCtxt<'tcx>",
+  "rustc_middle::query::Providers",
+  "rustc_middle::util::Providers",
+  "rustc_session::Session",
+  "rustc_hir::def_id::LocalDefId",
+  "rustc_span::def_id::LocalDefId",
+]
+provider_surface = [
+  "rustc_mir_build::provide(&mut rustc_middle::util::Providers)",
+  "rustc_middle::hooks::Providers::build_mir_inner_impl",
+]
+
+[input_contract]
+shape = "MirHandoffInputV1"
+encoding = "json_bytes_in_wasm_linear_memory"
+ownership = "caller-owned input bytes"
+required_fields = [
+  "contract_hash",
+  "source_snapshot_hash",
+  "compile_unit_id",
+  "package",
+  "target",
+  "target_kind",
+  "triple",
+  "profile",
+  "source_path",
+  "upstream_context_handle",
+]
+notes = "The v1 ABI does not serialize or fabricate TyCtxt, Providers, or MIR Body. upstream_context_handle is opaque until the rustc-private bridge exists."
+
+[output_contract]
+shape = "MirHandoffOutputV1"
+encoding = "json_bytes_in_wasm_linear_memory"
+ownership = "payload-owned output bytes valid until next payload call"
+required_fields = [
+  "compile_unit_id",
+  "stage",
+  "mir_body_identity",
+  "mir_body_hash",
+  "provider_identity",
+  "proof_metadata",
+]
+notes = "The ABI shim must not emit this output until real rustc MIR is available through the bridge."
+
+[error_contract]
+shape = "MirHandoffErrorV1"
+encoding = "json_bytes_in_wasm_linear_memory"
+ownership = "payload-owned error bytes valid until next payload call"
+required_fields = [
+  "code",
+  "kind",
+  "message",
+  "blocker_kind",
+  "blocker_component",
+]
+known_codes = [
+  "real_mir_payload_not_executable_yet",
+  "invalid_input_contract",
+  "unsupported_abi_version",
+  "upstream_context_unavailable",
+  "internal_payload_error",
+]
+
+[proof_metadata]
+emitted_fields = [
+  "abi_name",
+  "abi_version",
+  "payload_identity",
+  "selected_route",
+  "route_artifact_hash",
+  "required_upstream_components",
+  "rustc_private_bridge_status",
+  "input_contract_hash",
+  "output_contract_hash",
+]
+hash_scope = [
+  "compiler-payload ABI manifest",
+  "selected ABI artifact",
+  "rustc-private MIR payload rlib",
+  "rmeta metadata artifact",
+  "required upstream component list",
+]
+
+[versioning]
+compatibility = "major_version_exact"
+major = 1
+minor = 0
+patch = 0
+rule = "A rouwdi.wasm loader must reject a payload when abi_version differs from the exact major version it implements. Minor fields may be added only when unknown fields are ignorable and all required v1 symbols remain present."
+
+[bridge]
+rustc_private_payload = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
+rustc_private_artifact_format = "rlib"
+status = "missing"
+blocker_kind = "rustc_private_to_wasm_bridge_missing"
+blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols, but no bridge connects it to the rustc-private stage1 rlib that owns TyCtxt, Providers, and real MIR Body access."
+
+[[symbols]]
+name = "rouwdi_compiler_payload_abi_v1_version"
+kind = "metadata"
+signature = "() -> u32"
+required = true
+
+[[symbols]]
+name = "rouwdi_compiler_payload_abi_v1_stage"
+kind = "metadata"
+signature = "() -> u32"
+required = true
+
+[[symbols]]
+name = "rouwdi_compiler_payload_abi_v1_descriptor_ptr"
+kind = "metadata"
+signature = "() -> usize"
+required = true
+
+[[symbols]]
+name = "rouwdi_compiler_payload_abi_v1_descriptor_len"
+kind = "metadata"
+signature = "() -> usize"
+required = true
+
+[[symbols]]
+name = "rouwdi_mir_handoff_payload_v1_execute"
+kind = "mir_handoff"
+signature = "(input_ptr: usize, input_len: usize, output_ptr_out: usize, output_len_out: usize, error_ptr_out: usize, error_len_out: usize) -> i32"
+required = true
+
+[[symbols]]
+name = "rouwdi_mir_handoff_payload_v1_last_error_ptr"
+kind = "error"
+signature = "() -> usize"
+required = true
+
+[[symbols]]
+name = "rouwdi_mir_handoff_payload_v1_last_error_len"
+kind = "error"
+signature = "() -> usize"
+required = true
+
+[[artifact_routes]]
+route = "wasm32_wasip1_module"
+artifact_format = "wasm_module"
+target_triple = "wasm32-wasip1"
+crate_path = "crates/rouwdi-compiler-payload-abi"
+command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release"
+attempted = true
+status = "shim_emitted_bridge_missing"
+artifact_path = "target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm"
+artifact_sha256 = "e4541fa5df920933570642011c3bc58cf4cd3edfd778914cabef865a8ece39c5"
+artifact_size_bytes = 1233
+bridge_required = true
+bridge_status = "missing"
+blocker_kind = "rustc_private_to_wasm_bridge_missing"
+loadable_as_full_payload = false
+exact_blocker = "The thin ABI shim is the selected first route and exposes the v1 symbols without fabricating MIR. It is not a complete compiler payload until a bridge connects the shim to the rustc-private MIR adapter rlib."
+
+[[artifact_routes]]
+route = "wasm32_wasip2_component"
+artifact_format = "wasm_component"
+target_triple = "wasm32-wasip2"
+crate_path = "crates/rouwdi-compiler-payload-abi"
+command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip2 --release"
+attempted = false
+status = "blocked"
+bridge_required = true
+bridge_status = "missing"
+blocker_kind = "component_model_export_absence"
+loadable_as_full_payload = false
+exact_blocker = "The ABI is intended to support a Wasm component route, but this repo does not yet define the WIT/component export lane for the MIR handoff payload."

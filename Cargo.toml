@@ -2,6 +2,7 @@
 members = [
     "crates/rouwdi-cargo",
     "crates/rouwdi-compiletime",
+    "crates/rouwdi-compiler-payload-abi",
     "crates/rouwdi-contract",
     "crates/rouwdi-engine",
     "crates/rouwdi-proof",

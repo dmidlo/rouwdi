@@ -939,6 +939,14 @@ version = "0.1.0"
         assert!(manifest_handoff.payload_carrier_created);
         assert!(!manifest_handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
+            manifest_handoff.payload_abi_selected_route.as_deref(),
+            Some("wasm32_wasip1_module")
+        );
+        assert_eq!(
+            manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
+            Some("rustc_private_to_wasm_bridge_missing")
+        );
+        assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff
                 .as_ref()

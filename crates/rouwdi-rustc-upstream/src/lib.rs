@@ -10,10 +10,20 @@ pub const MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL: &str =
 pub const MIR_HANDOFF_PAYLOAD_CARRIER_COMMAND: &str =
     "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json";
 pub const MIR_PAYLOAD_EXPORT_MANIFEST_PATH: &str = "bootstrap/mir-payload-export-manifest.toml";
+pub const COMPILER_PAYLOAD_ABI_MANIFEST_PATH: &str = "bootstrap/compiler-payload-abi.toml";
+pub const COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_version";
+pub const COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_stage";
+pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL: &str =
+    "rouwdi_compiler_payload_abi_v1_descriptor_ptr";
+pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL: &str =
+    "rouwdi_compiler_payload_abi_v1_descriptor_len";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
 const MIR_PAYLOAD_EXPORT_MANIFEST_TOML: &str =
     include_str!("../../../bootstrap/mir-payload-export-manifest.toml");
+const COMPILER_PAYLOAD_ABI_MANIFEST_TOML: &str =
+    include_str!("../../../bootstrap/compiler-payload-abi.toml");
 
 macro_rules! count_error_codes {
     ($($code:tt,)*) => {
@@ -247,9 +257,199 @@ pub struct MirPayloadExportManifest {
     #[serde(default)]
     pub adapter_entrypoints: Vec<String>,
     #[serde(default)]
+    pub compiler_payload_abi: Option<CompilerPayloadAbiReference>,
+    #[serde(default)]
     pub loadable_export_routes: Vec<CompilerPayloadExportRoute>,
     pub exported_payload: BootstrapMirAdapterArtifactRecord,
     pub metadata_artifact: BootstrapMirAdapterArtifactRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiReference {
+    pub manifest_path: String,
+    pub abi_name: String,
+    pub abi_version: u32,
+    pub supported_stage: CompilerPayloadSupportedStage,
+    pub selected_route: String,
+    pub selected_route_status: CompilerPayloadAbiRouteStatus,
+    pub bridge_status: String,
+    pub bridge_blocker_kind: String,
+    pub bridge_blocker_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiManifest {
+    pub schema_version: u32,
+    pub abi_name: String,
+    pub abi_version: u32,
+    pub abi_status: String,
+    pub supported_stage: CompilerPayloadSupportedStage,
+    pub primary_format: CompilerPayloadAbiFormat,
+    pub supported_formats: Vec<CompilerPayloadAbiFormat>,
+    pub selected_route: String,
+    pub symbol_prefix: String,
+    pub payload_identity: CompilerPayloadAbiIdentity,
+    pub required_upstream: CompilerPayloadAbiRequiredUpstream,
+    pub input_contract: CompilerPayloadAbiContract,
+    pub output_contract: CompilerPayloadAbiContract,
+    pub error_contract: CompilerPayloadAbiErrorContract,
+    pub proof_metadata: CompilerPayloadAbiProofMetadata,
+    pub versioning: CompilerPayloadAbiVersioning,
+    pub bridge: CompilerPayloadAbiBridge,
+    #[serde(default)]
+    pub symbols: Vec<CompilerPayloadAbiSymbol>,
+    #[serde(default)]
+    pub artifact_routes: Vec<CompilerPayloadAbiRoute>,
+}
+
+impl CompilerPayloadAbiManifest {
+    pub fn selected_artifact_route(&self) -> Option<&CompilerPayloadAbiRoute> {
+        self.artifact_routes
+            .iter()
+            .find(|route| route.route == self.selected_route)
+    }
+
+    pub fn required_symbol_names(&self) -> Vec<&str> {
+        self.symbols
+            .iter()
+            .filter(|symbol| symbol.required)
+            .map(|symbol| symbol.name.as_str())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadSupportedStage {
+    MirHandoff,
+}
+
+impl CompilerPayloadSupportedStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MirHandoff => "mir_handoff",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadAbiFormat {
+    WasmModule,
+    WasmComponent,
+}
+
+impl CompilerPayloadAbiFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WasmModule => "wasm_module",
+            Self::WasmComponent => "wasm_component",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiIdentity {
+    pub kind: String,
+    pub name: String,
+    pub abi_id: String,
+    pub purpose: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiRequiredUpstream {
+    pub components: Vec<String>,
+    pub type_surface: Vec<String>,
+    pub provider_surface: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiContract {
+    pub shape: String,
+    pub encoding: String,
+    pub ownership: String,
+    #[serde(default)]
+    pub required_fields: Vec<String>,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiErrorContract {
+    pub shape: String,
+    pub encoding: String,
+    pub ownership: String,
+    #[serde(default)]
+    pub required_fields: Vec<String>,
+    #[serde(default)]
+    pub known_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiProofMetadata {
+    #[serde(default)]
+    pub emitted_fields: Vec<String>,
+    #[serde(default)]
+    pub hash_scope: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiVersioning {
+    pub compatibility: String,
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub rule: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiBridge {
+    pub rustc_private_payload: String,
+    pub rustc_private_artifact_format: String,
+    pub status: String,
+    pub blocker_kind: String,
+    pub blocker_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiSymbol {
+    pub name: String,
+    pub kind: String,
+    pub signature: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadAbiRoute {
+    pub route: String,
+    pub artifact_format: CompilerPayloadAbiFormat,
+    pub target_triple: String,
+    pub crate_path: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    pub attempted: bool,
+    pub status: CompilerPayloadAbiRouteStatus,
+    #[serde(default)]
+    pub artifact_path: Option<String>,
+    #[serde(default)]
+    pub artifact_sha256: Option<String>,
+    #[serde(default)]
+    pub artifact_size_bytes: Option<u64>,
+    pub bridge_required: bool,
+    pub bridge_status: String,
+    #[serde(default)]
+    pub blocker_kind: Option<String>,
+    pub loadable_as_full_payload: bool,
+    pub exact_blocker: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompilerPayloadAbiRouteStatus {
+    Planned,
+    Blocked,
+    AttemptedBlocked,
+    ShimEmittedBridgeMissing,
+    Emitted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +463,9 @@ pub struct CompilerPayloadManifestIdentity {
 pub struct CompilerPayloadBundle {
     pub bundle_format_version: u32,
     pub payload_manifest: CompilerPayloadManifestIdentity,
+    pub compiler_payload_abi_manifest: Option<CompilerPayloadManifestIdentity>,
+    pub compiler_payload_abi: Option<CompilerPayloadAbiManifest>,
+    pub selected_abi_route: Option<CompilerPayloadAbiRoute>,
     pub exported_rlib_identity: BootstrapMirAdapterArtifactRecord,
     pub metadata_artifact_identity: BootstrapMirAdapterArtifactRecord,
     pub bootstrap_command: String,
@@ -394,6 +597,22 @@ pub struct CompilerPayloadArtifactInspection {
 pub struct CompilerPayloadLoaderInspection {
     pub payload_bundle_inspected: bool,
     pub bundle_manifest: CompilerPayloadManifestIdentity,
+    pub abi_manifest: Option<CompilerPayloadManifestIdentity>,
+    pub abi_name: Option<String>,
+    pub abi_version: Option<u32>,
+    pub abi_supported_stage: Option<CompilerPayloadSupportedStage>,
+    pub abi_primary_format: Option<CompilerPayloadAbiFormat>,
+    pub abi_selected_route: Option<String>,
+    pub abi_route_status: Option<CompilerPayloadAbiRouteStatus>,
+    pub abi_route_artifact_format: Option<CompilerPayloadAbiFormat>,
+    pub abi_route_artifact_path: Option<String>,
+    pub abi_route_artifact_sha256: Option<String>,
+    pub abi_route_artifact_size_bytes: Option<u64>,
+    pub abi_route_attempted: Option<bool>,
+    pub abi_route_blocker_kind: Option<String>,
+    pub abi_bridge_status: Option<String>,
+    pub abi_bridge_blocker_kind: Option<String>,
+    pub abi_bridge_blocker_reason: Option<String>,
     pub exported_payload: CompilerPayloadArtifactInspection,
     pub metadata_artifact: CompilerPayloadArtifactInspection,
     pub load_strategy: CompilerPayloadLoadStrategy,
@@ -705,6 +924,19 @@ pub fn mir_payload_export_manifest() -> MirPayloadExportManifest {
         .expect("bootstrap/mir-payload-export-manifest.toml must remain valid")
 }
 
+pub fn compiler_payload_abi_manifest() -> CompilerPayloadAbiManifest {
+    toml::from_str(COMPILER_PAYLOAD_ABI_MANIFEST_TOML)
+        .expect("bootstrap/compiler-payload-abi.toml must remain valid")
+}
+
+pub fn compiler_payload_abi_manifest_identity() -> CompilerPayloadManifestIdentity {
+    CompilerPayloadManifestIdentity {
+        path: COMPILER_PAYLOAD_ABI_MANIFEST_PATH.to_owned(),
+        schema_version: compiler_payload_abi_manifest().schema_version,
+        sha256: sha256_hex(COMPILER_PAYLOAD_ABI_MANIFEST_TOML.as_bytes()),
+    }
+}
+
 pub fn mir_compiler_payload_bundle() -> CompilerPayloadBundle {
     compiler_payload_bundle_from_manifest(&mir_payload_export_manifest())
 }
@@ -712,6 +944,18 @@ pub fn mir_compiler_payload_bundle() -> CompilerPayloadBundle {
 pub fn compiler_payload_bundle_from_manifest(
     manifest: &MirPayloadExportManifest,
 ) -> CompilerPayloadBundle {
+    let compiler_payload_abi = manifest
+        .compiler_payload_abi
+        .as_ref()
+        .filter(|abi| abi.manifest_path == COMPILER_PAYLOAD_ABI_MANIFEST_PATH)
+        .map(|_| compiler_payload_abi_manifest());
+    let compiler_payload_abi_manifest = compiler_payload_abi
+        .as_ref()
+        .map(|_| compiler_payload_abi_manifest_identity());
+    let selected_abi_route = compiler_payload_abi
+        .as_ref()
+        .and_then(|abi| abi.selected_artifact_route().cloned());
+
     CompilerPayloadBundle {
         bundle_format_version: manifest.bundle_format_version.unwrap_or(1),
         payload_manifest: CompilerPayloadManifestIdentity {
@@ -719,6 +963,9 @@ pub fn compiler_payload_bundle_from_manifest(
             schema_version: manifest.schema_version,
             sha256: sha256_hex(MIR_PAYLOAD_EXPORT_MANIFEST_TOML.as_bytes()),
         },
+        compiler_payload_abi_manifest,
+        compiler_payload_abi,
+        selected_abi_route,
         exported_rlib_identity: manifest.exported_payload.clone(),
         metadata_artifact_identity: manifest.metadata_artifact.clone(),
         bootstrap_command: manifest.command.clone(),
@@ -782,10 +1029,31 @@ pub fn inspect_compiler_payload_bundle(
     } else {
         bundle.loadability_status
     };
+    let abi_manifest = bundle.compiler_payload_abi_manifest.clone();
+    let abi = bundle.compiler_payload_abi.as_ref();
+    let selected_abi_route = bundle.selected_abi_route.as_ref();
 
     CompilerPayloadLoaderInspection {
         payload_bundle_inspected: true,
         bundle_manifest: bundle.payload_manifest.clone(),
+        abi_manifest,
+        abi_name: abi.map(|abi| abi.abi_name.clone()),
+        abi_version: abi.map(|abi| abi.abi_version),
+        abi_supported_stage: abi.map(|abi| abi.supported_stage),
+        abi_primary_format: abi.map(|abi| abi.primary_format),
+        abi_selected_route: selected_abi_route.map(|route| route.route.clone()),
+        abi_route_status: selected_abi_route.map(|route| route.status),
+        abi_route_artifact_format: selected_abi_route.map(|route| route.artifact_format),
+        abi_route_artifact_path: selected_abi_route.and_then(|route| route.artifact_path.clone()),
+        abi_route_artifact_sha256: selected_abi_route
+            .and_then(|route| route.artifact_sha256.clone()),
+        abi_route_artifact_size_bytes: selected_abi_route
+            .and_then(|route| route.artifact_size_bytes),
+        abi_route_attempted: selected_abi_route.map(|route| route.attempted),
+        abi_route_blocker_kind: selected_abi_route.and_then(|route| route.blocker_kind.clone()),
+        abi_bridge_status: abi.map(|abi| abi.bridge.status.clone()),
+        abi_bridge_blocker_kind: abi.map(|abi| abi.bridge.blocker_kind.clone()),
+        abi_bridge_blocker_reason: abi.map(|abi| abi.bridge.blocker_reason.clone()),
         exported_payload,
         metadata_artifact,
         load_strategy,
@@ -1651,7 +1919,7 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+            Some("rustc_private_to_wasm_bridge_missing")
         );
         assert_eq!(
             carrier.loader_inspection.as_ref().unwrap().load_strategy,
@@ -1660,7 +1928,8 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(|command| command.contains("x.py build")));
+            .is_some_and(|command| command.contains("rouwdi-compiler-payload-abi")
+                && command.contains("wasm32-wasip1")));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -1690,7 +1959,7 @@ mod tests {
         assert!(adapter
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("compiler-payload bundle")));
+            .is_some_and(|reason| reason.contains("compiler-payload ABI v1")));
     }
 
     #[test]
@@ -1741,12 +2010,12 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+            Some("rustc_private_to_wasm_bridge_missing")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("loader boundary")));
+            .is_some_and(|reason| reason.contains("wasm32-wasip1 ABI shim")));
         assert!(carrier.payload_bundle.is_some());
         assert_eq!(
             carrier
@@ -1795,12 +2064,130 @@ mod tests {
             manifest.loadability_status,
             Some(CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact)
         );
+        let abi = manifest.compiler_payload_abi.as_ref().unwrap();
+        assert_eq!(abi.manifest_path, COMPILER_PAYLOAD_ABI_MANIFEST_PATH);
+        assert_eq!(abi.abi_name, "rouwdi.compiler-payload.mir-handoff");
+        assert_eq!(abi.abi_version, 1);
+        assert_eq!(
+            abi.supported_stage,
+            CompilerPayloadSupportedStage::MirHandoff
+        );
+        assert_eq!(abi.selected_route, "wasm32_wasip1_module");
+        assert_eq!(
+            abi.selected_route_status,
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
+        );
+        assert_eq!(abi.bridge_status, "missing");
+        assert_eq!(
+            abi.bridge_blocker_kind,
+            "rustc_private_to_wasm_bridge_missing"
+        );
         assert!(manifest
             .loadable_export_routes
             .iter()
             .any(|route| route.route == "wasm32_wasip2_component"
                 && route.status == CompilerPayloadExportRouteStatus::Blocked
                 && route.blocker_kind.as_deref() == Some("wasm_target_incompatibility")));
+    }
+
+    #[test]
+    fn compiler_payload_abi_manifest_parses_and_names_v1_mir_handoff_contract() {
+        let manifest = compiler_payload_abi_manifest();
+
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.abi_name, "rouwdi.compiler-payload.mir-handoff");
+        assert_eq!(manifest.abi_version, 1);
+        assert_eq!(
+            manifest.supported_stage,
+            CompilerPayloadSupportedStage::MirHandoff
+        );
+        assert_eq!(
+            manifest.primary_format,
+            CompilerPayloadAbiFormat::WasmModule
+        );
+        assert_eq!(
+            manifest.supported_formats,
+            vec![
+                CompilerPayloadAbiFormat::WasmModule,
+                CompilerPayloadAbiFormat::WasmComponent
+            ]
+        );
+        assert_eq!(manifest.selected_route, "wasm32_wasip1_module");
+        assert_eq!(
+            manifest.payload_identity.abi_id,
+            "rouwdi.compiler-payload.mir-handoff.v1"
+        );
+        assert!(manifest
+            .required_upstream
+            .components
+            .contains(&"rustc_mir_build".to_owned()));
+        assert!(manifest
+            .input_contract
+            .required_fields
+            .contains(&"upstream_context_handle".to_owned()));
+        assert!(manifest
+            .output_contract
+            .notes
+            .contains("must not emit this output until real rustc MIR"));
+        assert!(manifest
+            .error_contract
+            .known_codes
+            .contains(&"real_mir_payload_not_executable_yet".to_owned()));
+        assert!(manifest
+            .proof_metadata
+            .emitted_fields
+            .contains(&"rustc_private_bridge_status".to_owned()));
+        assert_eq!(manifest.versioning.compatibility, "major_version_exact");
+        assert_eq!(manifest.bridge.status, "missing");
+        assert_eq!(
+            manifest.bridge.blocker_kind,
+            "rustc_private_to_wasm_bridge_missing"
+        );
+
+        let required_symbols = manifest.required_symbol_names();
+        assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL));
+        assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL));
+        assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL));
+        assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL));
+    }
+
+    #[test]
+    fn selected_abi_route_is_a_real_wasm_shim_with_bridge_missing() {
+        let manifest = compiler_payload_abi_manifest();
+        let route = manifest.selected_artifact_route().unwrap();
+
+        assert_eq!(route.route, "wasm32_wasip1_module");
+        assert_eq!(route.artifact_format, CompilerPayloadAbiFormat::WasmModule);
+        assert_eq!(route.target_triple, "wasm32-wasip1");
+        assert!(route.attempted);
+        assert_eq!(
+            route.status,
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
+        );
+        assert_eq!(route.bridge_status, "missing");
+        assert_eq!(
+            route.blocker_kind.as_deref(),
+            Some("rustc_private_to_wasm_bridge_missing")
+        );
+        assert!(!route.loadable_as_full_payload);
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("adapter crate lives under workspace/crates/rouwdi-rustc-upstream");
+        let artifact_path = route.artifact_path.as_ref().unwrap();
+        let bytes = std::fs::read(workspace.join(artifact_path)).expect(
+            "run `cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release` first",
+        );
+
+        assert!(bytes.starts_with(b"\0asm"));
+        assert_eq!(route.artifact_size_bytes, Some(bytes.len() as u64));
+        let artifact_hash = sha256_hex(&bytes);
+        assert_eq!(
+            route.artifact_sha256.as_deref(),
+            Some(artifact_hash.as_str())
+        );
     }
 
     #[test]
@@ -1833,7 +2220,23 @@ mod tests {
         );
         assert_eq!(
             bundle.next_required_artifact_format,
-            "wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi"
+            "rustc_private_to_wasm_mir_handoff_bridge"
+        );
+        assert_eq!(
+            bundle.compiler_payload_abi_manifest.as_ref().unwrap().path,
+            COMPILER_PAYLOAD_ABI_MANIFEST_PATH
+        );
+        assert_eq!(
+            bundle
+                .compiler_payload_abi
+                .as_ref()
+                .unwrap()
+                .supported_stage,
+            CompilerPayloadSupportedStage::MirHandoff
+        );
+        assert_eq!(
+            bundle.selected_abi_route.as_ref().unwrap().status,
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
         );
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
@@ -1943,6 +2346,22 @@ mod tests {
             CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
         );
         assert!(!inspection.loadable_by_rouwdi_wasm);
+        assert_eq!(
+            inspection.abi_manifest.as_ref().unwrap().path,
+            COMPILER_PAYLOAD_ABI_MANIFEST_PATH
+        );
+        assert_eq!(
+            inspection.abi_selected_route.as_deref(),
+            Some("wasm32_wasip1_module")
+        );
+        assert_eq!(
+            inspection.abi_route_status,
+            Some(CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+        );
+        assert_eq!(
+            inspection.abi_bridge_blocker_kind.as_deref(),
+            Some("rustc_private_to_wasm_bridge_missing")
+        );
         assert!(inspection
             .exact_loader_blocker
             .contains("must not execute or fake-call"));
@@ -1983,7 +2402,7 @@ mod tests {
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("compiler-payload bundle")));
+            .is_some_and(|reason| reason.contains("compiler-payload ABI v1")));
     }
 
     #[test]
@@ -2009,8 +2428,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind
-                    == "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
+                && component.blocker_kind == "rustc_private_to_wasm_bridge_missing"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

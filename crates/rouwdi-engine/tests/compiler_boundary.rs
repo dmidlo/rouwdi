@@ -150,9 +150,30 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+        Some("rustc_private_to_wasm_bridge_missing")
     );
     assert!(mir_handoff.payload_bundle_inspected);
+    assert_eq!(
+        mir_handoff.payload_abi_manifest_path.as_deref(),
+        Some(rouwdi_rustc_upstream::COMPILER_PAYLOAD_ABI_MANIFEST_PATH)
+    );
+    assert_eq!(
+        mir_handoff.payload_abi_selected_route.as_deref(),
+        Some("wasm32_wasip1_module")
+    );
+    assert_eq!(
+        mir_handoff.payload_abi_route_status,
+        Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+    );
+    assert_eq!(
+        mir_handoff.payload_abi_route_artifact_path.as_deref(),
+        Some("target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm")
+    );
+    assert_eq!(mir_handoff.payload_abi_route_attempted, Some(true));
+    assert_eq!(
+        mir_handoff.payload_abi_bridge_blocker_kind.as_deref(),
+        Some("rustc_private_to_wasm_bridge_missing")
+    );
     assert_eq!(
         mir_handoff.payload_loader_exported_artifact_class,
         Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)
@@ -173,7 +194,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         mir_handoff.payload_next_required_artifact_format.as_deref(),
-        Some("wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi")
+        Some("rustc_private_to_wasm_mir_handoff_bridge")
     );
     assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
     assert_eq!(

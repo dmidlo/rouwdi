@@ -481,6 +481,23 @@ pub struct RustMirHandoffRecord {
     pub payload_bundle_inspected: bool,
     pub payload_bundle_manifest_path: Option<String>,
     pub payload_bundle_manifest_sha256: Option<String>,
+    pub payload_abi_manifest_path: Option<String>,
+    pub payload_abi_manifest_sha256: Option<String>,
+    pub payload_abi_name: Option<String>,
+    pub payload_abi_version: Option<u32>,
+    pub payload_abi_supported_stage: Option<rouwdi_rustc_upstream::CompilerPayloadSupportedStage>,
+    pub payload_abi_primary_format: Option<rouwdi_rustc_upstream::CompilerPayloadAbiFormat>,
+    pub payload_abi_selected_route: Option<String>,
+    pub payload_abi_route_status: Option<rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus>,
+    pub payload_abi_route_artifact_format: Option<rouwdi_rustc_upstream::CompilerPayloadAbiFormat>,
+    pub payload_abi_route_artifact_path: Option<String>,
+    pub payload_abi_route_artifact_sha256: Option<String>,
+    pub payload_abi_route_artifact_size_bytes: Option<u64>,
+    pub payload_abi_route_attempted: Option<bool>,
+    pub payload_abi_route_blocker_kind: Option<String>,
+    pub payload_abi_bridge_status: Option<String>,
+    pub payload_abi_bridge_blocker_kind: Option<String>,
+    pub payload_abi_bridge_blocker_reason: Option<String>,
     pub payload_loader_exported_artifact_class:
         Option<rouwdi_rustc_upstream::CompilerPayloadArtifactClass>,
     pub payload_loader_metadata_artifact_class:
@@ -1189,6 +1206,59 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_bundle_manifest_sha256 = payload_loader_inspection
         .as_ref()
         .map(|inspection| inspection.bundle_manifest.sha256.clone());
+    let payload_abi_manifest_path = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_manifest.as_ref())
+        .map(|manifest| manifest.path.clone());
+    let payload_abi_manifest_sha256 = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_manifest.as_ref())
+        .map(|manifest| manifest.sha256.clone());
+    let payload_abi_name = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_name.clone());
+    let payload_abi_version = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_version);
+    let payload_abi_supported_stage = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_supported_stage);
+    let payload_abi_primary_format = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_primary_format);
+    let payload_abi_selected_route = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_selected_route.clone());
+    let payload_abi_route_status = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_status);
+    let payload_abi_route_artifact_format = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_artifact_format);
+    let payload_abi_route_artifact_path = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_artifact_path.clone());
+    let payload_abi_route_artifact_sha256 = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_artifact_sha256.clone());
+    let payload_abi_route_artifact_size_bytes = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_artifact_size_bytes);
+    let payload_abi_route_attempted = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_attempted);
+    let payload_abi_route_blocker_kind = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_route_blocker_kind.clone());
+    let payload_abi_bridge_status = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_bridge_status.clone());
+    let payload_abi_bridge_blocker_kind = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_bridge_blocker_kind.clone());
+    let payload_abi_bridge_blocker_reason = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.abi_bridge_blocker_reason.clone());
     let payload_loader_exported_artifact_class = payload_loader_inspection
         .as_ref()
         .map(|inspection| inspection.exported_payload.artifact_class);
@@ -1263,12 +1333,30 @@ pub fn handoff_rust_mir_for_compile_unit(
             )
         })
         .unwrap_or_else(|| "payload bundle was not available for loader inspection".to_owned());
+    let payload_abi_note = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| {
+            Some(format!(
+                "compiler-payload ABI route {}; route status {}; bridge status {}; bridge blocker {}",
+                inspection.abi_selected_route.as_ref()?,
+                inspection
+                    .abi_route_status
+                    .map(|status| format!("{status:?}"))
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                inspection.abi_bridge_status.as_deref().unwrap_or("unknown"),
+                inspection
+                    .abi_bridge_blocker_kind
+                    .as_deref()
+                    .unwrap_or("unknown")
+            ))
+        })
+        .unwrap_or_else(|| "compiler-payload ABI route is not recorded".to_owned());
     let blocker_reason = if available {
         None
     } else if let Some(resolved) = resolved_blocker.as_ref() {
         let blocker = &resolved.blocked_component;
         let mut reason = format!(
-            "upstream MIR payload adapter {} is {}; blocker component {} is {}; adapter feature {}; authoritative probe `{}` in {} exited {} with {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; see {} and adapter {}",
+            "upstream MIR payload adapter {} is {}; blocker component {} is {}; adapter feature {}; authoritative probe `{}` in {} exited {} with {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; {}; see {} and adapter {}",
             payload_adapter.adapter_symbol,
             payload_adapter.status.as_str(),
             blocker.name,
@@ -1283,6 +1371,7 @@ pub fn handoff_rust_mir_for_compile_unit(
             boundary.required_context_objects.join(", "),
             boundary.embedded_prerequisite_adapters.join(", "),
             payload_loader_note,
+            payload_abi_note,
             blocker.exact_blocker,
             rouwdi_rustc_upstream::IMPORT_LEDGER_PATH,
             rouwdi_rustc_upstream::ADAPTER_CRATE
@@ -1296,7 +1385,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         Some(reason)
     } else {
         Some(format!(
-            "upstream MIR payload adapter {} is {}; carrier state {}; bootstrap artifact located {}; payload carrier created {}; payload loaded into rouwdi facade {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; see {} and adapter {}",
+            "upstream MIR payload adapter {} is {}; carrier state {}; bootstrap artifact located {}; payload carrier created {}; payload loaded into rouwdi facade {}; bootstrap authoritative probe `{}` in {} exited {} with {}; evidence: {}; normal workspace control probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; {}; {}; see {} and adapter {}",
             payload_adapter.adapter_symbol,
             payload_adapter.status.as_str(),
             payload_carrier_state.as_deref().unwrap_or("unrecorded"),
@@ -1313,6 +1402,7 @@ pub fn handoff_rust_mir_for_compile_unit(
             boundary.required_context_objects.join(", "),
             boundary.embedded_prerequisite_adapters.join(", "),
             payload_loader_note,
+            payload_abi_note,
             payload_adapter
                 .blocker_reason
                 .clone()
@@ -1375,6 +1465,23 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_bundle_inspected,
         payload_bundle_manifest_path,
         payload_bundle_manifest_sha256,
+        payload_abi_manifest_path,
+        payload_abi_manifest_sha256,
+        payload_abi_name,
+        payload_abi_version,
+        payload_abi_supported_stage,
+        payload_abi_primary_format,
+        payload_abi_selected_route,
+        payload_abi_route_status,
+        payload_abi_route_artifact_format,
+        payload_abi_route_artifact_path,
+        payload_abi_route_artifact_sha256,
+        payload_abi_route_artifact_size_bytes,
+        payload_abi_route_attempted,
+        payload_abi_route_blocker_kind,
+        payload_abi_bridge_status,
+        payload_abi_bridge_blocker_kind,
+        payload_abi_bridge_blocker_reason,
         payload_loader_exported_artifact_class,
         payload_loader_metadata_artifact_class,
         payload_loader_exported_hash_status,
@@ -3808,12 +3915,54 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+            Some("rustc_private_to_wasm_bridge_missing")
         );
         assert!(handoff.payload_bundle_inspected);
         assert_eq!(
             handoff.payload_bundle_manifest_path.as_deref(),
             Some(rouwdi_rustc_upstream::MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
+        );
+        assert_eq!(
+            handoff.payload_abi_manifest_path.as_deref(),
+            Some(rouwdi_rustc_upstream::COMPILER_PAYLOAD_ABI_MANIFEST_PATH)
+        );
+        assert_eq!(
+            handoff.payload_abi_name.as_deref(),
+            Some("rouwdi.compiler-payload.mir-handoff")
+        );
+        assert_eq!(handoff.payload_abi_version, Some(1));
+        assert_eq!(
+            handoff.payload_abi_supported_stage,
+            Some(rouwdi_rustc_upstream::CompilerPayloadSupportedStage::MirHandoff)
+        );
+        assert_eq!(
+            handoff.payload_abi_primary_format,
+            Some(rouwdi_rustc_upstream::CompilerPayloadAbiFormat::WasmModule)
+        );
+        assert_eq!(
+            handoff.payload_abi_selected_route.as_deref(),
+            Some("wasm32_wasip1_module")
+        );
+        assert_eq!(
+            handoff.payload_abi_route_status,
+            Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+        );
+        assert_eq!(
+            handoff.payload_abi_route_artifact_format,
+            Some(rouwdi_rustc_upstream::CompilerPayloadAbiFormat::WasmModule)
+        );
+        assert_eq!(
+            handoff.payload_abi_route_artifact_path.as_deref(),
+            Some("target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm")
+        );
+        assert_eq!(handoff.payload_abi_route_attempted, Some(true));
+        assert_eq!(
+            handoff.payload_abi_bridge_status.as_deref(),
+            Some("missing")
+        );
+        assert_eq!(
+            handoff.payload_abi_bridge_blocker_kind.as_deref(),
+            Some("rustc_private_to_wasm_bridge_missing")
         );
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -3840,7 +3989,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(false));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi")
+            Some("rustc_private_to_wasm_mir_handoff_bridge")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -3859,7 +4008,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("compiler_payload_bundle_inspected_rlib_archive_not_loadable")
+            Some("rustc_private_to_wasm_bridge_missing")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

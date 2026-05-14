@@ -1892,6 +1892,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rouwdi-compiler-payload-abi"
+version = "0.1.0"
+
+[[package]]
 name = "rouwdi-compiletime"
 version = "0.1.0"
 dependencies = [

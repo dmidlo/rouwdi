@@ -112,14 +112,14 @@ artifact_locate_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-
 artifact_build_command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
 export_manifest_path = "bootstrap/mir-payload-export-manifest.toml"
 payload_loaded_into_rouwdi_facade = false
-payload_load_blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-payload_load_blocker_reason = "The bootstrap stage1 build exports a real rlib payload for rouwdi_mir_adapter_probe while preserving the stage1 check .rmeta as metadata-only. The new rouwdi compiler-payload bundle/loader boundary can inspect the bundle, classify the rlib archive, and verify the rlib/rmeta identities, but it must reject the payload because rustc-private rlib archives are not executable compiler payload ABIs for rouwdi.wasm."
+payload_load_blocker_kind = "rustc_private_to_wasm_bridge_missing"
+payload_load_blocker_reason = "The bootstrap stage1 build exports a real rlib payload for rouwdi_mir_adapter_probe while preserving the stage1 check .rmeta as metadata-only. rouwdi now also defines compiler-payload ABI v1 and emits a wasm32-wasip1 ABI shim, but the loader must still reject the MIR payload because no bridge connects the shim to the rustc-private rlib that owns TyCtxt, Providers, and real MIR Body access."
 payload_bundle_format = "rouwdi_compiler_payload_bundle.v1"
 payload_loader_status = "unsupported_compiler_private_artifact"
-payload_next_required_artifact_format = "wasm_component_or_module_with_explicit_rouwdi_compiler_payload_abi"
-next_artifact_command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+payload_next_required_artifact_format = "rustc_private_to_wasm_mir_handoff_bridge"
+next_artifact_command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release"
 next_artifact_command_exit_code = 0
-next_artifact_command_evidence = "The command now succeeds after registering a Mode::ToolRustcPrivate bootstrap build step for src/tools/rouwdi-mir-adapter-probe and emits release/librouwdi_mir_adapter_probe.rlib. The remaining blocker is loader/format support, not an export-rule dead end."
+next_artifact_command_evidence = "The selected ABI route command emits target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. The remaining blocker is the rustc-private-to-Wasm MIR bridge, not ABI shim absence."
 typechecked_entrypoints = [
   "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
   "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
@@ -303,9 +303,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 and located metadata-only `.rmeta` (sha256 58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1). Command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 and emits `third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/librouwdi_mir_adapter_probe.rlib` (sha256 3408dea65b1695dae215b62e886a9f56980c5c1d8fb17a2551ce1ed751cdc19c). rouwdi now models this as a compiler-payload bundle and loader inspection result: the rlib/rmeta identities are hash-verifiable, the exported artifact is classified as an rlib archive, and the selected load strategy is inspect_rlib_archive. The exact remaining blocker is that the bundle does not contain a Wasm module/component or explicit rouwdi compiler-payload ABI, so rouwdi.wasm must reject it rather than fake-load it."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.compiler_payload_bundle_inspected_rlib_archive_not_loadable"
+blocker_kind = "rustc_private_to_wasm_bridge_missing"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 and located metadata-only `.rmeta` (sha256 58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1). Command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 and emits `third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/librouwdi_mir_adapter_probe.rlib` (sha256 3408dea65b1695dae215b62e886a9f56980c5c1d8fb17a2551ce1ed751cdc19c). rouwdi now defines compiler-payload ABI v1 and the selected wasm32-wasip1 shim route emits real Wasm, but the exact remaining blocker is the missing bridge from the ABI shim to the rustc-private rlib. rouwdi.wasm must reject the rlib rather than fake-load it."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.rustc_private_to_wasm_bridge_missing"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative MIR payload type probe is third_party/rust/src/tools/rouwdi-mir-adapter-probe, registered as an x.py check step and recorded in [[bootstrap_adapter_probes]]. It type-checks the adapter boundary against real rustc_middle MIR/query/session types and the rustc_mir_build provider surface under stage1 bootstrap."
 
@@ -317,9 +317,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 under stage1 bootstrap and preserves a metadata-only `.rmeta` artifact. Command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 through the registered ToolRustcPrivate library build rule and emits a real `rlib` payload. The rouwdi loader boundary now consumes the explicit compiler-payload bundle and classifies the exported artifact as a rustc-private rlib archive with inspect_rlib_archive strategy. The remaining blocker is not artifact absence; it is ABI absence: there is no Wasm module/component or explicit rouwdi compiler-payload ABI that can be loaded by rouwdi.wasm."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.compiler_payload_bundle_inspected_rlib_archive_not_loadable"
+blocker_kind = "rustc_private_to_wasm_bridge_missing"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 under stage1 bootstrap and preserves a metadata-only `.rmeta` artifact. Command `python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exits 0 through the registered ToolRustcPrivate library build rule and emits a real `rlib` payload. The rouwdi loader boundary consumes the explicit compiler-payload bundle and still classifies the exported artifact as a rustc-private rlib archive. The selected wasm32-wasip1 ABI shim now exists, so the remaining blocker is the missing rustc-private-to-Wasm bridge, not ABI absence."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.rustc_private_to_wasm_bridge_missing"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative bootstrap adapter probe in third_party/rust/src/tools/rouwdi-mir-adapter-probe type-checks rustc_mir_build::provide(&mut rustc_middle::util::Providers) and the MIR build hook surface in the pinned Rust stage1 bootstrap environment."
 
