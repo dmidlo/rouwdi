@@ -5,7 +5,7 @@ use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::NormalizedContract;
 use rouwdi_rustc::{
     RustCompilerPipelineRecord, RustExpansionStageRecord, RustNameResolutionStageRecord,
-    RustParseStageRecord, RustSourceLexProof,
+    RustParseStageRecord, RustSourceLexProof, RustTypeCheckStageRecord,
 };
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
@@ -149,6 +149,7 @@ pub struct ProofBundle {
     pub rust_source_parse: Vec<RustParseStageRecord>,
     pub rust_source_expansion: Vec<RustExpansionStageRecord>,
     pub rust_source_name_resolution: Vec<RustNameResolutionStageRecord>,
+    pub rust_source_type_check: Vec<RustTypeCheckStageRecord>,
     pub cargo_lockfile: Option<CargoLockfile>,
     pub interface_proofs: Vec<ArtifactInterfaceProof>,
     pub runtime_proofs: Vec<RuntimeProof>,
@@ -214,6 +215,10 @@ impl ProofBundle {
             (
                 "graph/rust-source-name-resolution.json",
                 serde_json::to_vec_pretty(&self.rust_source_name_resolution)?,
+            ),
+            (
+                "graph/rust-source-type-check.json",
+                serde_json::to_vec_pretty(&self.rust_source_type_check)?,
             ),
             (
                 "toolchain/rouwdi-engine.json",

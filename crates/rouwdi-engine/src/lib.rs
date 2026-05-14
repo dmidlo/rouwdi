@@ -14,6 +14,7 @@ use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
     RustCompilerPipelineRecord, RustExpansionStageStatus, RustExternCrate,
     RustNameResolutionStageStatus, RustParseStageStatus, RustSourceLexProof,
+    RustTypeCheckStageStatus,
 };
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
@@ -168,6 +169,10 @@ impl RouwdiEngine {
             .iter()
             .filter_map(|record| record.name_resolution_stage.clone())
             .collect::<Vec<_>>();
+        let rust_source_type_check = compiler_pipeline
+            .iter()
+            .filter_map(|record| record.type_check_stage.clone())
+            .collect::<Vec<_>>();
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -275,6 +280,18 @@ impl RouwdiEngine {
                             "internal Rust name resolution reported {} diagnostic(s) for {}",
                             name_resolution_stage.diagnostic_count,
                             name_resolution_stage.source_path
+                        ),
+                    });
+                }
+            }
+            if let Some(type_check_stage) = &record.type_check_stage {
+                if type_check_stage.status == RustTypeCheckStageStatus::Failed {
+                    assembly_diagnostics.push(BootstrapDiagnostic {
+                        component: "Rust type-check stage".to_owned(),
+                        required_by: format!("compile unit {}", type_check_stage.unit_id),
+                        reason: format!(
+                            "internal Rust type checker reported {} diagnostic(s) for {}",
+                            type_check_stage.diagnostic_count, type_check_stage.source_path
                         ),
                     });
                 }
@@ -441,6 +458,7 @@ impl RouwdiEngine {
             rust_source_parse,
             rust_source_expansion,
             rust_source_name_resolution,
+            rust_source_type_check,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -668,7 +686,7 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "compiler stage rustc_hir_analysis"
+            .any(|item| item.component == "compiler stage rustc_borrowck"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
             .bootstrap_diagnostics
@@ -689,8 +707,9 @@ version = "0.1.0"
                 .as_ref()
                 .unwrap()
                 .required_component,
-            "rustc_hir_analysis"
+            "rustc_borrowck"
         );
+        assert!(manifest.compiler_pipeline[0].type_check_stage.is_some());
         assert!(storage
             .read(&format!("{}/source/source-cache.json", report.run_root))
             .unwrap()
@@ -733,6 +752,13 @@ version = "0.1.0"
         assert!(storage
             .read(&format!(
                 "{}/graph/rust-source-name-resolution.json",
+                report.run_root
+            ))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!(
+                "{}/graph/rust-source-type-check.json",
                 report.run_root
             ))
             .unwrap()
