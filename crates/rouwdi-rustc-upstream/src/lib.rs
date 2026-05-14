@@ -97,6 +97,11 @@ pub struct RustcIndexAdapterSurface {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirHandoffAdapterBoundary {
     pub adapter_symbol: String,
+    pub payload_adapter_status: MirHandoffPayloadAdapterStatus,
+    pub payload_adapter_available: bool,
+    pub payload_adapter_feature: String,
+    pub payload_adapter_blocker_kind: Option<String>,
+    pub payload_adapter_blocker_reason: Option<String>,
     pub intended_components: Vec<String>,
     pub embedded_prerequisite_adapters: Vec<String>,
     pub missing_adapter_symbols: Vec<String>,
@@ -105,6 +110,102 @@ pub struct MirHandoffAdapterBoundary {
     pub blocker_component: Option<String>,
     pub blocker_import_status: Option<String>,
     pub blocker_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirHandoffPayloadAdapterStatus {
+    Typechecked,
+    BlockedByNormalWorkspaceCargo,
+}
+
+impl MirHandoffPayloadAdapterStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Typechecked => "typechecked",
+            Self::BlockedByNormalWorkspaceCargo => "blocked_by_normal_workspace_cargo",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirHandoffPayloadAdapter {
+    pub adapter_symbol: String,
+    pub status: MirHandoffPayloadAdapterStatus,
+    pub adapter_available: bool,
+    pub typechecked_under_current_build: bool,
+    pub cargo_feature: String,
+    pub normal_workspace_probe_command: String,
+    pub normal_workspace_probe_exit_code: i32,
+    pub upstream_type_surface: Vec<String>,
+    pub typechecked_entrypoints: Vec<String>,
+    pub required_upstream_crates: Vec<String>,
+    pub required_upstream_modules: Vec<String>,
+    pub required_context_objects: Vec<String>,
+    pub embedded_prerequisite_adapters: Vec<String>,
+    pub blocker_component: Option<String>,
+    pub blocker_import_status: Option<String>,
+    pub blocker_probe_command: Option<String>,
+    pub blocker_kind: Option<String>,
+    pub blocker_reason: Option<String>,
+}
+
+#[cfg(feature = "real-rustc-mir-payload")]
+pub mod real_mir_payload_adapter {
+    use rustc_hir::def_id::LocalDefId;
+    use rustc_middle::mir::Body;
+    use rustc_middle::query::Providers as QueryProviders;
+    use rustc_middle::ty::TyCtxt;
+    use rustc_middle::util::Providers as UtilityProviders;
+    use rustc_session::Session;
+
+    pub struct RealMirHandoffPayload<'a, 'tcx> {
+        pub session: &'a Session,
+        pub tcx: TyCtxt<'tcx>,
+        pub query_providers: &'a QueryProviders,
+        pub body_owner: LocalDefId,
+        pub body: &'tcx Body<'tcx>,
+    }
+
+    pub fn register_mir_build_providers(providers: &mut UtilityProviders) {
+        rustc_mir_build::provide(providers);
+    }
+
+    pub fn mir_handoff_payload_adapter<'a, 'tcx>(
+        session: &'a Session,
+        tcx: TyCtxt<'tcx>,
+        query_providers: &'a QueryProviders,
+        body_owner: LocalDefId,
+    ) -> RealMirHandoffPayload<'a, 'tcx> {
+        let body = tcx.optimized_mir(body_owner.to_def_id());
+        RealMirHandoffPayload {
+            session,
+            tcx,
+            query_providers,
+            body_owner,
+            body,
+        }
+    }
+
+    pub fn typechecked_entrypoints() -> Vec<String> {
+        vec![
+            "rouwdi_rustc_upstream::real_mir_payload_adapter::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> RealMirHandoffPayload<'a, 'tcx>".to_owned(),
+            "rouwdi_rustc_upstream::real_mir_payload_adapter::register_mir_build_providers(&mut rustc_middle::util::Providers)".to_owned(),
+        ]
+    }
+
+    pub fn type_surface() -> Vec<String> {
+        vec![
+            "rustc_middle::mir::Body<'tcx>".to_owned(),
+            "rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
+            "rustc_middle::query::Providers".to_owned(),
+            "rustc_middle::util::Providers".to_owned(),
+            "rustc_session::Session".to_owned(),
+            "rustc_hir::def_id::LocalDefId".to_owned(),
+            "rustc_span::def_id::LocalDefId".to_owned(),
+            "rustc_mir_build::provide".to_owned(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +378,112 @@ pub fn mir_handoff_resolved_blocker() -> Option<ResolvedUpstreamBlocker> {
     mir_handoff_blocker().and_then(|component| resolve_component_blocker(&component.name))
 }
 
+fn mir_payload_required_upstream_crates() -> Vec<String> {
+    vec![
+        "rustc_middle".to_owned(),
+        "rustc_session".to_owned(),
+        "rustc_hir".to_owned(),
+        "rustc_span".to_owned(),
+        "rustc_mir_build".to_owned(),
+    ]
+}
+
+fn mir_payload_required_upstream_modules() -> Vec<String> {
+    vec![
+        "rustc_middle::mir".to_owned(),
+        "rustc_middle::ty".to_owned(),
+        "rustc_middle::query".to_owned(),
+        "rustc_middle::util".to_owned(),
+        "rustc_session".to_owned(),
+        "rustc_hir::def_id".to_owned(),
+        "rustc_span::def_id".to_owned(),
+        "rustc_mir_build".to_owned(),
+    ]
+}
+
+fn mir_payload_required_context_objects() -> Vec<String> {
+    vec![
+        "rustc_session::Session".to_owned(),
+        "rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
+        "rustc_middle::query::Providers".to_owned(),
+        "rustc_middle::util::Providers".to_owned(),
+        "rustc_hir::def_id::LocalDefId for the compile unit body owner".to_owned(),
+        "rustc_middle::mir::Body<'tcx> returned from TyCtxt query".to_owned(),
+    ]
+}
+
+#[cfg(feature = "real-rustc-mir-payload")]
+fn mir_payload_type_surface() -> Vec<String> {
+    real_mir_payload_adapter::type_surface()
+}
+
+#[cfg(not(feature = "real-rustc-mir-payload"))]
+fn mir_payload_type_surface() -> Vec<String> {
+    vec![
+        "rustc_middle::mir::Body<'tcx>".to_owned(),
+        "rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
+        "rustc_middle::query::Providers".to_owned(),
+        "rustc_middle::util::Providers".to_owned(),
+        "rustc_session::Session".to_owned(),
+        "rustc_hir::def_id::LocalDefId".to_owned(),
+        "rustc_span::def_id::LocalDefId".to_owned(),
+        "rustc_mir_build::provide".to_owned(),
+    ]
+}
+
+#[cfg(feature = "real-rustc-mir-payload")]
+fn mir_payload_typechecked_entrypoints() -> Vec<String> {
+    real_mir_payload_adapter::typechecked_entrypoints()
+}
+
+#[cfg(not(feature = "real-rustc-mir-payload"))]
+fn mir_payload_typechecked_entrypoints() -> Vec<String> {
+    Vec::new()
+}
+
+pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
+    let index_surface = rustc_index_adapter_surface();
+    let blocker = mir_handoff_blocker();
+    let typechecked_under_current_build = cfg!(feature = "real-rustc-mir-payload");
+    let status = if typechecked_under_current_build {
+        MirHandoffPayloadAdapterStatus::Typechecked
+    } else {
+        MirHandoffPayloadAdapterStatus::BlockedByNormalWorkspaceCargo
+    };
+
+    MirHandoffPayloadAdapter {
+        adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
+        status,
+        adapter_available: status == MirHandoffPayloadAdapterStatus::Typechecked,
+        typechecked_under_current_build,
+        cargo_feature: "real-rustc-mir-payload".to_owned(),
+        normal_workspace_probe_command:
+            "cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload".to_owned(),
+        normal_workspace_probe_exit_code: if typechecked_under_current_build {
+            0
+        } else {
+            1
+        },
+        upstream_type_surface: mir_payload_type_surface(),
+        typechecked_entrypoints: mir_payload_typechecked_entrypoints(),
+        required_upstream_crates: mir_payload_required_upstream_crates(),
+        required_upstream_modules: mir_payload_required_upstream_modules(),
+        required_context_objects: mir_payload_required_context_objects(),
+        embedded_prerequisite_adapters: vec![index_surface.adapter_symbol],
+        blocker_component: blocker.as_ref().map(|component| component.name.clone()),
+        blocker_import_status: blocker
+            .as_ref()
+            .map(|component| component.import_status.clone()),
+        blocker_probe_command: blocker
+            .as_ref()
+            .map(|component| component.probe_command.clone()),
+        blocker_kind: blocker
+            .as_ref()
+            .map(|component| component.blocker_kind.clone()),
+        blocker_reason: blocker.map(|component| component.exact_blocker),
+    }
+}
+
 pub fn rustc_error_codes_import_probe() -> usize {
     RUSTC_ERROR_CODE_COUNT
 }
@@ -316,26 +523,21 @@ pub fn rustc_index_adapter_surface() -> RustcIndexAdapterSurface {
 
 pub fn mir_handoff_adapter_boundary() -> MirHandoffAdapterBoundary {
     let index_surface = rustc_index_adapter_surface();
+    let payload_adapter = mir_handoff_payload_adapter();
     let blocker = mir_handoff_blocker();
 
     MirHandoffAdapterBoundary {
         adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
+        payload_adapter_status: payload_adapter.status,
+        payload_adapter_available: payload_adapter.adapter_available,
+        payload_adapter_feature: payload_adapter.cargo_feature,
+        payload_adapter_blocker_kind: payload_adapter.blocker_kind,
+        payload_adapter_blocker_reason: payload_adapter.blocker_reason,
         intended_components: vec!["rustc_middle".to_owned(), "rustc_mir_build".to_owned()],
         embedded_prerequisite_adapters: vec![index_surface.adapter_symbol],
-        missing_adapter_symbols: vec![MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()],
-        required_context_objects: vec![
-            "rustc_session::Session".to_owned(),
-            "rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
-            "rustc_middle::query::Providers".to_owned(),
-            "rustc_hir::OwnerId or LocalDefId for the compile unit body".to_owned(),
-        ],
-        required_upstream_modules: vec![
-            "rustc_middle::mir".to_owned(),
-            "rustc_middle::ty".to_owned(),
-            "rustc_middle::query".to_owned(),
-            "rustc_mir_build::build".to_owned(),
-            "rustc_mir_build::thir".to_owned(),
-        ],
+        missing_adapter_symbols: Vec::new(),
+        required_context_objects: mir_payload_required_context_objects(),
+        required_upstream_modules: mir_payload_required_upstream_modules(),
         blocker_component: blocker.as_ref().map(|component| component.name.clone()),
         blocker_import_status: blocker
             .as_ref()
@@ -544,6 +746,11 @@ mod tests {
             .any(|blocker| blocker.id == "rustc_index"
                 && blocker.component == "rustc_index"
                 && blocker.is_cleared()));
+        assert!(ledger.components.iter().any(|component| {
+            component.name == "rustc_middle"
+                && component.import_status == "adapter_partially_embedded"
+                && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
+        }));
     }
 
     #[test]
@@ -570,28 +777,64 @@ mod tests {
     }
 
     #[test]
-    fn mir_handoff_boundary_names_the_next_missing_upstream_context() {
+    fn mir_handoff_payload_adapter_symbol_exists_and_records_real_type_surface() {
+        let adapter = mir_handoff_payload_adapter();
+
+        assert_eq!(adapter.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
+        assert_eq!(
+            adapter.status,
+            MirHandoffPayloadAdapterStatus::BlockedByNormalWorkspaceCargo
+        );
+        assert!(!adapter.adapter_available);
+        assert_eq!(adapter.cargo_feature, "real-rustc-mir-payload");
+        assert_eq!(adapter.normal_workspace_probe_exit_code, 1);
+        assert!(adapter
+            .upstream_type_surface
+            .contains(&"rustc_middle::mir::Body<'tcx>".to_owned()));
+        assert!(adapter
+            .upstream_type_surface
+            .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
+        assert!(adapter
+            .upstream_type_surface
+            .contains(&"rustc_middle::query::Providers".to_owned()));
+        assert!(adapter
+            .upstream_type_surface
+            .contains(&"rustc_session::Session".to_owned()));
+        assert!(adapter
+            .blocker_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("smallvec-1.15.1")));
+    }
+
+    #[test]
+    fn mir_handoff_boundary_names_the_current_payload_adapter_blocker() {
         let boundary = mir_handoff_adapter_boundary();
 
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
-        assert_eq!(boundary.blocker_component.as_deref(), Some("rustc_middle"));
+        assert_eq!(
+            boundary.payload_adapter_status,
+            MirHandoffPayloadAdapterStatus::BlockedByNormalWorkspaceCargo
+        );
+        assert!(!boundary.payload_adapter_available);
+        assert_eq!(
+            boundary.blocker_component.as_deref(),
+            Some("rustc_mir_build")
+        );
         assert_eq!(
             boundary.blocker_import_status.as_deref(),
-            Some("bootstrap_probe_passed")
+            Some("adapter_blocked")
         );
         assert!(boundary
             .embedded_prerequisite_adapters
             .contains(&RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
-        assert!(boundary
-            .missing_adapter_symbols
-            .contains(&MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(boundary.missing_adapter_symbols.is_empty());
         assert!(boundary
             .required_context_objects
             .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("rustc_middle::mir::Body<'tcx>")));
+            .is_some_and(|reason| reason.contains("rustc_mir_build::provide")));
     }
 
     #[test]
@@ -611,19 +854,19 @@ mod tests {
     fn mir_handoff_reports_the_first_blocked_upstream_component() {
         let blocker = mir_handoff_blocker().unwrap();
 
-        assert_eq!(blocker.name, "rustc_middle");
-        assert!(blocker.bootstrap_probe_passed());
+        assert_eq!(blocker.name, "rustc_mir_build");
+        assert_eq!(blocker.import_status, "adapter_blocked");
         assert!(!blocker.is_imported());
         assert_eq!(
             blocker.source_path,
-            "third_party/rust/compiler/rustc_middle"
+            "third_party/rust/compiler/rustc_mir_build"
         );
         assert_eq!(
             blocker.immediate_dependency_blocker.as_deref(),
-            Some("rustc_middle_session_query_context")
+            Some("rustc_middle.normal_workspace_cargo_stable_feature_gates")
         );
         assert_eq!(blocker.shared_blocker, None);
-        assert_eq!(blocker.blocker_kind, "missing_mir_handoff_adapter_symbol");
+        assert_eq!(blocker.blocker_kind, "normal_workspace_cargo_feature_gate");
         assert_eq!(
             blocker.adapter_symbol.as_deref(),
             Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
@@ -650,7 +893,7 @@ mod tests {
     fn mir_handoff_resolves_through_the_shared_blocker_graph() {
         let resolved = mir_handoff_resolved_blocker().unwrap();
 
-        assert_eq!(resolved.blocked_component.name, "rustc_middle");
+        assert_eq!(resolved.blocked_component.name, "rustc_mir_build");
         assert_eq!(resolved.shared_blocker_id(), None);
         assert!(resolved.shared_root.is_none());
         assert_eq!(

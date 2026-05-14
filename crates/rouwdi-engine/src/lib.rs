@@ -894,8 +894,10 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "upstream MIR adapter rustc_middle"
-                && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
+            .any(
+                |item| item.component == "upstream MIR adapter rustc_mir_build"
+                    && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+            ));
         assert!(!report
             .bootstrap_diagnostics
             .iter()
@@ -917,7 +919,15 @@ version = "0.1.0"
                 .unwrap()
                 .blocker_component
                 .as_deref(),
-            Some("rustc_middle")
+            Some("rustc_mir_build")
+        );
+        assert_eq!(
+            manifest.compiler_pipeline[0]
+                .mir_handoff
+                .as_ref()
+                .unwrap()
+                .payload_adapter_status,
+            "blocked_by_normal_workspace_cargo"
         );
         assert_eq!(
             manifest.compiler_pipeline[0]

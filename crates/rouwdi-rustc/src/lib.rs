@@ -458,6 +458,13 @@ pub struct RustMirHandoffRecord {
     pub status: RustMirHandoffStatus,
     pub import_ledger_path: String,
     pub import_adapter_crate: String,
+    pub payload_adapter_symbol: String,
+    pub payload_adapter_status: String,
+    pub payload_adapter_feature: String,
+    pub payload_adapter_typechecked: bool,
+    pub payload_adapter_probe_command: String,
+    pub payload_adapter_probe_exit_code: i32,
+    pub payload_adapter_blocker_kind: Option<String>,
     pub blocker_import_status: Option<String>,
     pub blocker_probe_command: Option<String>,
     pub shared_blocker_component: Option<String>,
@@ -1117,6 +1124,7 @@ pub fn handoff_rust_mir_for_compile_unit(
     let mir_build = rouwdi_rustc_upstream::import_component("rustc_mir_build")
         .expect("upstream rustc import ledger includes rustc_mir_build");
     let boundary = rouwdi_rustc_upstream::mir_handoff_adapter_boundary();
+    let payload_adapter = rouwdi_rustc_upstream::mir_handoff_payload_adapter();
     let resolved_blocker = rouwdi_rustc_upstream::mir_handoff_resolved_blocker();
     let blocker = resolved_blocker
         .as_ref()
@@ -1124,14 +1132,9 @@ pub fn handoff_rust_mir_for_compile_unit(
     let shared_root = resolved_blocker
         .as_ref()
         .and_then(|resolved| resolved.shared_root.as_ref());
-    let available = component.is_imported() && mir_build.is_imported();
-    let required_upstream_crates = vec![
-        "rustc_middle".to_owned(),
-        "rustc_mir_build".to_owned(),
-        "rustc_hir".to_owned(),
-        "rustc_span".to_owned(),
-        "rustc_data_structures".to_owned(),
-    ];
+    let available =
+        payload_adapter.adapter_available && component.is_imported() && mir_build.is_imported();
+    let required_upstream_crates = payload_adapter.required_upstream_crates.clone();
     let required_upstream_modules = boundary.required_upstream_modules.clone();
     let blocker_reason = if available {
         None
@@ -1139,10 +1142,14 @@ pub fn handoff_rust_mir_for_compile_unit(
         resolved_blocker.as_ref().map(|resolved| {
             let blocker = &resolved.blocked_component;
             let mut reason = format!(
-                "upstream MIR adapter import is blocked by {} at {}; missing adapter symbol(s): {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
+                "upstream MIR payload adapter {} is {}; blocker component {} is {}; adapter feature {}; normal workspace probe `{}` exited {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
+                payload_adapter.adapter_symbol,
+                payload_adapter.status.as_str(),
                 blocker.name,
-                boundary.adapter_symbol,
-                boundary.missing_adapter_symbols.join(", "),
+                blocker.import_status,
+                payload_adapter.cargo_feature,
+                payload_adapter.normal_workspace_probe_command,
+                payload_adapter.normal_workspace_probe_exit_code,
                 boundary.required_context_objects.join(", "),
                 boundary.embedded_prerequisite_adapters.join(", "),
                 blocker.exact_blocker,
@@ -1187,6 +1194,13 @@ pub fn handoff_rust_mir_for_compile_unit(
         },
         import_ledger_path: rouwdi_rustc_upstream::IMPORT_LEDGER_PATH.to_owned(),
         import_adapter_crate: rouwdi_rustc_upstream::ADAPTER_CRATE.to_owned(),
+        payload_adapter_symbol: payload_adapter.adapter_symbol,
+        payload_adapter_status: payload_adapter.status.as_str().to_owned(),
+        payload_adapter_feature: payload_adapter.cargo_feature,
+        payload_adapter_typechecked: payload_adapter.typechecked_under_current_build,
+        payload_adapter_probe_command: payload_adapter.normal_workspace_probe_command,
+        payload_adapter_probe_exit_code: payload_adapter.normal_workspace_probe_exit_code,
+        payload_adapter_blocker_kind: payload_adapter.blocker_kind,
         blocker_import_status: blocker.map(|blocker| blocker.import_status.clone()),
         blocker_probe_command: blocker.map(|blocker| blocker.probe_command.clone()),
         shared_blocker_component: shared_root.map(|root| root.id.clone()),
@@ -3572,13 +3586,28 @@ mod tests {
         );
         assert_eq!(handoff.import_adapter_crate, "crates/rouwdi-rustc-upstream");
         assert_eq!(
+            handoff.payload_adapter_symbol,
+            rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
+        );
+        assert_eq!(
+            handoff.payload_adapter_status,
+            "blocked_by_normal_workspace_cargo"
+        );
+        assert_eq!(handoff.payload_adapter_feature, "real-rustc-mir-payload");
+        assert!(!handoff.payload_adapter_typechecked);
+        assert_eq!(handoff.payload_adapter_probe_exit_code, 1);
+        assert_eq!(
+            handoff.payload_adapter_blocker_kind.as_deref(),
+            Some("normal_workspace_cargo_feature_gate")
+        );
+        assert_eq!(
             handoff.blocker_import_status.as_deref(),
-            Some("bootstrap_probe_passed")
+            Some("adapter_blocked")
         );
         assert!(handoff
             .blocker_probe_command
             .as_deref()
-            .is_some_and(|command| command.contains("rustc_middle")));
+            .is_some_and(|command| command.contains("real-rustc-mir-payload")));
         assert_eq!(handoff.shared_blocker_component, None);
         assert_eq!(handoff.shared_blocker_status, None);
         assert_eq!(handoff.shared_blocker_probe_command, None);
@@ -3586,23 +3615,27 @@ mod tests {
             handoff.blocker_category,
             Some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded)
         );
-        assert_eq!(handoff.blocker_component.as_deref(), Some("rustc_middle"));
+        assert_eq!(
+            handoff.blocker_component.as_deref(),
+            Some("rustc_mir_build")
+        );
         assert!(handoff
             .required_upstream_crates
             .contains(&"rustc_mir_build".to_owned()));
         assert!(handoff
             .embedded_prerequisite_adapters
             .contains(&rouwdi_rustc_upstream::RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
-        assert!(handoff
-            .missing_adapter_symbols
-            .contains(&rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(handoff.missing_adapter_symbols.is_empty());
         assert!(handoff
             .required_context_objects
             .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
         assert!(handoff
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("missing adapter symbol")));
+            .is_some_and(
+                |reason| reason.contains("blocked_by_normal_workspace_cargo")
+                    && reason.contains("smallvec-1.15.1")
+            ));
     }
 
     #[test]
@@ -4032,7 +4065,15 @@ mod tests {
         assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
         assert_eq!(
             mir_handoff.blocker_component.as_deref(),
-            Some("rustc_middle")
+            Some("rustc_mir_build")
+        );
+        assert_eq!(
+            mir_handoff.payload_adapter_status,
+            "blocked_by_normal_workspace_cargo"
+        );
+        assert_eq!(
+            mir_handoff.payload_adapter_symbol,
+            rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
         );
         assert_eq!(mir_handoff.shared_blocker_component, None);
         assert_eq!(mir_handoff.shared_blocker_status, None);
@@ -4047,9 +4088,7 @@ mod tests {
         assert!(mir_handoff
             .embedded_prerequisite_adapters
             .contains(&rouwdi_rustc_upstream::RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
-        assert!(mir_handoff
-            .missing_adapter_symbols
-            .contains(&rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(mir_handoff.missing_adapter_symbols.is_empty());
         assert!(mir_handoff
             .required_context_objects
             .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));

@@ -9,6 +9,21 @@ rust-version.workspace = true
 [dependencies]
 rustc_error_codes = { path = "../../third_party/rust/compiler/rustc_error_codes" }
 rustc_index = { path = "../../third_party/rust/compiler/rustc_index", default-features = false }
+rustc_hir = { path = "../../third_party/rust/compiler/rustc_hir", optional = true }
+rustc_middle = { path = "../../third_party/rust/compiler/rustc_middle", optional = true }
+rustc_mir_build = { path = "../../third_party/rust/compiler/rustc_mir_build", optional = true }
+rustc_session = { path = "../../third_party/rust/compiler/rustc_session", optional = true }
+rustc_span = { path = "../../third_party/rust/compiler/rustc_span", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[features]
+default = []
+real-rustc-mir-payload = [
+    "dep:rustc_hir",
+    "dep:rustc_middle",
+    "dep:rustc_mir_build",
+    "dep:rustc_session",
+    "dep:rustc_span",
+]
