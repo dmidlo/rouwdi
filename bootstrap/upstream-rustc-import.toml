@@ -119,12 +119,14 @@ exact_blocker = ""
 name = "rustc_index"
 source_path = "third_party/rust/compiler/rustc_index"
 desired_role = "upstream index vector and interval table infrastructure shared by rustc_parse, rustc_middle, and MIR import surfaces"
-import_status = "bootstrap_probe_passed"
+import_status = "adapter_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_index"
-blocker_kind = "adapter_not_embedded"
-exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_index, but rouwdi-rustc-upstream has not embedded or exposed rustc_index through the adapter API yet. Raw Cargo remains an invalid probe path for this crate; see root_blocker rustc_index."
+probe_command = "cargo test -p rouwdi-rustc-upstream rustc_index_adapter_surface_exercises_real_upstream_indexvec -- --exact"
+blocker_kind = "none"
+exact_blocker = ""
+adapter_symbol = "rouwdi_rustc_upstream::rustc_index_adapter_surface"
+adapter_evidence = "The adapter crate depends on third_party/rust/compiler/rustc_index with default nightly features disabled, then rouwdi_rustc_upstream::rustc_index_adapter_surface constructs rustc_index::IndexVec<usize, &str>, calls rustc_index::Idx::new/index, indexes through the upstream IndexSlice surface, and is covered by the exact test command above."
 
 [[components]]
 name = "rust_analyzer_parser"
@@ -210,10 +212,10 @@ import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_middle"
-blocker_kind = "adapter_not_embedded"
-exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_middle after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_middle::mir/ty/query through the adapter API yet."
-immediate_dependency_blocker = "rustc_index"
-shared_blocker = "rustc_index"
+blocker_kind = "missing_mir_handoff_adapter_symbol"
+exact_blocker = "rustc_index is now adapter_embedded through rouwdi_rustc_upstream::rustc_index_adapter_surface. The remaining MIR handoff blocker is the missing rouwdi_rustc_upstream::mir_handoff_payload_adapter symbol: it must type-check against rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, and the rustc_session::Session-backed query context before rouwdi-rustc can request a real MIR payload."
+immediate_dependency_blocker = "rustc_middle_session_query_context"
+adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 
 [[components]]
 name = "rustc_mir_build"
@@ -223,10 +225,10 @@ import_status = "bootstrap_probe_passed"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "cargo run -p rouwdi-rustc-upstream --bin upstream-rustc-probe -- --require-compiled --mode xpy-stage1 rustc_mir_build"
-blocker_kind = "adapter_not_embedded"
-exact_blocker = "The pinned Rust bootstrap stage1 probe compiles rustc_mir_build after the rustc_index root analysis, but rouwdi-rustc-upstream has not embedded or exposed rustc_mir_build through the adapter API yet."
-immediate_dependency_blocker = "rustc_index"
-shared_blocker = "rustc_index"
+blocker_kind = "missing_mir_build_query_bridge"
+exact_blocker = "rustc_index is now adapter_embedded through rouwdi_rustc_upstream::rustc_index_adapter_surface. rustc_mir_build still needs the missing rouwdi_rustc_upstream::mir_handoff_payload_adapter bridge to rustc_mir_build::build over a real rustc_middle::ty::TyCtxt<'tcx> and HIR body owner; the MIR build query/session context is not exposed through the adapter crate yet."
+immediate_dependency_blocker = "rustc_middle"
+adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 
 [[frontend_stages]]
 stage = "lex"

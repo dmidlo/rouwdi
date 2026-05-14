@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 rustc_error_codes = { path = "../../third_party/rust/compiler/rustc_error_codes" }
+rustc_index = { path = "../../third_party/rust/compiler/rustc_index", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

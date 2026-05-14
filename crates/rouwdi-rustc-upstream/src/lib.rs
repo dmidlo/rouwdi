@@ -1,7 +1,11 @@
+use rustc_index::{Idx, IndexVec};
 use serde::{Deserialize, Serialize};
 
 pub const IMPORT_LEDGER_PATH: &str = "bootstrap/upstream-rustc-import.toml";
 pub const ADAPTER_CRATE: &str = "crates/rouwdi-rustc-upstream";
+pub const RUSTC_INDEX_ADAPTER_SYMBOL: &str = "rouwdi_rustc_upstream::rustc_index_adapter_surface";
+pub const MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL: &str =
+    "rouwdi_rustc_upstream::mir_handoff_payload_adapter";
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
 
@@ -50,16 +54,57 @@ pub struct UpstreamCompilerComponentImport {
     pub immediate_dependency_blocker: Option<String>,
     #[serde(default)]
     pub shared_blocker: Option<String>,
+    #[serde(default)]
+    pub adapter_symbol: Option<String>,
+    #[serde(default)]
+    pub adapter_evidence: Option<String>,
 }
 
 impl UpstreamCompilerComponentImport {
     pub fn is_imported(&self) -> bool {
-        self.import_status == "imported" || self.import_status == "upstream_backed"
+        matches!(
+            self.import_status.as_str(),
+            "imported" | "upstream_backed" | "adapter_embedded" | "adapter_partially_embedded"
+        )
+    }
+
+    pub fn adapter_embedded(&self) -> bool {
+        matches!(
+            self.import_status.as_str(),
+            "adapter_embedded" | "adapter_partially_embedded"
+        )
     }
 
     pub fn bootstrap_probe_passed(&self) -> bool {
         self.import_status == "bootstrap_probe_passed"
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcIndexAdapterSurface {
+    pub component: String,
+    pub source_path: String,
+    pub import_status: String,
+    pub adapter_symbol: String,
+    pub upstream_types: Vec<String>,
+    pub sample_len: usize,
+    pub sample_next_index: usize,
+    pub sample_indices: Vec<usize>,
+    pub sample_values: Vec<String>,
+    pub nightly_feature_surface_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirHandoffAdapterBoundary {
+    pub adapter_symbol: String,
+    pub intended_components: Vec<String>,
+    pub embedded_prerequisite_adapters: Vec<String>,
+    pub missing_adapter_symbols: Vec<String>,
+    pub required_context_objects: Vec<String>,
+    pub required_upstream_modules: Vec<String>,
+    pub blocker_component: Option<String>,
+    pub blocker_import_status: Option<String>,
+    pub blocker_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +279,69 @@ pub fn mir_handoff_resolved_blocker() -> Option<ResolvedUpstreamBlocker> {
 
 pub fn rustc_error_codes_import_probe() -> usize {
     RUSTC_ERROR_CODE_COUNT
+}
+
+pub fn rustc_index_adapter_surface() -> RustcIndexAdapterSurface {
+    let component =
+        import_component("rustc_index").expect("upstream rustc import ledger includes rustc_index");
+    let mut lanes: IndexVec<usize, &str> = IndexVec::new();
+    let parser_lane = lanes.push("rustc_parse dependency lane");
+    let mir_lane = lanes.push("rustc_middle MIR index lane");
+    let explicit_mir_lane = <usize as Idx>::new(1);
+
+    RustcIndexAdapterSurface {
+        component: component.name,
+        source_path: component.source_path,
+        import_status: component.import_status,
+        adapter_symbol: RUSTC_INDEX_ADAPTER_SYMBOL.to_owned(),
+        upstream_types: vec![
+            "rustc_index::Idx".to_owned(),
+            "rustc_index::IndexVec<usize, T>".to_owned(),
+            "rustc_index::IndexSlice<usize, T>".to_owned(),
+        ],
+        sample_len: lanes.len(),
+        sample_next_index: lanes.next_index().index(),
+        sample_indices: vec![
+            parser_lane.index(),
+            mir_lane.index(),
+            explicit_mir_lane.index(),
+        ],
+        sample_values: vec![
+            lanes[parser_lane].to_owned(),
+            lanes[explicit_mir_lane].to_owned(),
+        ],
+        nightly_feature_surface_enabled: false,
+    }
+}
+
+pub fn mir_handoff_adapter_boundary() -> MirHandoffAdapterBoundary {
+    let index_surface = rustc_index_adapter_surface();
+    let blocker = mir_handoff_blocker();
+
+    MirHandoffAdapterBoundary {
+        adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
+        intended_components: vec!["rustc_middle".to_owned(), "rustc_mir_build".to_owned()],
+        embedded_prerequisite_adapters: vec![index_surface.adapter_symbol],
+        missing_adapter_symbols: vec![MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()],
+        required_context_objects: vec![
+            "rustc_session::Session".to_owned(),
+            "rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
+            "rustc_middle::query::Providers".to_owned(),
+            "rustc_hir::OwnerId or LocalDefId for the compile unit body".to_owned(),
+        ],
+        required_upstream_modules: vec![
+            "rustc_middle::mir".to_owned(),
+            "rustc_middle::ty".to_owned(),
+            "rustc_middle::query".to_owned(),
+            "rustc_mir_build::build".to_owned(),
+            "rustc_mir_build::thir".to_owned(),
+        ],
+        blocker_component: blocker.as_ref().map(|component| component.name.clone()),
+        blocker_import_status: blocker
+            .as_ref()
+            .map(|component| component.import_status.clone()),
+        blocker_reason: blocker.map(|component| component.exact_blocker),
+    }
 }
 
 pub fn probe_command_for(component_name: &str, mode: UpstreamProbeMode) -> UpstreamProbeCommand {
@@ -427,14 +535,63 @@ mod tests {
             .components
             .iter()
             .any(|component| component.name == "rustc_index"
-                && component.bootstrap_probe_passed()
-                && !component.is_imported()));
+                && component.adapter_embedded()
+                && component.is_imported()
+                && component.adapter_symbol.as_deref() == Some(RUSTC_INDEX_ADAPTER_SYMBOL)));
         assert!(ledger
             .root_blockers
             .iter()
             .any(|blocker| blocker.id == "rustc_index"
                 && blocker.component == "rustc_index"
                 && blocker.is_cleared()));
+    }
+
+    #[test]
+    fn rustc_index_adapter_surface_exercises_real_upstream_indexvec() {
+        let surface = rustc_index_adapter_surface();
+
+        assert_eq!(surface.component, "rustc_index");
+        assert_eq!(surface.import_status, "adapter_embedded");
+        assert_eq!(surface.adapter_symbol, RUSTC_INDEX_ADAPTER_SYMBOL);
+        assert!(surface
+            .upstream_types
+            .contains(&"rustc_index::IndexVec<usize, T>".to_owned()));
+        assert_eq!(surface.sample_len, 2);
+        assert_eq!(surface.sample_next_index, 2);
+        assert_eq!(surface.sample_indices, vec![0, 1, 1]);
+        assert_eq!(
+            surface.sample_values,
+            vec![
+                "rustc_parse dependency lane".to_owned(),
+                "rustc_middle MIR index lane".to_owned()
+            ]
+        );
+        assert!(!surface.nightly_feature_surface_enabled);
+    }
+
+    #[test]
+    fn mir_handoff_boundary_names_the_next_missing_upstream_context() {
+        let boundary = mir_handoff_adapter_boundary();
+
+        assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
+        assert_eq!(boundary.blocker_component.as_deref(), Some("rustc_middle"));
+        assert_eq!(
+            boundary.blocker_import_status.as_deref(),
+            Some("bootstrap_probe_passed")
+        );
+        assert!(boundary
+            .embedded_prerequisite_adapters
+            .contains(&RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
+        assert!(boundary
+            .missing_adapter_symbols
+            .contains(&MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(boundary
+            .required_context_objects
+            .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
+        assert!(boundary
+            .blocker_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("rustc_middle::mir::Body<'tcx>")));
     }
 
     #[test]
@@ -463,36 +620,30 @@ mod tests {
         );
         assert_eq!(
             blocker.immediate_dependency_blocker.as_deref(),
-            Some("rustc_index")
+            Some("rustc_middle_session_query_context")
         );
-        assert_eq!(blocker.shared_blocker.as_deref(), Some("rustc_index"));
+        assert_eq!(blocker.shared_blocker, None);
+        assert_eq!(blocker.blocker_kind, "missing_mir_handoff_adapter_symbol");
+        assert_eq!(
+            blocker.adapter_symbol.as_deref(),
+            Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
+        );
     }
 
     #[test]
-    fn shared_blocker_graph_resolves_downstream_components() {
-        for component_name in [
-            "rustc_parse",
-            "rustc_expand",
-            "rustc_resolve",
-            "rustc_hir_analysis",
-            "rustc_borrowck",
-            "rustc_middle",
-            "rustc_mir_build",
-        ] {
-            let resolved = resolve_component_blocker(component_name).unwrap();
-            let shared_root = resolved.shared_root.unwrap();
+    fn cleared_root_blocker_keeps_stage1_probe_evidence() {
+        let shared_root = root_blocker("rustc_index").unwrap();
 
-            assert_eq!(shared_root.id, "rustc_index");
-            assert_eq!(shared_root.status, "cleared_by_bootstrap_stage1");
-            assert!(shared_root
-                .blocked_components
-                .contains(&component_name.to_owned()));
-            assert!(shared_root.probe_attempts.iter().any(|attempt| {
-                attempt.classification == "compiled"
-                    && attempt.command.contains("rustc_index")
-                    && attempt.exit_code == 0
-            }));
-        }
+        assert_eq!(shared_root.id, "rustc_index");
+        assert_eq!(shared_root.status, "cleared_by_bootstrap_stage1");
+        assert!(shared_root
+            .blocked_components
+            .contains(&"rustc_middle".to_owned()));
+        assert!(shared_root.probe_attempts.iter().any(|attempt| {
+            attempt.classification == "compiled"
+                && attempt.command.contains("rustc_index")
+                && attempt.exit_code == 0
+        }));
     }
 
     #[test]
@@ -500,8 +651,12 @@ mod tests {
         let resolved = mir_handoff_resolved_blocker().unwrap();
 
         assert_eq!(resolved.blocked_component.name, "rustc_middle");
-        assert_eq!(resolved.shared_blocker_id(), Some("rustc_index"));
-        assert!(resolved.shared_root.as_ref().unwrap().is_cleared());
+        assert_eq!(resolved.shared_blocker_id(), None);
+        assert!(resolved.shared_root.is_none());
+        assert_eq!(
+            resolved.blocked_component.adapter_symbol.as_deref(),
+            Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
+        );
     }
 
     #[test]

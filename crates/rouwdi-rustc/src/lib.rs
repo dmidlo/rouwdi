@@ -469,6 +469,9 @@ pub struct RustMirHandoffRecord {
     pub intended_upstream_path: String,
     pub required_upstream_crates: Vec<String>,
     pub required_upstream_modules: Vec<String>,
+    pub embedded_prerequisite_adapters: Vec<String>,
+    pub missing_adapter_symbols: Vec<String>,
+    pub required_context_objects: Vec<String>,
     pub upstream_mir_adapter_available: bool,
     pub blocker_category: Option<RustMirHandoffBlockerCategory>,
     pub blocker_component: Option<String>,
@@ -756,6 +759,11 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "rustc_error_codes",
             "third_party/rust/compiler/rustc_error_codes",
             "upstream compiler diagnostic code table imported through rouwdi-rustc-upstream",
+        ),
+        imported_component(
+            "rustc_index",
+            "third_party/rust/compiler/rustc_index",
+            "upstream index vector infrastructure imported through rouwdi-rustc-upstream",
         ),
         pending_component(
             "rustc_parse",
@@ -1108,6 +1116,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         .expect("upstream rustc import ledger includes rustc_middle");
     let mir_build = rouwdi_rustc_upstream::import_component("rustc_mir_build")
         .expect("upstream rustc import ledger includes rustc_mir_build");
+    let boundary = rouwdi_rustc_upstream::mir_handoff_adapter_boundary();
     let resolved_blocker = rouwdi_rustc_upstream::mir_handoff_resolved_blocker();
     let blocker = resolved_blocker
         .as_ref()
@@ -1123,21 +1132,19 @@ pub fn handoff_rust_mir_for_compile_unit(
         "rustc_span".to_owned(),
         "rustc_data_structures".to_owned(),
     ];
-    let required_upstream_modules = vec![
-        "rustc_middle::mir".to_owned(),
-        "rustc_middle::ty".to_owned(),
-        "rustc_middle::query".to_owned(),
-        "rustc_mir_build::build".to_owned(),
-        "rustc_mir_build::thir".to_owned(),
-    ];
+    let required_upstream_modules = boundary.required_upstream_modules.clone();
     let blocker_reason = if available {
         None
     } else {
         resolved_blocker.as_ref().map(|resolved| {
             let blocker = &resolved.blocked_component;
             let mut reason = format!(
-                "upstream MIR adapter import is blocked by {}: {}; see {} and adapter {}",
+                "upstream MIR adapter import is blocked by {} at {}; missing adapter symbol(s): {}; required context object(s): {}; embedded prerequisite adapter(s): {}; {}; see {} and adapter {}",
                 blocker.name,
+                boundary.adapter_symbol,
+                boundary.missing_adapter_symbols.join(", "),
+                boundary.required_context_objects.join(", "),
+                boundary.embedded_prerequisite_adapters.join(", "),
                 blocker.exact_blocker,
                 rouwdi_rustc_upstream::IMPORT_LEDGER_PATH,
                 rouwdi_rustc_upstream::ADAPTER_CRATE
@@ -1191,6 +1198,9 @@ pub fn handoff_rust_mir_for_compile_unit(
         intended_upstream_path: "rustc_middle::mir via rustc_mir_build::build".to_owned(),
         required_upstream_crates,
         required_upstream_modules,
+        embedded_prerequisite_adapters: boundary.embedded_prerequisite_adapters,
+        missing_adapter_symbols: boundary.missing_adapter_symbols,
+        required_context_objects: boundary.required_context_objects,
         upstream_mir_adapter_available: available,
         blocker_category: (!available)
             .then_some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded),
@@ -3569,18 +3579,9 @@ mod tests {
             .blocker_probe_command
             .as_deref()
             .is_some_and(|command| command.contains("rustc_middle")));
-        assert_eq!(
-            handoff.shared_blocker_component.as_deref(),
-            Some("rustc_index")
-        );
-        assert_eq!(
-            handoff.shared_blocker_status.as_deref(),
-            Some("cleared_by_bootstrap_stage1")
-        );
-        assert!(handoff
-            .shared_blocker_probe_command
-            .as_deref()
-            .is_some_and(|command| command.contains("rustc_index")));
+        assert_eq!(handoff.shared_blocker_component, None);
+        assert_eq!(handoff.shared_blocker_status, None);
+        assert_eq!(handoff.shared_blocker_probe_command, None);
         assert_eq!(
             handoff.blocker_category,
             Some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded)
@@ -3589,6 +3590,19 @@ mod tests {
         assert!(handoff
             .required_upstream_crates
             .contains(&"rustc_mir_build".to_owned()));
+        assert!(handoff
+            .embedded_prerequisite_adapters
+            .contains(&rouwdi_rustc_upstream::RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
+        assert!(handoff
+            .missing_adapter_symbols
+            .contains(&rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(handoff
+            .required_context_objects
+            .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
+        assert!(handoff
+            .blocker_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("missing adapter symbol")));
     }
 
     #[test]
@@ -4020,14 +4034,8 @@ mod tests {
             mir_handoff.blocker_component.as_deref(),
             Some("rustc_middle")
         );
-        assert_eq!(
-            mir_handoff.shared_blocker_component.as_deref(),
-            Some("rustc_index")
-        );
-        assert_eq!(
-            mir_handoff.shared_blocker_status.as_deref(),
-            Some("cleared_by_bootstrap_stage1")
-        );
+        assert_eq!(mir_handoff.shared_blocker_component, None);
+        assert_eq!(mir_handoff.shared_blocker_status, None);
         assert_eq!(
             mir_handoff.import_ledger_path,
             "bootstrap/upstream-rustc-import.toml"
@@ -4036,6 +4044,15 @@ mod tests {
             mir_handoff.import_adapter_crate,
             "crates/rouwdi-rustc-upstream"
         );
+        assert!(mir_handoff
+            .embedded_prerequisite_adapters
+            .contains(&rouwdi_rustc_upstream::RUSTC_INDEX_ADAPTER_SYMBOL.to_owned()));
+        assert!(mir_handoff
+            .missing_adapter_symbols
+            .contains(&rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned()));
+        assert!(mir_handoff
+            .required_context_objects
+            .contains(&"rustc_middle::ty::TyCtxt<'tcx>".to_owned()));
         assert!(mir_handoff.previous_stage_statuses.iter().any(|status| {
             matches!(
                 status,

@@ -1437,6 +1437,7 @@ name = "rouwdi-rustc-upstream"
 version = "0.1.0"
 dependencies = [
  "rustc_error_codes",
+ "rustc_index",
  "serde",
  "serde_json",
  "toml 0.8.23",
@@ -1504,6 +1505,22 @@ checksum = "ab03008eb631b703dd16978282ae36c73282e7922fe101a4bd072a40ecea7b8b"
 [[package]]
 name = "rustc_error_codes"
 version = "0.0.0"
+
+[[package]]
+name = "rustc_index"
+version = "0.0.0"
+dependencies = [
+ "rustc_index_macros",
+]
+
+[[package]]
+name = "rustc_index_macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "rustc_lexer"
