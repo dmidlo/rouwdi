@@ -476,6 +476,7 @@ pub struct RustMirHandoffRecord {
     pub payload_adapter_bootstrap_artifact_located: bool,
     pub payload_adapter_blocker_kind: Option<String>,
     pub payload_carrier_state: Option<String>,
+    pub payload_milestone_state: Option<String>,
     pub payload_carrier_created: bool,
     pub payload_carrier: Option<rouwdi_rustc_upstream::MirHandoffPayloadCarrier>,
     pub payload_bundle_inspected: bool,
@@ -1199,6 +1200,14 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_loader_inspection = payload_carrier
         .as_ref()
         .and_then(|carrier| carrier.loader_inspection.clone());
+    let payload_milestone_state = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.milestone_state.clone())
+        .or_else(|| {
+            payload_carrier
+                .as_ref()
+                .and_then(|carrier| carrier.milestone_state.clone())
+        });
     let payload_bundle_inspected = payload_loader_inspection
         .as_ref()
         .is_some_and(|inspection| inspection.payload_bundle_inspected);
@@ -1484,6 +1493,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_adapter_bootstrap_artifact_located: payload_adapter.bootstrap_artifact_located,
         payload_adapter_blocker_kind: payload_adapter.blocker_kind,
         payload_carrier_state,
+        payload_milestone_state,
         payload_carrier_created: payload_adapter.payload_carrier_created,
         payload_carrier,
         payload_bundle_inspected,
@@ -3941,17 +3951,25 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            payload_carrier.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.exit_code, 1);
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(!target_pack.std_available);
-        assert!(!target_pack.core_available);
-        assert!(!target_pack.alloc_available);
-        assert!(target_pack.produced_artifacts.is_empty());
+        assert_eq!(target_pack.status, "ready");
+        assert_eq!(target_pack.exit_code, 0);
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert!(target_pack.std_available);
+        assert!(target_pack.core_available);
+        assert!(target_pack.alloc_available);
+        assert!(target_pack
+            .produced_artifacts
+            .iter()
+            .any(|artifact| artifact.contains("libstd-") && artifact.ends_with(".rlib")));
         assert!(handoff.payload_bundle_inspected);
         assert_eq!(
             handoff.payload_bundle_manifest_path.as_deref(),
@@ -3997,13 +4015,20 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            handoff.payload_milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "attempted_blocked");
-        assert_eq!(bridge_attempt.blocker_kind, "missing_wasi_sdk");
-        assert_eq!(bridge_attempt.command_exit_code, Some(1));
-        assert!(bridge_attempt.exact_blocker.contains("WASI_SDK_PATH"));
+        assert_eq!(
+            bridge_attempt.blocker_kind,
+            "rustc_private_target_crates_missing"
+        );
+        assert_eq!(bridge_attempt.command_exit_code, Some(101));
+        assert!(bridge_attempt.exact_blocker.contains("rustc_middle"));
         assert!(bridge_attempt.output_artifact_identity.is_none());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4032,7 +4057,7 @@ mod tests {
             handoff.payload_next_required_artifact_format.as_deref(),
             Some("rustc_private_to_wasm_mir_handoff_bridge")
         );
-        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(1));
+        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(101));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
         assert!(handoff
             .payload_adapter_probe_command
@@ -4049,7 +4074,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

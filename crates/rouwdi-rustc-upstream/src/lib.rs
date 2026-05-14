@@ -115,6 +115,8 @@ pub struct RustcIndexAdapterSurface {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirHandoffAdapterBoundary {
     pub adapter_symbol: String,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub payload_adapter_status: MirHandoffPayloadAdapterStatus,
     pub payload_adapter_available: bool,
     pub payload_adapter_feature: String,
@@ -199,6 +201,8 @@ pub struct BootstrapMirAdapterArtifactRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirHandoffPayloadCarrier {
     pub carrier_id: String,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub state: MirHandoffPayloadCarrierState,
     pub adapter_symbol: String,
     pub bootstrap_adapter_crate: String,
@@ -248,6 +252,8 @@ pub struct MirPayloadExportManifest {
     #[serde(default)]
     pub loadability_status: Option<CompilerPayloadLoadabilityStatus>,
     #[serde(default)]
+    pub milestone_state: Option<String>,
+    #[serde(default)]
     pub exact_loader_blocker: Option<String>,
     #[serde(default)]
     pub next_required_artifact_format: Option<String>,
@@ -280,6 +286,8 @@ pub struct CompilerPayloadAbiReference {
     pub bridge_status: String,
     pub bridge_blocker_kind: String,
     pub bridge_blocker_reason: String,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +300,8 @@ pub struct CompilerPayloadAbiManifest {
     pub primary_format: CompilerPayloadAbiFormat,
     pub supported_formats: Vec<CompilerPayloadAbiFormat>,
     pub selected_route: String,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub symbol_prefix: String,
     pub payload_identity: CompilerPayloadAbiIdentity,
     pub required_upstream: CompilerPayloadAbiRequiredUpstream,
@@ -426,6 +436,8 @@ pub struct CompilerPayloadAbiBridge {
     pub output_artifact_identity: Option<CompilerPayloadBridgeArtifactIdentity>,
     pub target_triple: String,
     pub status: String,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub blocker_kind: String,
     pub blocker_reason: String,
     pub exact_blocker: String,
@@ -437,6 +449,12 @@ pub struct CompilerPayloadTargetPackProvisioning {
     pub target_triple: String,
     pub bootstrap_command: String,
     pub workdir: String,
+    #[serde(default)]
+    pub setup_path: Option<String>,
+    #[serde(default)]
+    pub wasi_sdk_root: Option<String>,
+    #[serde(default)]
+    pub wasi_root: Option<String>,
     pub attempted: bool,
     pub status: String,
     pub exit_code: i32,
@@ -524,6 +542,8 @@ pub struct CompilerPayloadManifestIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompilerPayloadBundle {
     pub bundle_format_version: u32,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub payload_manifest: CompilerPayloadManifestIdentity,
     pub compiler_payload_abi_manifest: Option<CompilerPayloadManifestIdentity>,
     pub compiler_payload_abi: Option<CompilerPayloadAbiManifest>,
@@ -660,6 +680,8 @@ pub struct CompilerPayloadArtifactInspection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompilerPayloadLoaderInspection {
     pub payload_bundle_inspected: bool,
+    #[serde(default)]
+    pub milestone_state: Option<String>,
     pub bundle_manifest: CompilerPayloadManifestIdentity,
     pub abi_manifest: Option<CompilerPayloadManifestIdentity>,
     pub bridge_attempt: Option<CompilerPayloadAbiBridge>,
@@ -1033,6 +1055,19 @@ pub fn compiler_payload_bundle_from_manifest(
 
     CompilerPayloadBundle {
         bundle_format_version: manifest.bundle_format_version.unwrap_or(1),
+        milestone_state: manifest
+            .milestone_state
+            .clone()
+            .or_else(|| {
+                compiler_payload_abi
+                    .as_ref()
+                    .and_then(|abi| abi.milestone_state.clone())
+            })
+            .or_else(|| {
+                bridge_attempt
+                    .as_ref()
+                    .and_then(|bridge| bridge.milestone_state.clone())
+            }),
         payload_manifest: CompilerPayloadManifestIdentity {
             path: MIR_PAYLOAD_EXPORT_MANIFEST_PATH.to_owned(),
             schema_version: manifest.schema_version,
@@ -1116,6 +1151,7 @@ pub fn inspect_compiler_payload_bundle(
 
     CompilerPayloadLoaderInspection {
         payload_bundle_inspected: true,
+        milestone_state: bundle.milestone_state.clone(),
         bundle_manifest: bundle.payload_manifest.clone(),
         abi_manifest,
         bridge_attempt,
@@ -1455,6 +1491,9 @@ pub fn mir_handoff_payload_carrier() -> Option<MirHandoffPayloadCarrier> {
             probe.stage.unwrap_or(1),
             artifact_kind
         ),
+        milestone_state: payload_bundle
+            .as_ref()
+            .and_then(|bundle| bundle.milestone_state.clone()),
         state,
         adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
         bootstrap_adapter_crate: probe.adapter_crate,
@@ -1712,6 +1751,10 @@ pub fn mir_handoff_adapter_boundary() -> MirHandoffAdapterBoundary {
 
     MirHandoffAdapterBoundary {
         adapter_symbol: MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL.to_owned(),
+        milestone_state: payload_adapter
+            .payload_carrier
+            .as_ref()
+            .and_then(|carrier| carrier.milestone_state.clone()),
         payload_adapter_status: payload_adapter.status,
         payload_adapter_available: payload_adapter.adapter_available,
         payload_adapter_feature: payload_adapter.cargo_feature.clone(),
@@ -2064,17 +2107,37 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            carrier.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.exit_code, 1);
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(!target_pack.std_available);
-        assert!(!target_pack.core_available);
-        assert!(!target_pack.alloc_available);
-        assert!(target_pack.produced_artifacts.is_empty());
+        assert_eq!(target_pack.status, "ready");
+        assert_eq!(target_pack.exit_code, 0);
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert_eq!(
+            target_pack.setup_path.as_deref(),
+            Some("bootstrap/provision-wasi-sdk.ps1")
+        );
+        assert!(target_pack.std_available);
+        assert!(target_pack.core_available);
+        assert!(target_pack.alloc_available);
+        assert!(target_pack
+            .produced_artifacts
+            .iter()
+            .any(|artifact| artifact.contains("libcore-") && artifact.ends_with(".rlib")));
+        assert!(target_pack
+            .produced_artifacts
+            .iter()
+            .any(|artifact| artifact.contains("liballoc-") && artifact.ends_with(".rlib")));
+        assert!(target_pack
+            .produced_artifacts
+            .iter()
+            .any(|artifact| artifact.contains("libstd-") && artifact.ends_with(".rlib")));
         assert_eq!(
             carrier.loader_inspection.as_ref().unwrap().load_strategy,
             CompilerPayloadLoadStrategy::InspectRlibArchive
@@ -2082,9 +2145,8 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(
-                |command| command.contains("library/std") && command.contains("wasm32-wasip1")
-            ));
+            .is_some_and(|command| command.contains("rouwdi-mir-adapter-probe")
+                && command.contains("wasm32-wasip1")));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -2165,17 +2227,22 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            carrier.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("WASI_SDK_PATH")));
+            .is_some_and(|reason| reason.contains("rustc_private crates")));
         assert!(carrier.payload_bundle.is_some());
         let target_pack = carrier.target_pack.as_ref().unwrap();
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(target_pack.exact_blocker.contains("wasi-root"));
-        assert!(target_pack.produced_artifacts.is_empty());
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert_eq!(target_pack.status, "ready");
+        assert!(target_pack.exact_blocker.contains("exited 0"));
+        assert!(target_pack.produced_artifacts.len() >= 6);
         assert_eq!(
             carrier
                 .loader_inspection
@@ -2185,7 +2252,7 @@ mod tests {
                 .artifact_class,
             CompilerPayloadArtifactClass::RlibArchive
         );
-        assert_eq!(carrier.next_artifact_command_exit_code, Some(1));
+        assert_eq!(carrier.next_artifact_command_exit_code, Some(101));
         assert_eq!(
             carrier.export_manifest_path.as_deref(),
             Some(MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
@@ -2237,7 +2304,14 @@ mod tests {
             CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
         );
         assert_eq!(abi.bridge_status, "attempted_blocked");
-        assert_eq!(abi.bridge_blocker_kind, "missing_wasi_sdk");
+        assert_eq!(
+            abi.bridge_blocker_kind,
+            "rustc_private_target_crates_missing"
+        );
+        assert_eq!(
+            abi.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+        );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert_eq!(
@@ -2245,20 +2319,21 @@ mod tests {
             "python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
         );
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.exit_code, 1);
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(target_pack.produced_artifacts.is_empty());
-        assert!(!target_pack.std_available);
-        assert!(!target_pack.core_available);
-        assert!(!target_pack.alloc_available);
+        assert_eq!(target_pack.status, "ready");
+        assert_eq!(target_pack.exit_code, 0);
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert!(!target_pack.produced_artifacts.is_empty());
+        assert!(target_pack.std_available);
+        assert!(target_pack.core_available);
+        assert!(target_pack.alloc_available);
         let bridge = manifest.bridge.as_ref().unwrap();
         assert_eq!(
             bridge.strategy,
             "compile_rustc_private_mir_adapter_to_wasm32_wasip1_under_bootstrap"
         );
-        assert_eq!(bridge.command_exit_code, Some(1));
+        assert_eq!(bridge.command_exit_code, Some(101));
         assert_eq!(bridge.status, "attempted_blocked");
-        assert_eq!(bridge.blocker_kind, "missing_wasi_sdk");
+        assert_eq!(bridge.blocker_kind, "rustc_private_target_crates_missing");
         assert!(bridge
             .input_artifact_identities
             .iter()
@@ -2326,16 +2401,31 @@ mod tests {
             .contains(&"rustc_private_bridge_status".to_owned()));
         assert_eq!(manifest.versioning.compatibility, "major_version_exact");
         assert_eq!(manifest.bridge.status, "attempted_blocked");
-        assert_eq!(manifest.bridge.blocker_kind, "missing_wasi_sdk");
+        assert_eq!(
+            manifest.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            manifest.bridge.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            manifest.bridge.blocker_kind,
+            "rustc_private_target_crates_missing"
+        );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.status, "attempted_blocked");
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(!target_pack.std_available);
-        assert!(!target_pack.core_available);
-        assert!(!target_pack.alloc_available);
-        assert_eq!(manifest.bridge.command_exit_code, Some(1));
+        assert_eq!(target_pack.status, "ready");
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert!(target_pack.std_available);
+        assert!(target_pack.core_available);
+        assert!(target_pack.alloc_available);
+        assert!(target_pack
+            .produced_artifacts
+            .iter()
+            .any(|artifact| artifact.ends_with(".rlib")));
+        assert_eq!(manifest.bridge.command_exit_code, Some(101));
         assert_eq!(manifest.bridge.target_triple, "wasm32-wasip1");
         assert!(manifest
             .bridge
@@ -2352,6 +2442,24 @@ mod tests {
             .any(|command| command.classification == "missing_wasi_sdk"
                 && command.exit_code == 1
                 && command.evidence.contains("WASI_SDK_PATH")));
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
+            .any(
+                |command| command.classification == "wasm32_wasip1_target_pack_ready"
+                    && command.exit_code == 0
+                    && command.evidence.contains("core, alloc, and std")
+            ));
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
+            .any(
+                |command| command.classification == "rustc_private_target_crates_missing"
+                    && command.exit_code == 101
+                    && command.evidence.contains("rustc_middle")
+            ));
         assert!(manifest.bridge.output_artifact_identity.is_none());
 
         let required_symbols = manifest.required_symbol_names();
@@ -2376,7 +2484,10 @@ mod tests {
             CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
         );
         assert_eq!(route.bridge_status, "attempted_blocked");
-        assert_eq!(route.blocker_kind.as_deref(), Some("missing_wasi_sdk"));
+        assert_eq!(
+            route.blocker_kind.as_deref(),
+            Some("rustc_private_target_crates_missing")
+        );
         assert!(!route.loadable_as_full_payload);
 
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2454,13 +2565,17 @@ mod tests {
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "attempted_blocked");
-        assert_eq!(bridge.blocker_kind, "missing_wasi_sdk");
+        assert_eq!(bridge.blocker_kind, "rustc_private_target_crates_missing");
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(target_pack
-            .exact_blocker
-            .contains("zero produced artifacts"));
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert!(target_pack.std_available);
+        assert!(target_pack.core_available);
+        assert!(target_pack.alloc_available);
+        assert_eq!(
+            bundle.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+        );
         assert!(bridge.output_artifact_identity.is_none());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
@@ -2584,19 +2699,51 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("missing_wasi_sdk")
+            Some("rustc_private_target_crates_missing")
+        );
+        assert_eq!(
+            inspection.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
-        assert_eq!(target_pack.blocker_kind, "missing_wasi_sdk");
-        assert!(target_pack.exact_blocker.contains("WASI_SDK_PATH"));
+        assert_eq!(target_pack.status, "ready");
+        assert_eq!(target_pack.blocker_kind, "none");
+        assert!(target_pack.exact_blocker.contains("exited 0"));
         let bridge = inspection.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "attempted_blocked");
-        assert_eq!(bridge.command_exit_code, Some(1));
-        assert!(bridge.exact_blocker.contains("WASI_SDK_PATH"));
+        assert_eq!(bridge.command_exit_code, Some(101));
+        assert!(bridge.exact_blocker.contains("rustc_middle"));
         assert!(inspection
             .exact_loader_blocker
             .contains("must not execute or fake-call"));
+    }
+
+    #[test]
+    fn mir_payload_boundary_rejects_fake_mir_and_fake_wasm_payload_claims() {
+        let manifest = compiler_payload_abi_manifest();
+        let bundle = mir_compiler_payload_bundle();
+        let inspection = inspect_compiler_payload_bundle(&bundle, None, None);
+
+        assert!(manifest
+            .input_contract
+            .notes
+            .contains("does not serialize or fabricate TyCtxt, Providers, or MIR Body"));
+        assert!(manifest
+            .output_contract
+            .notes
+            .contains("must not emit this output until real rustc MIR"));
+        assert!(manifest.bridge.output_artifact_identity.is_none());
+        assert!(manifest
+            .artifact_routes
+            .iter()
+            .all(|route| !route.loadable_as_full_payload));
+        assert_eq!(
+            inspection.loadability_status,
+            CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
+        );
+        assert!(!inspection.loadable_by_rouwdi_wasm);
+        assert!(inspection.exact_loader_blocker.contains("not execute"));
     }
 
     #[test]
@@ -2604,6 +2751,10 @@ mod tests {
         let boundary = mir_handoff_adapter_boundary();
 
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
+        assert_eq!(
+            boundary.milestone_state.as_deref(),
+            Some("wasm32-wasip1_target_pack_ready_bridge_blocked_at_rustc_private_target_crates_missing")
+        );
         assert_eq!(
             boundary.payload_adapter_status,
             MirHandoffPayloadAdapterStatus::PayloadExportedLoadBlocked
@@ -2660,7 +2811,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "missing_wasi_sdk"
+                && component.blocker_kind == "rustc_private_target_crates_missing"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }
