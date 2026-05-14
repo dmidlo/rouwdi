@@ -8,9 +8,9 @@ target_triple = "x86_64-pc-windows-msvc"
 profile = "release"
 loadable_by_rouwdi_wasm = false
 loader_blocker_kind = "compiler_payload_bundle_inspected_rlib_archive_not_loadable"
-loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported rlib remains not loadable by rouwdi.wasm. Compiler-payload ABI v1 and the selected wasm32-wasip1 shim route now exist, but the rustc-private-to-Wasm MIR bridge is missing."
+loader_blocker_reason = "The bootstrap build exports a real Rust rlib for rouwdi_mir_adapter_probe and the rouwdi compiler-payload loader can inspect the bundle, classify the rlib archive, and verify the recorded identities. The exported rlib remains not loadable by rouwdi.wasm. Compiler-payload ABI v1 and the selected wasm32-wasip1 shim route exist, and the first rustc-private-to-Wasm bridge attempt is precisely blocked by the missing bootstrap wasm32-wasip1 target pack."
 loadability_status = "unsupported_compiler_private_artifact"
-exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI artifact. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. The next required artifact route is no longer generic ABI definition; it is the missing bridge connecting the wasm32-wasip1 ABI shim to the rustc-private MIR payload."
+exact_loader_blocker = "The bundle payload is a hash-verifiable rustc-private rlib archive plus rmeta metadata, not a loadable compiler payload ABI artifact. rouwdi.wasm may inspect and reject it, but must not execute or fake-call it. The current bridge attempt tried to compile the real rustc-private adapter toward wasm32-wasip1 and failed with `error[E0463]: can't find crate for std`; no fake Wasm payload is loadable."
 next_required_artifact_format = "rustc_private_to_wasm_mir_handoff_bridge"
 upstream_type_surface = [
   "rustc_middle::mir::Body<'tcx>",
@@ -45,10 +45,65 @@ abi_name = "rouwdi.compiler-payload.mir-handoff"
 abi_version = 1
 supported_stage = "mir_handoff"
 selected_route = "wasm32_wasip1_module"
-selected_route_status = "shim_emitted_bridge_missing"
-bridge_status = "missing"
-bridge_blocker_kind = "rustc_private_to_wasm_bridge_missing"
-bridge_blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols, but no bridge connects it to the rustc-private stage1 rlib that owns TyCtxt, Providers, and real MIR Body access."
+selected_route_status = "shim_emitted_bridge_attempted_blocked"
+bridge_status = "attempted_blocked"
+bridge_blocker_kind = "bootstrap_target_pack_missing_for_wasm_payload"
+bridge_blocker_reason = "The wasm32-wasip1 ABI shim compiles and exposes v1 symbols. The first real bridge attempt used the bootstrap MIR adapter crate and targeted wasm32-wasip1, but the bootstrap sysroot lacks the wasm32-wasip1 std target pack, so no bridge payload was produced."
+
+[bridge]
+rustc_private_payload = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
+rustc_private_artifact_format = "rlib"
+strategy = "compile_rustc_private_mir_adapter_to_wasm32_wasip1_under_bootstrap"
+command_attempted = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
+command_exit_code = 1
+command_evidence = "error[E0463]: can't find crate for `std`"
+target_triple = "wasm32-wasip1"
+status = "attempted_blocked"
+blocker_kind = "bootstrap_target_pack_missing_for_wasm_payload"
+blocker_reason = "The direct bootstrap cargo bridge attempt targeted wasm32-wasip1 through the real MIR adapter crate and failed before rustc_private linking because the bootstrap sysroot has no wasm32-wasip1 std target pack. The x.py target command was also attempted and exited 0, but the registered ToolRustcPrivate step stayed host-bound and emitted only the x86_64 stage1 rlib."
+exact_blocker = "Direct bridge command exited 1 with `error[E0463]: can't find crate for std` while compiling third_party/rust/src/tools/rouwdi-mir-adapter-probe for wasm32-wasip1. No TyCtxt, Providers, Body<'tcx>, MIR, Wasm component, static link success, or loadable payload is fabricated."
+next_command = "python x.py build library/std --stage 1 --target wasm32-wasip1 -v"
+
+[[bridge.commands_attempted]]
+command = "python x.py build src/tools/rouwdi-mir-adapter-probe --stage 1 --target wasm32-wasip1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+classification = "host_bound_no_wasm_output"
+evidence = "Build completed successfully, but the bootstrap log built stage1 rouwdi_mir_adapter_probe for x86_64-pc-windows-msvc and no wasm32-wasip1 bridge artifact appeared under third_party/rust/build."
+
+[[bridge.commands_attempted]]
+command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe build --manifest-path C:\\rouwdi\\third_party\\rust\\src\\tools\\rouwdi-mir-adapter-probe\\Cargo.toml --target wasm32-wasip1 --release --message-format short"
+workdir = "third_party/rust"
+exit_code = 1
+classification = "bootstrap_target_pack_missing"
+evidence = "error[E0463]: can't find crate for `std`; error: could not compile `rouwdi-mir-adapter-probe` (lib) due to 1 previous error"
+
+[[bridge.input_artifact_identities]]
+role = "wasm_abi_shim"
+artifact_format = "wasm_module"
+path = "target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm"
+sha256 = "c6c4137b52f718bce4aaced57545e48125468abdc94c239c52aa67250e38a16f"
+size_bytes = 1364
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = false
+
+[[bridge.input_artifact_identities]]
+role = "bootstrap_mir_adapter_rlib"
+artifact_format = "rlib"
+path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/librouwdi_mir_adapter_probe.rlib"
+sha256 = "3408dea65b1695dae215b62e886a9f56980c5c1d8fb17a2551ce1ed751cdc19c"
+size_bytes = 54210
+target_triple = "x86_64-pc-windows-msvc"
+loadable_by_rouwdi_wasm = false
+
+[[bridge.input_artifact_identities]]
+role = "bootstrap_mir_adapter_rmeta"
+artifact_format = "rmeta"
+path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-tools/x86_64-pc-windows-msvc/release/deps/librouwdi_mir_adapter_probe-346edc2538de29f5.rmeta"
+sha256 = "58843be7fbc65b466b03e365fba652be5399165bf0fb601b0eab6315efa1d4e1"
+size_bytes = 27097
+target_triple = "x86_64-pc-windows-msvc"
+loadable_by_rouwdi_wasm = false
 
 [[loadable_export_routes]]
 route = "explicit_rouwdi_compiler_payload_bundle"
@@ -89,8 +144,8 @@ artifact_format = "wasm_module"
 command = "cargo build -p rouwdi-compiler-payload-abi --target wasm32-wasip1 --release"
 attempted = true
 status = "attempted_blocked"
-blocker_kind = "rustc_private_to_wasm_bridge_missing"
-exact_blocker = "The selected wasm32-wasip1 route now emits a thin rouwdi compiler-payload ABI shim at target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. It is not a complete MIR payload because the rustc-private adapter still exists only as a bootstrap rlib and no bridge connects TyCtxt, Providers, or real MIR Body access into the Wasm ABI."
+blocker_kind = "bootstrap_target_pack_missing_for_wasm_payload"
+exact_blocker = "The selected wasm32-wasip1 route emits a thin rouwdi compiler-payload ABI shim at target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm. The first real bridge attempt consumed the rustc-private adapter identity and failed while targeting wasm32-wasip1 because the bootstrap sysroot lacks std for that target."
 
 [[loadable_export_routes]]
 route = "wasm32_wasip2_component"

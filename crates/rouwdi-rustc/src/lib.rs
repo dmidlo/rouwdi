@@ -498,6 +498,7 @@ pub struct RustMirHandoffRecord {
     pub payload_abi_bridge_status: Option<String>,
     pub payload_abi_bridge_blocker_kind: Option<String>,
     pub payload_abi_bridge_blocker_reason: Option<String>,
+    pub payload_bridge_attempt: Option<rouwdi_rustc_upstream::CompilerPayloadAbiBridge>,
     pub payload_loader_exported_artifact_class:
         Option<rouwdi_rustc_upstream::CompilerPayloadArtifactClass>,
     pub payload_loader_metadata_artifact_class:
@@ -1259,6 +1260,9 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_abi_bridge_blocker_reason = payload_loader_inspection
         .as_ref()
         .and_then(|inspection| inspection.abi_bridge_blocker_reason.clone());
+    let payload_bridge_attempt = payload_loader_inspection
+        .as_ref()
+        .and_then(|inspection| inspection.bridge_attempt.clone());
     let payload_loader_exported_artifact_class = payload_loader_inspection
         .as_ref()
         .map(|inspection| inspection.exported_payload.artifact_class);
@@ -1482,6 +1486,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_abi_bridge_status,
         payload_abi_bridge_blocker_kind,
         payload_abi_bridge_blocker_reason,
+        payload_bridge_attempt,
         payload_loader_exported_artifact_class,
         payload_loader_metadata_artifact_class,
         payload_loader_exported_hash_status,
@@ -3915,7 +3920,7 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
         assert!(handoff.payload_bundle_inspected);
         assert_eq!(
@@ -3945,7 +3950,7 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_route_status,
-            Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+            Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked)
         );
         assert_eq!(
             handoff.payload_abi_route_artifact_format,
@@ -3958,12 +3963,23 @@ mod tests {
         assert_eq!(handoff.payload_abi_route_attempted, Some(true));
         assert_eq!(
             handoff.payload_abi_bridge_status.as_deref(),
-            Some("missing")
+            Some("attempted_blocked")
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
+        let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
+        assert_eq!(bridge_attempt.status, "attempted_blocked");
+        assert_eq!(
+            bridge_attempt.blocker_kind,
+            "bootstrap_target_pack_missing_for_wasm_payload"
+        );
+        assert_eq!(bridge_attempt.command_exit_code, Some(1));
+        assert!(bridge_attempt
+            .exact_blocker
+            .contains("can't find crate for std"));
+        assert!(bridge_attempt.output_artifact_identity.is_none());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
             Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)
@@ -3991,7 +4007,7 @@ mod tests {
             handoff.payload_next_required_artifact_format.as_deref(),
             Some("rustc_private_to_wasm_mir_handoff_bridge")
         );
-        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
+        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(1));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
         assert!(handoff
             .payload_adapter_probe_command
@@ -4008,7 +4024,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

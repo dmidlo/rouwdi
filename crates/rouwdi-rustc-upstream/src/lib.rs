@@ -259,6 +259,8 @@ pub struct MirPayloadExportManifest {
     #[serde(default)]
     pub compiler_payload_abi: Option<CompilerPayloadAbiReference>,
     #[serde(default)]
+    pub bridge: Option<CompilerPayloadAbiBridge>,
+    #[serde(default)]
     pub loadable_export_routes: Vec<CompilerPayloadExportRoute>,
     pub exported_payload: BootstrapMirAdapterArtifactRecord,
     pub metadata_artifact: BootstrapMirAdapterArtifactRecord,
@@ -405,9 +407,44 @@ pub struct CompilerPayloadAbiVersioning {
 pub struct CompilerPayloadAbiBridge {
     pub rustc_private_payload: String,
     pub rustc_private_artifact_format: String,
+    pub strategy: String,
+    pub command_attempted: String,
+    #[serde(default)]
+    pub command_exit_code: Option<i32>,
+    #[serde(default)]
+    pub command_evidence: Option<String>,
+    #[serde(default)]
+    pub commands_attempted: Vec<CompilerPayloadBridgeCommand>,
+    #[serde(default)]
+    pub input_artifact_identities: Vec<CompilerPayloadBridgeArtifactIdentity>,
+    #[serde(default)]
+    pub output_artifact_identity: Option<CompilerPayloadBridgeArtifactIdentity>,
+    pub target_triple: String,
     pub status: String,
     pub blocker_kind: String,
     pub blocker_reason: String,
+    pub exact_blocker: String,
+    pub next_command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadBridgeCommand {
+    pub command: String,
+    pub workdir: String,
+    pub exit_code: i32,
+    pub classification: String,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadBridgeArtifactIdentity {
+    pub role: String,
+    pub artifact_format: String,
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub target_triple: String,
+    pub loadable_by_rouwdi_wasm: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,7 +485,7 @@ pub enum CompilerPayloadAbiRouteStatus {
     Planned,
     Blocked,
     AttemptedBlocked,
-    ShimEmittedBridgeMissing,
+    ShimEmittedBridgeAttemptedBlocked,
     Emitted,
 }
 
@@ -465,6 +502,7 @@ pub struct CompilerPayloadBundle {
     pub payload_manifest: CompilerPayloadManifestIdentity,
     pub compiler_payload_abi_manifest: Option<CompilerPayloadManifestIdentity>,
     pub compiler_payload_abi: Option<CompilerPayloadAbiManifest>,
+    pub bridge_attempt: Option<CompilerPayloadAbiBridge>,
     pub selected_abi_route: Option<CompilerPayloadAbiRoute>,
     pub exported_rlib_identity: BootstrapMirAdapterArtifactRecord,
     pub metadata_artifact_identity: BootstrapMirAdapterArtifactRecord,
@@ -598,6 +636,7 @@ pub struct CompilerPayloadLoaderInspection {
     pub payload_bundle_inspected: bool,
     pub bundle_manifest: CompilerPayloadManifestIdentity,
     pub abi_manifest: Option<CompilerPayloadManifestIdentity>,
+    pub bridge_attempt: Option<CompilerPayloadAbiBridge>,
     pub abi_name: Option<String>,
     pub abi_version: Option<u32>,
     pub abi_supported_stage: Option<CompilerPayloadSupportedStage>,
@@ -955,6 +994,10 @@ pub fn compiler_payload_bundle_from_manifest(
     let selected_abi_route = compiler_payload_abi
         .as_ref()
         .and_then(|abi| abi.selected_artifact_route().cloned());
+    let bridge_attempt = manifest
+        .bridge
+        .clone()
+        .or_else(|| compiler_payload_abi.as_ref().map(|abi| abi.bridge.clone()));
 
     CompilerPayloadBundle {
         bundle_format_version: manifest.bundle_format_version.unwrap_or(1),
@@ -965,6 +1008,7 @@ pub fn compiler_payload_bundle_from_manifest(
         },
         compiler_payload_abi_manifest,
         compiler_payload_abi,
+        bridge_attempt,
         selected_abi_route,
         exported_rlib_identity: manifest.exported_payload.clone(),
         metadata_artifact_identity: manifest.metadata_artifact.clone(),
@@ -1032,11 +1076,16 @@ pub fn inspect_compiler_payload_bundle(
     let abi_manifest = bundle.compiler_payload_abi_manifest.clone();
     let abi = bundle.compiler_payload_abi.as_ref();
     let selected_abi_route = bundle.selected_abi_route.as_ref();
+    let bridge_attempt = bundle
+        .bridge_attempt
+        .clone()
+        .or_else(|| abi.map(|abi| abi.bridge.clone()));
 
     CompilerPayloadLoaderInspection {
         payload_bundle_inspected: true,
         bundle_manifest: bundle.payload_manifest.clone(),
         abi_manifest,
+        bridge_attempt,
         abi_name: abi.map(|abi| abi.abi_name.clone()),
         abi_version: abi.map(|abi| abi.abi_version),
         abi_supported_stage: abi.map(|abi| abi.supported_stage),
@@ -1837,6 +1886,64 @@ pub fn classify_probe_output(exit_code: i32, combined_output: &str) -> UpstreamP
 mod tests {
     use super::*;
 
+    fn wasm_export_names(bytes: &[u8]) -> Vec<String> {
+        assert!(bytes.len() >= 8);
+        assert_eq!(&bytes[..4], b"\0asm");
+        let mut offset = 8;
+        while offset < bytes.len() {
+            let section_id = bytes[offset];
+            offset += 1;
+            let (section_len, next) = read_wasm_varuint(bytes, offset);
+            offset = next;
+            let section_end = offset + section_len as usize;
+            assert!(section_end <= bytes.len());
+            if section_id == 7 {
+                return parse_wasm_export_section(bytes, offset, section_end);
+            }
+            offset = section_end;
+        }
+        Vec::new()
+    }
+
+    fn parse_wasm_export_section(
+        bytes: &[u8],
+        mut offset: usize,
+        section_end: usize,
+    ) -> Vec<String> {
+        let (count, next) = read_wasm_varuint(bytes, offset);
+        offset = next;
+        let mut exports = Vec::new();
+        for _ in 0..count {
+            let (name_len, name_start) = read_wasm_varuint(bytes, offset);
+            let name_end = name_start + name_len as usize;
+            assert!(name_end < section_end);
+            exports.push(
+                std::str::from_utf8(&bytes[name_start..name_end])
+                    .unwrap()
+                    .to_owned(),
+            );
+            offset = name_end + 1;
+            let (_index, next) = read_wasm_varuint(bytes, offset);
+            offset = next;
+        }
+        exports
+    }
+
+    fn read_wasm_varuint(bytes: &[u8], mut offset: usize) -> (u32, usize) {
+        let mut result = 0u32;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[offset];
+            offset += 1;
+            result |= ((byte & 0x7f) as u32) << shift;
+            if byte & 0x80 == 0 {
+                return (result, offset);
+            }
+            shift += 7;
+            assert!(shift <= 28);
+        }
+    }
+
     #[test]
     fn ledger_is_machine_readable_and_names_the_pinned_tree() {
         let ledger = import_ledger();
@@ -1919,7 +2026,7 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
         assert_eq!(
             carrier.loader_inspection.as_ref().unwrap().load_strategy,
@@ -1928,8 +2035,9 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(|command| command.contains("rouwdi-compiler-payload-abi")
-                && command.contains("wasm32-wasip1")));
+            .is_some_and(
+                |command| command.contains("library/std") && command.contains("wasm32-wasip1")
+            ));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -2010,12 +2118,12 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("wasm32-wasip1 ABI shim")));
+            .is_some_and(|reason| reason.contains("can't find crate for std")));
         assert!(carrier.payload_bundle.is_some());
         assert_eq!(
             carrier
@@ -2026,7 +2134,7 @@ mod tests {
                 .artifact_class,
             CompilerPayloadArtifactClass::RlibArchive
         );
-        assert_eq!(carrier.next_artifact_command_exit_code, Some(0));
+        assert_eq!(carrier.next_artifact_command_exit_code, Some(1));
         assert_eq!(
             carrier.export_manifest_path.as_deref(),
             Some(MIR_PAYLOAD_EXPORT_MANIFEST_PATH)
@@ -2075,13 +2183,30 @@ mod tests {
         assert_eq!(abi.selected_route, "wasm32_wasip1_module");
         assert_eq!(
             abi.selected_route_status,
-            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
         );
-        assert_eq!(abi.bridge_status, "missing");
+        assert_eq!(abi.bridge_status, "attempted_blocked");
         assert_eq!(
             abi.bridge_blocker_kind,
-            "rustc_private_to_wasm_bridge_missing"
+            "bootstrap_target_pack_missing_for_wasm_payload"
         );
+        let bridge = manifest.bridge.as_ref().unwrap();
+        assert_eq!(
+            bridge.strategy,
+            "compile_rustc_private_mir_adapter_to_wasm32_wasip1_under_bootstrap"
+        );
+        assert_eq!(bridge.command_exit_code, Some(1));
+        assert_eq!(bridge.status, "attempted_blocked");
+        assert_eq!(
+            bridge.blocker_kind,
+            "bootstrap_target_pack_missing_for_wasm_payload"
+        );
+        assert!(bridge
+            .input_artifact_identities
+            .iter()
+            .any(|artifact| artifact.role == "bootstrap_mir_adapter_rlib"
+                && artifact.artifact_format == "rlib"));
+        assert!(bridge.output_artifact_identity.is_none());
         assert!(manifest
             .loadable_export_routes
             .iter()
@@ -2134,15 +2259,30 @@ mod tests {
             .known_codes
             .contains(&"real_mir_payload_not_executable_yet".to_owned()));
         assert!(manifest
+            .error_contract
+            .known_codes
+            .contains(&"bootstrap_target_pack_missing_for_wasm_payload".to_owned()));
+        assert!(manifest
             .proof_metadata
             .emitted_fields
             .contains(&"rustc_private_bridge_status".to_owned()));
         assert_eq!(manifest.versioning.compatibility, "major_version_exact");
-        assert_eq!(manifest.bridge.status, "missing");
+        assert_eq!(manifest.bridge.status, "attempted_blocked");
         assert_eq!(
             manifest.bridge.blocker_kind,
-            "rustc_private_to_wasm_bridge_missing"
+            "bootstrap_target_pack_missing_for_wasm_payload"
         );
+        assert_eq!(manifest.bridge.command_exit_code, Some(1));
+        assert_eq!(manifest.bridge.target_triple, "wasm32-wasip1");
+        assert!(manifest
+            .bridge
+            .commands_attempted
+            .iter()
+            .any(
+                |command| command.classification == "bootstrap_target_pack_missing"
+                    && command.exit_code == 1
+            ));
+        assert!(manifest.bridge.output_artifact_identity.is_none());
 
         let required_symbols = manifest.required_symbol_names();
         assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL));
@@ -2153,7 +2293,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_abi_route_is_a_real_wasm_shim_with_bridge_missing() {
+    fn selected_abi_route_is_a_real_wasm_shim_with_bridge_attempt_recorded() {
         let manifest = compiler_payload_abi_manifest();
         let route = manifest.selected_artifact_route().unwrap();
 
@@ -2163,12 +2303,12 @@ mod tests {
         assert!(route.attempted);
         assert_eq!(
             route.status,
-            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
         );
-        assert_eq!(route.bridge_status, "missing");
+        assert_eq!(route.bridge_status, "attempted_blocked");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -2182,6 +2322,13 @@ mod tests {
         );
 
         assert!(bytes.starts_with(b"\0asm"));
+        let exports = wasm_export_names(&bytes);
+        for symbol in manifest.required_symbol_names() {
+            assert!(
+                exports.iter().any(|export| export == symbol),
+                "missing required ABI export {symbol}"
+            );
+        }
         assert_eq!(route.artifact_size_bytes, Some(bytes.len() as u64));
         let artifact_hash = sha256_hex(&bytes);
         assert_eq!(
@@ -2236,8 +2383,15 @@ mod tests {
         );
         assert_eq!(
             bundle.selected_abi_route.as_ref().unwrap().status,
-            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing
+            CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
         );
+        let bridge = bundle.bridge_attempt.as_ref().unwrap();
+        assert_eq!(bridge.status, "attempted_blocked");
+        assert_eq!(
+            bridge.blocker_kind,
+            "bootstrap_target_pack_missing_for_wasm_payload"
+        );
+        assert!(bridge.output_artifact_identity.is_none());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
                 && route.attempted
@@ -2356,12 +2510,16 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_route_status,
-            Some(CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+            Some(CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked)
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
         );
+        let bridge = inspection.bridge_attempt.as_ref().unwrap();
+        assert_eq!(bridge.status, "attempted_blocked");
+        assert_eq!(bridge.command_exit_code, Some(1));
+        assert!(bridge.exact_blocker.contains("can't find crate for std"));
         assert!(inspection
             .exact_loader_blocker
             .contains("must not execute or fake-call"));
@@ -2428,7 +2586,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "rustc_private_to_wasm_bridge_missing"
+                && component.blocker_kind == "bootstrap_target_pack_missing_for_wasm_payload"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

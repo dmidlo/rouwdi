@@ -150,7 +150,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("rustc_private_to_wasm_bridge_missing")
+        Some("bootstrap_target_pack_missing_for_wasm_payload")
     );
     assert!(mir_handoff.payload_bundle_inspected);
     assert_eq!(
@@ -163,7 +163,9 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         mir_handoff.payload_abi_route_status,
-        Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeMissing)
+        Some(
+            rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked
+        )
     );
     assert_eq!(
         mir_handoff.payload_abi_route_artifact_path.as_deref(),
@@ -172,8 +174,21 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(mir_handoff.payload_abi_route_attempted, Some(true));
     assert_eq!(
         mir_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-        Some("rustc_private_to_wasm_bridge_missing")
+        Some("bootstrap_target_pack_missing_for_wasm_payload")
     );
+    let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
+    assert_eq!(bridge_attempt.status, "attempted_blocked");
+    assert_eq!(
+        bridge_attempt.blocker_kind,
+        "bootstrap_target_pack_missing_for_wasm_payload"
+    );
+    assert_eq!(bridge_attempt.command_exit_code, Some(1));
+    assert!(bridge_attempt
+        .input_artifact_identities
+        .iter()
+        .any(|artifact| artifact.role == "wasm_abi_shim"
+            && artifact.artifact_format == "wasm_module"));
+    assert!(bridge_attempt.output_artifact_identity.is_none());
     assert_eq!(
         mir_handoff.payload_loader_exported_artifact_class,
         Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)

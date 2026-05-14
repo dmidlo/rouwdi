@@ -944,7 +944,13 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_private_to_wasm_bridge_missing")
+            Some("bootstrap_target_pack_missing_for_wasm_payload")
+        );
+        let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
+        assert_eq!(bridge_attempt.status, "attempted_blocked");
+        assert_eq!(
+            bridge_attempt.blocker_kind,
+            "bootstrap_target_pack_missing_for_wasm_payload"
         );
         assert_eq!(
             manifest.compiler_pipeline[0]
