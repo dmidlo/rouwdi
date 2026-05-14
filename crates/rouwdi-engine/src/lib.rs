@@ -895,8 +895,9 @@ version = "0.1.0"
             .bootstrap_diagnostics
             .iter()
             .any(
-                |item| item.component == "upstream MIR adapter rustc_mir_build"
+                |item| item.component == "upstream MIR adapter mir_handoff_payload_adapter"
                     && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+                    && item.reason.contains("bootstrap authoritative probe")
             ));
         assert!(!report
             .bootstrap_diagnostics
@@ -919,7 +920,7 @@ version = "0.1.0"
                 .unwrap()
                 .blocker_component
                 .as_deref(),
-            Some("rustc_mir_build")
+            Some("mir_handoff_payload_adapter")
         );
         assert_eq!(
             manifest.compiler_pipeline[0]
@@ -927,7 +928,7 @@ version = "0.1.0"
                 .as_ref()
                 .unwrap()
                 .payload_adapter_status,
-            "blocked_by_normal_workspace_cargo"
+            "typechecked_by_bootstrap_probe"
         );
         assert_eq!(
             manifest.compiler_pipeline[0]

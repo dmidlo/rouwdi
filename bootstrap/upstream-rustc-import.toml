@@ -93,6 +93,58 @@ outcome = "passed"
 classification = "compiled"
 evidence = "Checking stage1 compiler artifacts{rustc_mir_build}; Build completed successfully"
 
+[[bootstrap_adapter_probes]]
+name = "mir_handoff_payload_adapter"
+adapter_crate = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
+source_path = "third_party/rust/src/tools/rouwdi-mir-adapter-probe/src/lib.rs"
+command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+workdir = "third_party/rust"
+exit_code = 0
+outcome = "passed"
+classification = "bootstrap_adapter_typechecked"
+evidence = "Checking stage1 rouwdi-mir-adapter-probe (stage0 -> stage1, x86_64-pc-windows-msvc); Finished release profile for rouwdi-mir-adapter-probe; Build completed successfully in 0:00:21"
+authoritative = true
+normal_workspace_probe_command = "cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload"
+typechecked_entrypoints = [
+  "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
+  "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
+]
+upstream_type_surface = [
+  "rustc_middle::mir::Body<'tcx>",
+  "rustc_middle::ty::TyCtxt<'tcx>",
+  "rustc_middle::query::Providers",
+  "rustc_middle::util::Providers",
+  "rustc_session::Session",
+  "rustc_hir::def_id::LocalDefId",
+  "rustc_span::def_id::LocalDefId",
+  "rustc_mir_build::provide",
+  "rustc_middle::hooks::Providers::build_mir_inner_impl",
+]
+provider_surface = [
+  "rustc_mir_build::provide(&mut rustc_middle::util::Providers)",
+  "rustc_middle::util::Providers::queries",
+  "rustc_middle::util::Providers::hooks",
+  "rustc_middle::hooks::Providers::build_mir_inner_impl",
+]
+required_upstream_crates = [
+  "rustc_middle",
+  "rustc_session",
+  "rustc_hir",
+  "rustc_span",
+  "rustc_mir_build",
+]
+required_upstream_modules = [
+  "rustc_middle::mir",
+  "rustc_middle::ty",
+  "rustc_middle::query",
+  "rustc_middle::util",
+  "rustc_middle::hooks",
+  "rustc_session",
+  "rustc_hir::def_id",
+  "rustc_span::def_id",
+  "rustc_mir_build",
+]
+
 [[components]]
 name = "rustc_lexer"
 source_path = "third_party/rust/compiler/rustc_lexer"
@@ -211,26 +263,26 @@ desired_role = "MIR data structures, ty context, query model, and compiler metad
 import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload"
-blocker_kind = "normal_workspace_cargo_feature_gate"
-exact_blocker = "The new rouwdi_rustc_upstream::mir_handoff_payload_adapter boundary has a feature-gated typed surface that references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, and rustc_mir_build::provide. The pinned Rust tree's x.py stage1 probe compiles rustc_middle, but the adapter crate cannot expose the feature under workspace Cargo yet. Without RUSTC_BOOTSTRAP, cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload exits 1 because the rustc_middle dependency graph enables upstream feature surfaces that stable rustc 1.95.0 rejects, including smallvec-1.15.1 E0554 for #![feature(dropck_eyepatch)] through may_dangle and hashbrown-0.17.1 E0554 for core_intrinsics/dropck_eyepatch/min_specialization and related nightly features. With RUSTC_BOOTSTRAP=1, the same adapter feature still exits 1 before adapter code type-checks because transitive rustc_middle pulls rustc_index with its default/nightly new_range_api surface enabled, and rustc_index emits E0658 for core::range::Range/RangeFrom/RangeToInclusive in compiler/rustc_index/src/idx.rs. The direct adapter dependency keeps rustc_index default-features disabled, but the rustc_middle dependency path does not."
-immediate_dependency_blocker = "normal_workspace_cargo_stable_feature_gates"
+probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+blocker_kind = "bootstrap_payload_not_loaded_into_rouwdi_wasm"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0. The previous normal workspace Cargo feature-gate failure remains a non-authoritative control probe only. The remaining blocker is carrying the bootstrap-checked MIR payload into the rouwdi.wasm compiler facade without fabricating MIR bodies or artifacts."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.bootstrap_payload_not_loaded_into_current_facade"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
-adapter_evidence = "crates/rouwdi-rustc-upstream exposes rouwdi_rustc_upstream::mir_handoff_payload_adapter by default as the MIR payload adapter status API and contains the feature-gated rouwdi_rustc_upstream::real_mir_payload_adapter::mir_handoff_payload_adapter typed boundary for real rustc_middle/rustc_session/rustc_hir/rustc_span/rustc_mir_build types."
+adapter_evidence = "The authoritative MIR payload type probe is third_party/rust/src/tools/rouwdi-mir-adapter-probe, registered as an x.py check step and recorded in [[bootstrap_adapter_probes]]. It type-checks the adapter boundary against real rustc_middle MIR/query/session types and the rustc_mir_build provider surface under stage1 bootstrap."
 
 [[components]]
 name = "rustc_mir_build"
 source_path = "third_party/rust/compiler/rustc_mir_build"
 desired_role = "HIR/THIR to MIR lowering and MIR construction for the current handoff"
-import_status = "adapter_blocked"
+import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
-probe_command = "cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload"
-blocker_kind = "normal_workspace_cargo_feature_gate"
-exact_blocker = "The new MIR payload adapter attempt wires rustc_mir_build::provide into the feature-gated real_mir_payload_adapter boundary, but workspace Cargo cannot type-check the adapter feature yet. Without RUSTC_BOOTSTRAP, cargo check -p rouwdi-rustc-upstream --features real-rustc-mir-payload exits 1 before rustc_mir_build can be exposed because the rustc_middle dependency graph enables upstream feature surfaces that stable rustc 1.95.0 rejects, including smallvec-1.15.1 E0554 for #![feature(dropck_eyepatch)] through may_dangle and hashbrown-0.17.1 E0554 for core_intrinsics/dropck_eyepatch/min_specialization and related nightly features. With RUSTC_BOOTSTRAP=1, the same adapter feature still exits 1 before adapter code type-checks because transitive rustc_middle pulls rustc_index with its default/nightly new_range_api surface enabled, and rustc_index emits E0658 for core::range::Range/RangeFrom/RangeToInclusive in compiler/rustc_index/src/idx.rs. The existing x.py stage1 probe still compiles rustc_mir_build, so the blocker is adapter exposure under workspace Cargo, not stage1 component compilation."
-immediate_dependency_blocker = "rustc_middle.normal_workspace_cargo_stable_feature_gates"
+probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
+blocker_kind = "bootstrap_payload_not_loaded_into_rouwdi_wasm"
+exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. Command `python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v` exited 0 under stage1 bootstrap. The remaining blocker is integrating that bootstrap-checked provider surface into rouwdi.wasm's compiler facade; normal workspace Cargo is no longer the authoritative MIR payload probe."
+immediate_dependency_blocker = "mir_handoff_payload_adapter.bootstrap_payload_not_loaded_into_current_facade"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
-adapter_evidence = "The feature-gated adapter code calls rustc_mir_build::provide through rouwdi_rustc_upstream::real_mir_payload_adapter::register_mir_build_providers once real-rustc-mir-payload can be type-checked under the adapter crate."
+adapter_evidence = "The authoritative bootstrap adapter probe in third_party/rust/src/tools/rouwdi-mir-adapter-probe type-checks rustc_mir_build::provide(&mut rustc_middle::util::Providers) and the MIR build hook surface in the pinned Rust stage1 bootstrap environment."
 
 [[frontend_stages]]
 stage = "lex"

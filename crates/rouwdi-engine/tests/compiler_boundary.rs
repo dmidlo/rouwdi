@@ -121,11 +121,17 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         mir_handoff.blocker_component.as_deref(),
-        Some("rustc_mir_build")
+        Some("mir_handoff_payload_adapter")
     );
     assert_eq!(
         mir_handoff.payload_adapter_status,
-        "blocked_by_normal_workspace_cargo"
+        "typechecked_by_bootstrap_probe"
+    );
+    assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
+    assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
+    assert_eq!(
+        mir_handoff.payload_adapter_probe_classification,
+        "bootstrap_adapter_typechecked"
     );
     assert_eq!(
         mir_handoff.payload_adapter_symbol,
@@ -135,9 +141,9 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         .required_upstream_crates
         .contains(&"rustc_mir_build".to_owned()));
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "upstream MIR adapter rustc_mir_build"
+        item.component == "upstream MIR adapter mir_handoff_payload_adapter"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
-            && item.reason.contains("blocked_by_normal_workspace_cargo")
+            && item.reason.contains("bootstrap authoritative probe")
     }));
     assert!(!report
         .bootstrap_diagnostics
@@ -155,7 +161,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(mir_handoff_records.len(), 1);
     assert_eq!(
         mir_handoff_records[0].blocker_component.as_deref(),
-        Some("rustc_mir_build")
+        Some("mir_handoff_payload_adapter")
     );
     let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
         &storage
@@ -171,7 +177,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_mir_build")
+        Some("mir_handoff_payload_adapter")
     );
     assert_eq!(
         artifact_pipeline[0].expected_output_path,
@@ -327,7 +333,7 @@ edition = "2021"
             && record.mir_handoff.as_ref().is_some_and(|handoff| {
                 handoff.stage == RustCompilerStage::Mir
                     && handoff.status == RustMirHandoffStatus::AdapterUnavailable
-                    && handoff.blocker_component.as_deref() == Some("rustc_mir_build")
+                    && handoff.blocker_component.as_deref() == Some("mir_handoff_payload_adapter")
             })
             && record.missing_stage.is_none()
     }));
@@ -440,7 +446,7 @@ edition = "2021"
     assert_eq!(mir_handoff_unit_ids, rust_unit_ids);
     assert!(mir_handoff_records.iter().all(|record| {
         record.status == RustMirHandoffStatus::AdapterUnavailable
-            && record.blocker_component.as_deref() == Some("rustc_mir_build")
+            && record.blocker_component.as_deref() == Some("mir_handoff_payload_adapter")
     }));
     let artifact_pipeline: Vec<ArtifactPipelineRecord> = serde_json::from_slice(
         &storage
@@ -517,7 +523,10 @@ artifact = "executable"
     assert_eq!(targets, BTreeSet::from(["native", "wasi"]));
     for record in &artifact_pipeline {
         assert_eq!(record.blocked_at_stage, Some(RustCompilerStage::Mir));
-        assert_eq!(record.blocker_component.as_deref(), Some("rustc_mir_build"));
+        assert_eq!(
+            record.blocker_component.as_deref(),
+            Some("mir_handoff_payload_adapter")
+        );
         assert!(!record.artifact_emitted);
         assert!(storage.read(&record.expected_output_path).is_err());
         assert!(record.remaining_stages.iter().any(|stage| {
@@ -643,7 +652,7 @@ fn unresolved_name_stops_at_name_resolution_stage() {
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
         item.component == "compiler stage rustc_middle"
-            || item.component == "upstream MIR adapter rustc_mir_build"
+            || item.component == "upstream MIR adapter mir_handoff_payload_adapter"
             || item.reason.contains("mir_not_embedded")
     }));
 }
@@ -693,7 +702,7 @@ fn typed_invalid_source_stops_at_type_check_stage() {
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
         item.component == "compiler stage rustc_middle"
-            || item.component == "upstream MIR adapter rustc_mir_build"
+            || item.component == "upstream MIR adapter mir_handoff_payload_adapter"
             || item.reason.contains("mir_not_embedded")
     }));
 }
@@ -762,7 +771,7 @@ fn borrow_invalid_source_stops_at_borrow_check_stage() {
     }));
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
         item.component == "compiler stage rustc_middle"
-            || item.component == "upstream MIR adapter rustc_mir_build"
+            || item.component == "upstream MIR adapter mir_handoff_payload_adapter"
             || item.reason.contains("mir_not_embedded")
     }));
 }
