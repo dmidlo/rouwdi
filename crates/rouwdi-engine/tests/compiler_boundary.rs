@@ -3,7 +3,9 @@ use rouwdi_engine::{BuildRequest, RouwdiEngine};
 use rouwdi_proof::{RouwdiRunManifest, RunStatus};
 use rouwdi_rustc::{
     RustCompilerPipelineStatus, RustCompilerStage, RustCompilerStageErrorCode,
-    RustExpansionStageRecord, RustExpansionStageStatus, RustParseStageRecord, RustParseStageStatus,
+    RustExpansionStageRecord, RustExpansionStageStatus, RustNameResolutionDiagnosticCode,
+    RustNameResolutionStageRecord, RustNameResolutionStageStatus, RustParseStageRecord,
+    RustParseStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -92,15 +94,19 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         record.expansion_stage.as_ref().unwrap().status,
         RustExpansionStageStatus::NoExpansionRequired
     );
+    assert_eq!(
+        record.name_resolution_stage.as_ref().unwrap().status,
+        RustNameResolutionStageStatus::Succeeded
+    );
     let missing_stage = record.missing_stage.as_ref().unwrap();
-    assert_eq!(missing_stage.stage, RustCompilerStage::NameResolution);
+    assert_eq!(missing_stage.stage, RustCompilerStage::TypeChecking);
     assert_eq!(
         missing_stage.error_code,
-        RustCompilerStageErrorCode::NameResolutionNotEmbedded
+        RustCompilerStageErrorCode::TypeckNotEmbedded
     );
-    assert_eq!(missing_stage.required_component, "rustc_resolve");
+    assert_eq!(missing_stage.required_component, "rustc_hir_analysis");
     assert!(report.bootstrap_diagnostics.iter().any(|item| {
-        item.component == "compiler stage rustc_resolve"
+        item.component == "compiler stage rustc_hir_analysis"
             && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
     }));
     assert!(!report
@@ -225,9 +231,16 @@ edition = "2021"
                 expansion.status == RustExpansionStageStatus::NoExpansionRequired
                     && expansion.stage == RustCompilerStage::MacroExpansion
             })
+            && record
+                .name_resolution_stage
+                .as_ref()
+                .is_some_and(|name_resolution| {
+                    name_resolution.status == RustNameResolutionStageStatus::Succeeded
+                        && name_resolution.stage == RustCompilerStage::NameResolution
+                })
             && record.missing_stage.as_ref().is_some_and(|missing| {
-                missing.stage == RustCompilerStage::NameResolution
-                    && missing.error_code == RustCompilerStageErrorCode::NameResolutionNotEmbedded
+                missing.stage == RustCompilerStage::TypeChecking
+                    && missing.error_code == RustCompilerStageErrorCode::TypeckNotEmbedded
             })
     }));
     let parse_records: Vec<RustParseStageRecord> = serde_json::from_slice(
@@ -261,6 +274,34 @@ edition = "2021"
     assert!(expansion_records
         .iter()
         .all(|record| record.status == RustExpansionStageStatus::NoExpansionRequired));
+    let name_resolution_records: Vec<RustNameResolutionStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-name-resolution.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    let name_resolution_unit_ids = name_resolution_records
+        .iter()
+        .map(|record| record.unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(name_resolution_unit_ids, rust_unit_ids);
+    assert!(name_resolution_records
+        .iter()
+        .all(|record| record.status == RustNameResolutionStageStatus::Succeeded));
+    assert!(name_resolution_records.iter().any(|record| {
+        record.unit_id == "app:rust:app:wasm32-wasip1"
+            && record
+                .extern_prelude
+                .iter()
+                .any(|krate| krate.name == "helper")
+            && record
+                .resolved_paths
+                .iter()
+                .any(|path| path.path == "helper::message")
+    }));
 }
 
 #[test]
@@ -315,6 +356,60 @@ fn macro_invocation_stops_at_expansion_stage() {
     assert!(!report.bootstrap_diagnostics.iter().any(|item| {
         item.component == "compiler stage rustc_expand"
             || item.reason.contains("macro_expansion_not_embedded")
+    }));
+}
+
+#[test]
+fn unresolved_name_stops_at_name_resolution_stage() {
+    let mut storage = no_deps_wasi_binary_storage();
+    storage
+        .write("src/main.rs", b"fn main() { missing::call(); }\n")
+        .unwrap();
+
+    let report = RouwdiEngine::default()
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let name_resolution_records: Vec<RustNameResolutionStageRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-name-resolution.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(manifest.compiler_pipeline.len(), 1);
+    let record = &manifest.compiler_pipeline[0];
+    assert_eq!(
+        record.status,
+        RustCompilerPipelineStatus::NameResolutionError
+    );
+    assert!(record.missing_stage.is_none());
+    let name_resolution = record.name_resolution_stage.as_ref().unwrap();
+    assert_eq!(
+        name_resolution.status,
+        RustNameResolutionStageStatus::Failed
+    );
+    assert!(name_resolution.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == RustNameResolutionDiagnosticCode::UnresolvedPath
+            && diagnostic.path == "missing::call"
+    }));
+    assert_eq!(name_resolution_records.len(), 1);
+    assert_eq!(
+        name_resolution_records[0].status,
+        RustNameResolutionStageStatus::Failed
+    );
+    assert!(report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "Rust name resolution stage"
+            && item.required_by == "compile unit app:rust:app:wasm32-wasip1"
+    }));
+    assert!(!report.bootstrap_diagnostics.iter().any(|item| {
+        item.component == "compiler stage rustc_hir_analysis"
+            || item.reason.contains("typeck_not_embedded")
     }));
 }
 

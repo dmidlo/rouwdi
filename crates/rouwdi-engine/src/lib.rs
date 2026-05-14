@@ -12,7 +12,8 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record, RustCompileRequest,
-    RustCompilerPipelineRecord, RustExpansionStageStatus, RustParseStageStatus, RustSourceLexProof,
+    RustCompilerPipelineRecord, RustExpansionStageStatus, RustExternCrate,
+    RustNameResolutionStageStatus, RustParseStageStatus, RustSourceLexProof,
 };
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
@@ -21,7 +22,7 @@ use rouwdi_source::{
 use rouwdi_targets::{TargetError, TargetPackRegistry};
 use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -163,6 +164,10 @@ impl RouwdiEngine {
             .iter()
             .filter_map(|record| record.expansion_stage.clone())
             .collect::<Vec<_>>();
+        let rust_source_name_resolution = compiler_pipeline
+            .iter()
+            .filter_map(|record| record.name_resolution_stage.clone())
+            .collect::<Vec<_>>();
         let lockfile_path = source_relative_path(&source_root, &contract.resolver.lockfile)?;
         let cargo_lockfile = match parse_lockfile(storage, &lockfile_path) {
             Ok(lockfile) => Some(lockfile),
@@ -257,6 +262,19 @@ impl RouwdiEngine {
                         required_by: format!("compile unit {}", expansion_stage.unit_id),
                         reason: format!(
                             "internal Rust expansion requires embedded support for {required_features}"
+                        ),
+                    });
+                }
+            }
+            if let Some(name_resolution_stage) = &record.name_resolution_stage {
+                if name_resolution_stage.status == RustNameResolutionStageStatus::Failed {
+                    assembly_diagnostics.push(BootstrapDiagnostic {
+                        component: "Rust name resolution stage".to_owned(),
+                        required_by: format!("compile unit {}", name_resolution_stage.unit_id),
+                        reason: format!(
+                            "internal Rust name resolution reported {} diagnostic(s) for {}",
+                            name_resolution_stage.diagnostic_count,
+                            name_resolution_stage.source_path
                         ),
                     });
                 }
@@ -422,6 +440,7 @@ impl RouwdiEngine {
             rust_source_lex,
             rust_source_parse,
             rust_source_expansion,
+            rust_source_name_resolution,
             cargo_lockfile,
             interface_proofs,
             runtime_proofs,
@@ -507,10 +526,49 @@ fn run_compiler_pipeline(
             source_path,
             triple: unit.triple.clone(),
             profile: unit.profile.clone(),
+            extern_prelude: extern_prelude_for_unit(build_plan, &unit.id),
         };
         records.push(run_rust_compiler_pipeline_record(&request, &source));
     }
     Ok(records)
+}
+
+fn extern_prelude_for_unit(
+    build_plan: &rouwdi_cargo::CargoBuildPlan,
+    unit_id: &str,
+) -> Vec<RustExternCrate> {
+    let units_by_id = build_plan
+        .units
+        .iter()
+        .map(|unit| (unit.id.as_str(), unit))
+        .collect::<BTreeMap<_, _>>();
+    let mut externs = BTreeMap::<String, RustExternCrate>::new();
+    for edge in build_plan.edges.iter().filter(|edge| edge.to == unit_id) {
+        let Some(from_unit) = units_by_id.get(edge.from.as_str()) else {
+            continue;
+        };
+        if from_unit.phase != CompilePhase::Rust {
+            continue;
+        }
+        let crate_name = dependency_crate_name_from_edge_reason(&edge.reason)
+            .unwrap_or_else(|| from_unit.package.clone())
+            .replace('-', "_");
+        externs
+            .entry(crate_name.clone())
+            .or_insert(RustExternCrate {
+                name: crate_name,
+                source_unit_id: Some(from_unit.id.clone()),
+                package: Some(from_unit.package.clone()),
+            });
+    }
+    externs.into_values().collect()
+}
+
+fn dependency_crate_name_from_edge_reason(reason: &str) -> Option<String> {
+    reason
+        .strip_prefix("Normal dependency ")
+        .or_else(|| reason.strip_prefix("Build dependency "))
+        .map(str::to_owned)
 }
 
 impl Default for RouwdiEngine {
@@ -610,7 +668,7 @@ version = "0.1.0"
         assert!(report
             .bootstrap_diagnostics
             .iter()
-            .any(|item| item.component == "compiler stage rustc_resolve"
+            .any(|item| item.component == "compiler stage rustc_hir_analysis"
                 && item.required_by == "compile unit app:rust:app:wasm32-wasip1"));
         assert!(!report
             .bootstrap_diagnostics
@@ -631,7 +689,7 @@ version = "0.1.0"
                 .as_ref()
                 .unwrap()
                 .required_component,
-            "rustc_resolve"
+            "rustc_hir_analysis"
         );
         assert!(storage
             .read(&format!("{}/source/source-cache.json", report.run_root))
@@ -668,6 +726,13 @@ version = "0.1.0"
         assert!(storage
             .read(&format!(
                 "{}/graph/rust-source-expansion.json",
+                report.run_root
+            ))
+            .unwrap()
+            .starts_with(b"["));
+        assert!(storage
+            .read(&format!(
+                "{}/graph/rust-source-name-resolution.json",
                 report.run_root
             ))
             .unwrap()

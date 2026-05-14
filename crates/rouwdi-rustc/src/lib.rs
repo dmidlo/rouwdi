@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +108,142 @@ pub struct RustExpansionStageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustExternCrate {
+    pub name: String,
+    pub source_unit_id: Option<String>,
+    pub package: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustNameResolutionContext {
+    pub extern_prelude: Vec<RustExternCrate>,
+}
+
+impl RustNameResolutionContext {
+    pub fn empty() -> Self {
+        Self {
+            extern_prelude: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustNameResolutionDiagnostic {
+    pub offset: u64,
+    pub len: u32,
+    pub code: RustNameResolutionDiagnosticCode,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustNameResolutionDiagnosticCode {
+    UnresolvedImport,
+    UnresolvedModule,
+    UnresolvedPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustNameResolutionStageStatus {
+    Succeeded,
+    Failed,
+}
+
+impl RustNameResolutionStageStatus {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustNameBinding {
+    pub name: String,
+    pub kind: RustNameBindingKind,
+    pub namespace: RustNameNamespace,
+    pub scope_path: String,
+    pub offset: u64,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustNameBindingKind {
+    Builtin,
+    Const,
+    Enum,
+    ExternCrate,
+    Function,
+    Import,
+    Module,
+    Static,
+    Struct,
+    Trait,
+    TypeAlias,
+    Union,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RustNameNamespace {
+    Module,
+    Type,
+    Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustResolvedPath {
+    pub path: String,
+    pub resolution: RustNameResolution,
+    pub scope_path: String,
+    pub offset: u64,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RustNameResolution {
+    Builtin {
+        name: String,
+    },
+    ExternalCrate {
+        name: String,
+        source_unit_id: Option<String>,
+    },
+    LocalBinding {
+        name: String,
+        namespace: RustNameNamespace,
+    },
+    Module {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustNameResolutionStageRecord {
+    pub unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub triple: String,
+    pub profile: String,
+    pub stage: RustCompilerStage,
+    pub status: RustNameResolutionStageStatus,
+    pub resolver_engine: String,
+    pub resolver_source: String,
+    pub expansion_stage_status: RustExpansionStageStatus,
+    pub binding_count: usize,
+    pub resolved_path_count: usize,
+    pub diagnostic_count: usize,
+    pub extern_prelude: Vec<RustExternCrate>,
+    pub bindings: Vec<RustNameBinding>,
+    pub resolved_paths: Vec<RustResolvedPath>,
+    pub diagnostics: Vec<RustNameResolutionDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCompileRequest {
     pub unit_id: String,
     pub package: String,
@@ -115,6 +252,7 @@ pub struct RustCompileRequest {
     pub source_path: String,
     pub triple: String,
     pub profile: String,
+    pub extern_prelude: Vec<RustExternCrate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +394,9 @@ pub enum RustCompilerPipelineError {
     ExpansionStage {
         expansion: Box<RustExpansionStageRecord>,
     },
+    NameResolutionStage {
+        name_resolution: Box<RustNameResolutionStageRecord>,
+    },
 }
 
 impl fmt::Display for RustCompilerPipelineError {
@@ -278,6 +419,11 @@ impl fmt::Display for RustCompilerPipelineError {
                 "compiler stage macro_expansion failed for compile unit {}: {} diagnostic(s)",
                 expansion.unit_id, expansion.diagnostic_count
             ),
+            Self::NameResolutionStage { name_resolution } => write!(
+                formatter,
+                "compiler stage name_resolution failed for compile unit {}: {} diagnostic(s)",
+                name_resolution.unit_id, name_resolution.diagnostic_count
+            ),
         }
     }
 }
@@ -291,6 +437,7 @@ pub enum RustCompilerPipelineStatus {
     MissingStage,
     ParseError,
     ExpansionError,
+    NameResolutionError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +453,7 @@ pub struct RustCompilerPipelineRecord {
     pub artifact: Option<RustCompileArtifactRecord>,
     pub parse_stage: Option<RustParseStageRecord>,
     pub expansion_stage: Option<RustExpansionStageRecord>,
+    pub name_resolution_stage: Option<RustNameResolutionStageRecord>,
     pub missing_stage: Option<MissingRustCompilerStage>,
 }
 
@@ -315,6 +463,11 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "rustc_lexer",
             "third_party/rust/compiler/rustc_lexer",
             "real upstream Rust tokenization",
+        ),
+        embedded_component(
+            "rouwdi_name_resolution",
+            "crates/rouwdi-rustc/src/lib.rs",
+            "stage-local Rust name resolution for macro-free compile units",
         ),
         pending_component(
             "rustc_parse",
@@ -389,6 +542,13 @@ pub fn run_rust_compiler_pipeline(
                 ),
             })
         }
+        RustCompilerPipelineStatus::NameResolutionError => {
+            Err(RustCompilerPipelineError::NameResolutionStage {
+                name_resolution: Box::new(record.name_resolution_stage.expect(
+                    "name-resolution error pipeline record includes name-resolution stage",
+                )),
+            })
+        }
         RustCompilerPipelineStatus::MissingStage => Err(RustCompilerPipelineError::MissingStage {
             missing: Box::new(
                 record
@@ -418,6 +578,7 @@ pub fn run_rust_compiler_pipeline_record(
             artifact: None,
             parse_stage: Some(parse_stage),
             expansion_stage: None,
+            name_resolution_stage: None,
             missing_stage: None,
         };
     }
@@ -436,6 +597,35 @@ pub fn run_rust_compiler_pipeline_record(
             artifact: None,
             parse_stage: Some(parse_stage),
             expansion_stage: Some(expansion_stage),
+            name_resolution_stage: None,
+            missing_stage: None,
+        };
+    }
+
+    let name_resolution_context = RustNameResolutionContext {
+        extern_prelude: request.extern_prelude.clone(),
+    };
+    let name_resolution_stage = resolve_rust_names_for_compile_unit(
+        request,
+        source,
+        &parse_stage,
+        &expansion_stage,
+        &name_resolution_context,
+    );
+    if !name_resolution_stage.status.is_success() {
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::NameResolutionError,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
+            name_resolution_stage: Some(name_resolution_stage),
             missing_stage: None,
         };
     }
@@ -453,6 +643,7 @@ pub fn run_rust_compiler_pipeline_record(
             artifact: None,
             parse_stage: Some(parse_stage),
             expansion_stage: Some(expansion_stage),
+            name_resolution_stage: Some(name_resolution_stage),
             missing_stage: Some(missing),
         };
     }
@@ -469,6 +660,7 @@ pub fn run_rust_compiler_pipeline_record(
         artifact: None,
         parse_stage: Some(parse_stage),
         expansion_stage: Some(expansion_stage),
+        name_resolution_stage: Some(name_resolution_stage),
         missing_stage: Some(MissingRustCompilerStage {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -619,6 +811,47 @@ pub fn expand_rust_source_for_compile_unit(
         parse_token_count: parse_stage.token_count,
         diagnostic_count: diagnostics.len(),
         diagnostics,
+    }
+}
+
+pub fn resolve_rust_names_for_compile_unit(
+    request: &RustCompileRequest,
+    source: &str,
+    _parse_stage: &RustParseStageRecord,
+    expansion_stage: &RustExpansionStageRecord,
+    context: &RustNameResolutionContext,
+) -> RustNameResolutionStageRecord {
+    let tokens = expansion_tokens(source);
+    let mut state = NameResolutionState::new(context);
+    collect_module_definitions(&tokens, 0, tokens.len(), &[], &mut state);
+    resolve_paths_in_module(&tokens, 0, tokens.len(), &[], &mut state);
+
+    let status = if state.diagnostics.is_empty() {
+        RustNameResolutionStageStatus::Succeeded
+    } else {
+        RustNameResolutionStageStatus::Failed
+    };
+
+    RustNameResolutionStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::NameResolution,
+        status,
+        resolver_engine: "rouwdi-rustc-name-resolution".to_owned(),
+        resolver_source: "rustc_lexer token stream plus rouwdi module/import resolver".to_owned(),
+        expansion_stage_status: expansion_stage.status,
+        binding_count: state.bindings.len(),
+        resolved_path_count: state.resolved_paths.len(),
+        diagnostic_count: state.diagnostics.len(),
+        extern_prelude: context.extern_prelude.clone(),
+        bindings: state.bindings,
+        resolved_paths: state.resolved_paths,
+        diagnostics: state.diagnostics,
     }
 }
 
@@ -788,6 +1021,628 @@ fn is_identifier_like(kind: &rustc_lexer::TokenKind) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BindingSummary {
+    kind: RustNameBindingKind,
+    namespace: RustNameNamespace,
+}
+
+#[derive(Debug, Default)]
+struct ModuleScope {
+    bindings: BTreeMap<String, BindingSummary>,
+    modules: BTreeMap<String, ModuleScope>,
+}
+
+#[derive(Debug)]
+struct NameResolutionState {
+    root: ModuleScope,
+    extern_crates: BTreeMap<String, RustExternCrate>,
+    bindings: Vec<RustNameBinding>,
+    resolved_paths: Vec<RustResolvedPath>,
+    diagnostics: Vec<RustNameResolutionDiagnostic>,
+}
+
+impl NameResolutionState {
+    fn new(context: &RustNameResolutionContext) -> Self {
+        let mut state = Self {
+            root: ModuleScope::default(),
+            extern_crates: context
+                .extern_prelude
+                .iter()
+                .map(|krate| (krate.name.clone(), krate.clone()))
+                .collect(),
+            bindings: Vec::new(),
+            resolved_paths: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        for krate in &context.extern_prelude {
+            state.insert_binding(&[], &krate.name, RustNameBindingKind::ExternCrate, 0, 0);
+        }
+        state
+    }
+
+    fn insert_binding(
+        &mut self,
+        module_path: &[String],
+        name: &str,
+        kind: RustNameBindingKind,
+        offset: u64,
+        len: u32,
+    ) {
+        let namespace = binding_namespace(kind);
+        let scope_path = render_module_path(module_path);
+        if let Some(scope) = module_scope_mut(&mut self.root, module_path) {
+            scope
+                .bindings
+                .insert(name.to_owned(), BindingSummary { kind, namespace });
+            if kind == RustNameBindingKind::Module {
+                scope.modules.entry(name.to_owned()).or_default();
+            }
+        }
+        self.bindings.push(RustNameBinding {
+            name: name.to_owned(),
+            kind,
+            namespace,
+            scope_path,
+            offset,
+            len,
+        });
+    }
+
+    fn insert_import_binding(
+        &mut self,
+        module_path: &[String],
+        name: &str,
+        token: &ExpansionToken,
+    ) {
+        self.insert_binding(
+            module_path,
+            name,
+            RustNameBindingKind::Import,
+            token.offset,
+            token.len,
+        );
+    }
+
+    fn unresolved(
+        &mut self,
+        code: RustNameResolutionDiagnosticCode,
+        path: &PathReference,
+        message: String,
+    ) {
+        self.diagnostics.push(RustNameResolutionDiagnostic {
+            offset: path.offset,
+            len: path.len,
+            code,
+            path: path.render(),
+            message,
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PathReference {
+    segments: Vec<String>,
+    offset: u64,
+    len: u32,
+    first_token_index: usize,
+    last_token_index: usize,
+}
+
+impl PathReference {
+    fn render(&self) -> String {
+        self.segments.join("::")
+    }
+}
+
+fn collect_module_definitions(
+    tokens: &[ExpansionToken],
+    start: usize,
+    end: usize,
+    module_path: &[String],
+    state: &mut NameResolutionState,
+) {
+    let mut index = start;
+    while index < end {
+        let token = &tokens[index];
+        if token.text == "mod" {
+            if let Some(name_index) = next_identifier_index(tokens, index + 1, end) {
+                let name = token_symbol(&tokens[name_index]);
+                match tokens.get(name_index + 1).map(|token| token.kind) {
+                    Some(rustc_lexer::TokenKind::OpenBrace) => {
+                        state.insert_binding(
+                            module_path,
+                            &name,
+                            RustNameBindingKind::Module,
+                            tokens[name_index].offset,
+                            tokens[name_index].len,
+                        );
+                        if let Some(close) = find_matching_delimiter(
+                            tokens,
+                            name_index + 1,
+                            rustc_lexer::TokenKind::OpenBrace,
+                            rustc_lexer::TokenKind::CloseBrace,
+                        ) {
+                            let mut child_path = module_path.to_vec();
+                            child_path.push(name);
+                            collect_module_definitions(
+                                tokens,
+                                name_index + 2,
+                                close,
+                                &child_path,
+                                state,
+                            );
+                            index = close + 1;
+                            continue;
+                        }
+                    }
+                    Some(rustc_lexer::TokenKind::Semi) => {
+                        let path = PathReference {
+                            segments: vec![name.clone()],
+                            offset: tokens[name_index].offset,
+                            len: tokens[name_index].len,
+                            first_token_index: name_index,
+                            last_token_index: name_index,
+                        };
+                        state.unresolved(
+                            RustNameResolutionDiagnosticCode::UnresolvedModule,
+                            &path,
+                            format!(
+                                "module `{name}` is declared without an inline body; rouwdi name resolution has no embedded module file loaded for it"
+                            ),
+                        );
+                        index = name_index + 2;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        } else if let Some(kind) = item_binding_kind(&token.text) {
+            if let Some(name_index) = next_identifier_index(tokens, index + 1, end) {
+                let name = token_symbol(&tokens[name_index]);
+                state.insert_binding(
+                    module_path,
+                    &name,
+                    kind,
+                    tokens[name_index].offset,
+                    tokens[name_index].len,
+                );
+                index = name_index + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+}
+
+fn resolve_paths_in_module(
+    tokens: &[ExpansionToken],
+    start: usize,
+    end: usize,
+    module_path: &[String],
+    state: &mut NameResolutionState,
+) {
+    let mut index = start;
+    while index < end {
+        let token = &tokens[index];
+        if token.text == "mod" {
+            if let Some(name_index) = next_identifier_index(tokens, index + 1, end) {
+                if tokens
+                    .get(name_index + 1)
+                    .is_some_and(|token| token.kind == rustc_lexer::TokenKind::OpenBrace)
+                {
+                    if let Some(close) = find_matching_delimiter(
+                        tokens,
+                        name_index + 1,
+                        rustc_lexer::TokenKind::OpenBrace,
+                        rustc_lexer::TokenKind::CloseBrace,
+                    ) {
+                        let mut child_path = module_path.to_vec();
+                        child_path.push(token_symbol(&tokens[name_index]));
+                        resolve_paths_in_module(tokens, name_index + 2, close, &child_path, state);
+                        index = close + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if token.text == "use" {
+            let statement_end = find_statement_end(tokens, index + 1, end).unwrap_or(end);
+            if let Some(path) = collect_use_path(tokens, index + 1, statement_end) {
+                match resolve_path(
+                    &state.root,
+                    &state.extern_crates,
+                    module_path,
+                    &path.segments,
+                ) {
+                    Some(resolution) => {
+                        let alias = use_alias(tokens, &path, statement_end)
+                            .unwrap_or_else(|| path.segments.last().cloned().unwrap_or_default());
+                        state.resolved_paths.push(RustResolvedPath {
+                            path: path.render(),
+                            resolution,
+                            scope_path: render_module_path(module_path),
+                            offset: path.offset,
+                            len: path.len,
+                        });
+                        if let Some(alias_token) = tokens.get(path.last_token_index) {
+                            state.insert_import_binding(module_path, &alias, alias_token);
+                        }
+                    }
+                    None => state.unresolved(
+                        RustNameResolutionDiagnosticCode::UnresolvedImport,
+                        &path,
+                        format!(
+                            "import path `{}` does not resolve in this compile unit",
+                            path.render()
+                        ),
+                    ),
+                }
+            }
+            index = statement_end.saturating_add(1);
+            continue;
+        }
+
+        if let Some(path) = collect_path(tokens, index, end) {
+            if should_check_path(tokens, &path) {
+                match resolve_path(
+                    &state.root,
+                    &state.extern_crates,
+                    module_path,
+                    &path.segments,
+                ) {
+                    Some(resolution) => state.resolved_paths.push(RustResolvedPath {
+                        path: path.render(),
+                        resolution,
+                        scope_path: render_module_path(module_path),
+                        offset: path.offset,
+                        len: path.len,
+                    }),
+                    None => state.unresolved(
+                        RustNameResolutionDiagnosticCode::UnresolvedPath,
+                        &path,
+                        format!(
+                            "path `{}` does not resolve in this compile unit",
+                            path.render()
+                        ),
+                    ),
+                }
+            }
+            index = path.last_token_index + 1;
+            continue;
+        }
+
+        index += 1;
+    }
+}
+
+fn resolve_path(
+    root: &ModuleScope,
+    extern_crates: &BTreeMap<String, RustExternCrate>,
+    module_path: &[String],
+    segments: &[String],
+) -> Option<RustNameResolution> {
+    let first = segments.first()?;
+    match first.as_str() {
+        "crate" => {
+            if segments.len() == 1 {
+                return Some(RustNameResolution::Module {
+                    path: "crate".to_owned(),
+                });
+            }
+            return resolve_from_module(root, &[], &segments[1..]);
+        }
+        "self" => {
+            if segments.len() == 1 {
+                return Some(RustNameResolution::Module {
+                    path: render_module_path(module_path),
+                });
+            }
+            return resolve_from_module(root, module_path, &segments[1..]);
+        }
+        "super" => {
+            let parent_len = module_path.len().saturating_sub(1);
+            let parent = &module_path[..parent_len];
+            if segments.len() == 1 {
+                return Some(RustNameResolution::Module {
+                    path: render_module_path(parent),
+                });
+            }
+            return resolve_from_module(root, parent, &segments[1..]);
+        }
+        _ => {}
+    }
+
+    if let Some(krate) = extern_crates.get(first) {
+        return Some(RustNameResolution::ExternalCrate {
+            name: krate.name.clone(),
+            source_unit_id: krate.source_unit_id.clone(),
+        });
+    }
+    if builtin_names().contains(first.as_str()) {
+        return Some(RustNameResolution::Builtin {
+            name: first.clone(),
+        });
+    }
+    resolve_from_module(root, module_path, segments)
+        .or_else(|| resolve_from_module(root, &[], segments))
+}
+
+fn resolve_from_module(
+    root: &ModuleScope,
+    module_path: &[String],
+    segments: &[String],
+) -> Option<RustNameResolution> {
+    let mut current_path = module_path.to_vec();
+    let mut scope = module_scope(root, &current_path)?;
+    for (index, segment) in segments.iter().enumerate() {
+        let binding = scope.bindings.get(segment)?;
+        let last = index + 1 == segments.len();
+        if last {
+            return if binding.kind == RustNameBindingKind::Module {
+                let mut resolved_path = current_path;
+                resolved_path.push(segment.clone());
+                Some(RustNameResolution::Module {
+                    path: render_module_path(&resolved_path),
+                })
+            } else {
+                Some(RustNameResolution::LocalBinding {
+                    name: segment.clone(),
+                    namespace: binding.namespace,
+                })
+            };
+        }
+        if binding.kind != RustNameBindingKind::Module {
+            return None;
+        }
+        current_path.push(segment.clone());
+        scope = module_scope(root, &current_path)?;
+    }
+    None
+}
+
+fn module_scope<'a>(root: &'a ModuleScope, module_path: &[String]) -> Option<&'a ModuleScope> {
+    let mut scope = root;
+    for segment in module_path {
+        scope = scope.modules.get(segment)?;
+    }
+    Some(scope)
+}
+
+fn module_scope_mut<'a>(
+    root: &'a mut ModuleScope,
+    module_path: &[String],
+) -> Option<&'a mut ModuleScope> {
+    let mut scope = root;
+    for segment in module_path {
+        scope = scope.modules.get_mut(segment)?;
+    }
+    Some(scope)
+}
+
+fn collect_path(tokens: &[ExpansionToken], start: usize, end: usize) -> Option<PathReference> {
+    if start >= end || !is_path_segment_token(&tokens[start]) {
+        return None;
+    }
+    if start > 1
+        && tokens[start - 1].kind == rustc_lexer::TokenKind::Colon
+        && tokens[start - 2].kind == rustc_lexer::TokenKind::Colon
+    {
+        return None;
+    }
+
+    let mut segments = vec![token_symbol(&tokens[start])];
+    let mut last = start;
+    while last + 3 < end
+        && tokens[last + 1].kind == rustc_lexer::TokenKind::Colon
+        && tokens[last + 2].kind == rustc_lexer::TokenKind::Colon
+        && is_path_segment_token(&tokens[last + 3])
+    {
+        last += 3;
+        segments.push(token_symbol(&tokens[last]));
+    }
+    if segments.len() < 2 {
+        return None;
+    }
+    let offset = tokens[start].offset;
+    let len = tokens[last]
+        .offset
+        .saturating_add(u64::from(tokens[last].len))
+        .saturating_sub(offset) as u32;
+    Some(PathReference {
+        segments,
+        offset,
+        len,
+        first_token_index: start,
+        last_token_index: last,
+    })
+}
+
+fn collect_use_path(tokens: &[ExpansionToken], start: usize, end: usize) -> Option<PathReference> {
+    let mut index = start;
+    while index < end
+        && (tokens[index].text == "pub"
+            || tokens[index].kind == rustc_lexer::TokenKind::OpenParen
+            || tokens[index].kind == rustc_lexer::TokenKind::CloseParen)
+    {
+        index += 1;
+    }
+    if index >= end || !is_path_segment_token(&tokens[index]) {
+        return None;
+    }
+
+    let mut segments = vec![token_symbol(&tokens[index])];
+    let first = index;
+    let mut last = index;
+    while last + 2 < end
+        && tokens[last + 1].kind == rustc_lexer::TokenKind::Colon
+        && tokens[last + 2].kind == rustc_lexer::TokenKind::Colon
+    {
+        if last + 3 >= end || !is_path_segment_token(&tokens[last + 3]) {
+            break;
+        }
+        last += 3;
+        if tokens[last].text == "as" {
+            break;
+        }
+        segments.push(token_symbol(&tokens[last]));
+    }
+    let offset = tokens[first].offset;
+    let len = tokens[last]
+        .offset
+        .saturating_add(u64::from(tokens[last].len))
+        .saturating_sub(offset) as u32;
+    Some(PathReference {
+        segments,
+        offset,
+        len,
+        first_token_index: first,
+        last_token_index: last,
+    })
+}
+
+fn use_alias(
+    tokens: &[ExpansionToken],
+    path: &PathReference,
+    statement_end: usize,
+) -> Option<String> {
+    let mut index = path.last_token_index + 1;
+    while index + 1 < statement_end {
+        if tokens[index].text == "as" && is_identifier_like(&tokens[index + 1].kind) {
+            return Some(token_symbol(&tokens[index + 1]));
+        }
+        index += 1;
+    }
+    None
+}
+
+fn should_check_path(tokens: &[ExpansionToken], path: &PathReference) -> bool {
+    if path.first_token_index > 0 {
+        let previous = &tokens[path.first_token_index - 1];
+        if previous.kind == rustc_lexer::TokenKind::Dot || previous.text == "use" {
+            return false;
+        }
+        if matches!(
+            previous.text.as_str(),
+            "fn" | "struct" | "enum" | "trait" | "type" | "const" | "static" | "union" | "mod"
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+fn find_matching_delimiter(
+    tokens: &[ExpansionToken],
+    open_index: usize,
+    open: rustc_lexer::TokenKind,
+    close: rustc_lexer::TokenKind,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open_index) {
+        if token.kind == open {
+            depth += 1;
+        } else if token.kind == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn find_statement_end(tokens: &[ExpansionToken], start: usize, end: usize) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
+        match token.kind {
+            rustc_lexer::TokenKind::OpenParen => paren += 1,
+            rustc_lexer::TokenKind::CloseParen => paren = paren.saturating_sub(1),
+            rustc_lexer::TokenKind::OpenBracket => bracket += 1,
+            rustc_lexer::TokenKind::CloseBracket => bracket = bracket.saturating_sub(1),
+            rustc_lexer::TokenKind::OpenBrace => brace += 1,
+            rustc_lexer::TokenKind::CloseBrace => brace = brace.saturating_sub(1),
+            rustc_lexer::TokenKind::Semi if paren == 0 && bracket == 0 && brace == 0 => {
+                return Some(index)
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn next_identifier_index(tokens: &[ExpansionToken], start: usize, end: usize) -> Option<usize> {
+    tokens
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+        .find_map(|(index, token)| is_identifier_like(&token.kind).then_some(index))
+}
+
+fn item_binding_kind(text: &str) -> Option<RustNameBindingKind> {
+    match text {
+        "fn" => Some(RustNameBindingKind::Function),
+        "struct" => Some(RustNameBindingKind::Struct),
+        "enum" => Some(RustNameBindingKind::Enum),
+        "trait" => Some(RustNameBindingKind::Trait),
+        "type" => Some(RustNameBindingKind::TypeAlias),
+        "const" => Some(RustNameBindingKind::Const),
+        "static" => Some(RustNameBindingKind::Static),
+        "union" => Some(RustNameBindingKind::Union),
+        _ => None,
+    }
+}
+
+fn binding_namespace(kind: RustNameBindingKind) -> RustNameNamespace {
+    match kind {
+        RustNameBindingKind::Builtin
+        | RustNameBindingKind::Enum
+        | RustNameBindingKind::Struct
+        | RustNameBindingKind::Trait
+        | RustNameBindingKind::TypeAlias
+        | RustNameBindingKind::Union => RustNameNamespace::Type,
+        RustNameBindingKind::ExternCrate | RustNameBindingKind::Module => RustNameNamespace::Module,
+        RustNameBindingKind::Const
+        | RustNameBindingKind::Function
+        | RustNameBindingKind::Import
+        | RustNameBindingKind::Static => RustNameNamespace::Value,
+    }
+}
+
+fn is_path_segment_token(token: &ExpansionToken) -> bool {
+    is_identifier_like(&token.kind) || matches!(token.text.as_str(), "crate" | "self" | "super")
+}
+
+fn token_symbol(token: &ExpansionToken) -> String {
+    token
+        .text
+        .strip_prefix("r#")
+        .unwrap_or(&token.text)
+        .to_owned()
+}
+
+fn render_module_path(path: &[String]) -> String {
+    if path.is_empty() {
+        "crate".to_owned()
+    } else {
+        format!("crate::{}", path.join("::"))
+    }
+}
+
+fn builtin_names() -> BTreeSet<&'static str> {
+    [
+        "bool", "char", "str", "usize", "isize", "u8", "u16", "u32", "u64", "u128", "i8", "i16",
+        "i32", "i64", "i128", "f32", "f64", "Option", "Result", "Some", "None", "Ok", "Err",
+        "String", "Vec", "Box", "core", "std", "alloc",
+    ]
+    .into_iter()
+    .collect()
+}
+
 fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingRustCompilerStage> {
     let inventory = rustc_component_inventory();
     for (stage, component_name) in compiler_stage_components() {
@@ -815,9 +1670,8 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
     None
 }
 
-fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 7] {
+fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 6] {
     [
-        (RustCompilerStage::NameResolution, "rustc_resolve"),
         (RustCompilerStage::TypeChecking, "rustc_hir_analysis"),
         (RustCompilerStage::BorrowChecking, "rustc_borrowck"),
         (RustCompilerStage::Mir, "rustc_middle"),
@@ -860,6 +1714,7 @@ mod tests {
             source_path: "src/main.rs".to_owned(),
             triple: "wasm32-wasip1".to_owned(),
             profile: "release".to_owned(),
+            extern_prelude: Vec::new(),
         }
     }
 
@@ -892,6 +1747,9 @@ mod tests {
         assert!(inventory
             .iter()
             .any(|component| component.name == "rustc_lexer" && component.embedded_in_assembly));
+        assert!(inventory.iter().any(|component| {
+            component.name == "rouwdi_name_resolution" && component.embedded_in_assembly
+        }));
         assert!(inventory
             .iter()
             .any(|component| component.name == "rustc_codegen_llvm"
@@ -914,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_pipeline_returns_typed_missing_stage_after_parser_success() {
+    fn compiler_pipeline_advances_to_typeck_after_name_resolution_success() {
         let request = compile_request();
 
         let error = run_rust_compiler_pipeline(&request, "fn main() {}\n").unwrap_err();
@@ -922,12 +1780,102 @@ mod tests {
         let RustCompilerPipelineError::MissingStage { missing } = error else {
             panic!("valid Rust source must advance to the next missing compiler stage");
         };
-        assert_eq!(missing.stage, RustCompilerStage::NameResolution);
+        assert_eq!(missing.stage, RustCompilerStage::TypeChecking);
         assert_eq!(
             missing.error_code,
-            RustCompilerStageErrorCode::NameResolutionNotEmbedded
+            RustCompilerStageErrorCode::TypeckNotEmbedded
         );
-        assert_eq!(missing.required_component, "rustc_resolve");
+        assert_eq!(missing.required_component, "rustc_hir_analysis");
+    }
+
+    #[test]
+    fn name_resolution_stage_accepts_macro_free_no_deps_source() {
+        let request = compile_request();
+        let source = "fn helper() {}\nfn main() { crate::helper(); }\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+
+        let name_resolution = resolve_rust_names_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &RustNameResolutionContext::empty(),
+        );
+
+        assert_eq!(name_resolution.stage, RustCompilerStage::NameResolution);
+        assert_eq!(
+            name_resolution.status,
+            RustNameResolutionStageStatus::Succeeded
+        );
+        assert_eq!(name_resolution.diagnostic_count, 0);
+        assert!(
+            name_resolution
+                .bindings
+                .iter()
+                .any(|binding| binding.name == "main"
+                    && binding.kind == RustNameBindingKind::Function)
+        );
+        assert!(name_resolution
+            .resolved_paths
+            .iter()
+            .any(|path| path.path == "crate::helper"));
+    }
+
+    #[test]
+    fn name_resolution_stage_reports_unresolved_paths_locally() {
+        let request = compile_request();
+        let source = "fn main() { missing::call(); }\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+
+        let name_resolution = resolve_rust_names_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &RustNameResolutionContext::empty(),
+        );
+
+        assert_eq!(
+            name_resolution.status,
+            RustNameResolutionStageStatus::Failed
+        );
+        assert_eq!(name_resolution.diagnostic_count, 1);
+        assert_eq!(
+            name_resolution.diagnostics[0].code,
+            RustNameResolutionDiagnosticCode::UnresolvedPath
+        );
+        assert_eq!(name_resolution.diagnostics[0].path, "missing::call");
+    }
+
+    #[test]
+    fn name_resolution_stage_reports_unresolved_imports_and_modules_locally() {
+        let request = compile_request();
+        let source = "mod missing;\nuse missing::Thing;\nfn main() {}\n";
+        let parse = parse_rust_source_for_compile_unit(&request, source);
+        let expansion = expand_rust_source_for_compile_unit(&request, source, &parse);
+
+        let name_resolution = resolve_rust_names_for_compile_unit(
+            &request,
+            source,
+            &parse,
+            &expansion,
+            &RustNameResolutionContext::empty(),
+        );
+
+        assert_eq!(
+            name_resolution.status,
+            RustNameResolutionStageStatus::Failed
+        );
+        assert!(name_resolution.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == RustNameResolutionDiagnosticCode::UnresolvedModule
+                && diagnostic.path == "missing"
+        }));
+        assert!(name_resolution.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == RustNameResolutionDiagnosticCode::UnresolvedImport
+                && diagnostic.path == "missing::Thing"
+        }));
     }
 
     #[test]
@@ -1007,6 +1955,26 @@ mod tests {
     }
 
     #[test]
+    fn compiler_pipeline_returns_name_resolution_error_for_unresolved_path() {
+        let request = compile_request();
+
+        let error =
+            run_rust_compiler_pipeline(&request, "fn main() { missing::call(); }\n").unwrap_err();
+
+        let RustCompilerPipelineError::NameResolutionStage { name_resolution } = error else {
+            panic!("unresolved Rust paths must stop in the name-resolution stage");
+        };
+        assert_eq!(
+            name_resolution.status,
+            RustNameResolutionStageStatus::Failed
+        );
+        assert!(name_resolution
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == RustNameResolutionDiagnosticCode::UnresolvedPath));
+    }
+
+    #[test]
     fn compiler_stage_error_codes_are_stable_boundary_values() {
         assert_eq!(
             RustCompilerStageErrorCode::for_stage(RustCompilerStage::Parse).as_str(),
@@ -1027,7 +1995,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_pipeline_record_preserves_missing_stage_identity() {
+    fn compiler_pipeline_record_preserves_name_resolution_and_typeck_boundary() {
         let request = compile_request();
 
         let record = run_rust_compiler_pipeline_record(&request, "fn main() {}\n");
@@ -1039,15 +2007,19 @@ mod tests {
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().required_component,
-            "rustc_resolve"
+            "rustc_hir_analysis"
         );
         assert_eq!(
             record.missing_stage.as_ref().unwrap().error_code,
-            RustCompilerStageErrorCode::NameResolutionNotEmbedded
+            RustCompilerStageErrorCode::TypeckNotEmbedded
         );
         assert_eq!(
             record.expansion_stage.as_ref().unwrap().status,
             RustExpansionStageStatus::NoExpansionRequired
+        );
+        assert_eq!(
+            record.name_resolution_stage.as_ref().unwrap().status,
+            RustNameResolutionStageStatus::Succeeded
         );
         assert_eq!(record.artifact, None);
     }
