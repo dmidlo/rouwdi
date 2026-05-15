@@ -39,14 +39,19 @@ The refusal is intentional. rouwdi must not shell out to host `cargo`, `rustc`,
 ## Commands
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p rouwdi-wasm --target wasm32-wasip1 --release
 ```
 
 On Windows/MSVC, run `scripts/verify.ps1` for workspace verification. It sets
 `CARGO_TARGET_DIR=.rouwdi/t` before running `cargo test --workspace`; do not run
 bare `cargo test --workspace` against Cargo's default `target/` tree.
 
-The WASI build command produces the assembly from `crates/rouwdi-wasm`. A
-release packaging step may copy it to `dist/rouwdi.wasm`.
+The product checkpoint is `scripts/package.ps1`. It builds
+`cargo build -p rouwdi-wasm --target wasm32-wasip1 --release`, copies only
+`target/wasm32-wasip1/release/rouwdi-assembly.wasm` to `dist/rouwdi.wasm`,
+and writes `dist/manifest.json` with the canonical path, source artifact path,
+size, SHA-256, cdylib-stub rejection evidence, and MIR payload state. The
+`target/.../rouwdi_wasm.wasm` cdylib output is a tiny stub and must not be
+renamed or treated as the product.

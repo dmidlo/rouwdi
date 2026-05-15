@@ -6,6 +6,11 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 Push-Location $RepoRoot
 try {
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $RepoRoot "scripts\package.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
     $targetDir = Join-Path $RepoRoot ".rouwdi\t"
 
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null

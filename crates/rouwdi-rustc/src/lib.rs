@@ -2082,19 +2082,19 @@ impl<'a> TypeCheckState<'a> {
     }
 
     fn check_function(&mut self, function: &FunctionSignature, tokens: &[ExpansionToken]) {
-        if function.name == "main" {
-            if !function.params.is_empty() || !function.return_type.is_unit() {
-                self.diagnostics.push(RustTypeCheckDiagnostic {
-                    offset: function.offset,
-                    len: function.len,
-                    code: RustTypeCheckDiagnosticCode::InvalidMainSignature,
-                    expected: Some("fn main() -> ()".to_owned()),
-                    actual: Some(render_function_shape(function)),
-                    message:
-                        "binary entrypoint `main` must take no parameters and return unit in this stage"
-                            .to_owned(),
-                });
-            }
+        if function.name == "main"
+            && (!function.params.is_empty() || !function.return_type.is_unit())
+        {
+            self.diagnostics.push(RustTypeCheckDiagnostic {
+                offset: function.offset,
+                len: function.len,
+                code: RustTypeCheckDiagnosticCode::InvalidMainSignature,
+                expected: Some("fn main() -> ()".to_owned()),
+                actual: Some(render_function_shape(function)),
+                message:
+                    "binary entrypoint `main` must take no parameters and return unit in this stage"
+                        .to_owned(),
+            });
         }
 
         let (Some(body_start), Some(body_end)) = (function.body_start, function.body_end) else {
@@ -2593,11 +2593,11 @@ impl<'a> BorrowCheckState<'a> {
         start: usize,
         end: usize,
     ) {
-        for index in start..end {
-            if !is_identifier_like(&tokens[index].kind) {
+        for token in tokens.iter().take(end).skip(start) {
+            if !is_identifier_like(&token.kind) {
                 continue;
             }
-            let name = token_symbol(&tokens[index]);
+            let name = token_symbol(token);
             let Some(local_id) = self.current_local_id(&name) else {
                 continue;
             };
@@ -2615,8 +2615,8 @@ impl<'a> BorrowCheckState<'a> {
                 continue;
             };
             self.diagnostics.push(RustBorrowCheckDiagnostic {
-                offset: tokens[index].offset,
-                len: tokens[index].len,
+                offset: token.offset,
+                len: token.len,
                 code: RustBorrowCheckDiagnosticCode::BorrowedLocalEscapesScope,
                 reference_local: Some(reference_record.reference_local.clone()),
                 borrowed_local: Some(reference_record.borrowed_local.clone()),
@@ -2918,7 +2918,7 @@ fn render_type_tokens(tokens: &[ExpansionToken], start: usize, end: usize) -> St
         .iter()
         .take(end)
         .skip(start)
-        .map(|token| token_symbol(token))
+        .map(token_symbol)
         .collect::<Vec<_>>()
         .join("")
 }
@@ -3006,8 +3006,8 @@ fn trim_expression_tokens(
 
 fn call_open_for_expression(tokens: &[ExpansionToken], start: usize, end: usize) -> Option<usize> {
     let mut depth = 0usize;
-    for index in start..end {
-        match tokens[index].kind {
+    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
+        match token.kind {
             rustc_lexer::TokenKind::OpenParen => {
                 if depth == 0
                     && find_matching_delimiter(
@@ -3033,8 +3033,8 @@ fn find_top_level_operator(tokens: &[ExpansionToken], start: usize, end: usize) 
     let mut paren = 0usize;
     let mut bracket = 0usize;
     let mut brace = 0usize;
-    for index in start..end {
-        match tokens[index].kind {
+    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
+        match token.kind {
             rustc_lexer::TokenKind::OpenParen => paren += 1,
             rustc_lexer::TokenKind::CloseParen => paren = paren.saturating_sub(1),
             rustc_lexer::TokenKind::OpenBracket => bracket += 1,
