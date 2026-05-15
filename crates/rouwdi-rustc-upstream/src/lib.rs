@@ -34,13 +34,12 @@ pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL: &str =
 pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL: &str =
     "rouwdi_mir_handoff_payload_v1_last_error_len";
 pub const MIR_HANDOFF_CONTEXT_STATE_HIR_LOWERING_ATTEMPTED: &str =
-    "hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items";
+    "core_metadata_loaded_blocked_at_missing_core_lang_item_copy";
 pub const MIR_HANDOFF_BRIDGE_MILESTONE_HIR_LOWERING_ATTEMPTED: &str =
-    "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items";
-pub const MIR_HANDOFF_BLOCKER_KIND_MIR_LANG_ITEMS: &str =
-    "mir_provider_requires_lang_items_before_body_construction";
+    "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy";
+pub const MIR_HANDOFF_BLOCKER_KIND_MIR_LANG_ITEMS: &str = "missing_core_lang_item_copy";
 pub const MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_MIR_LANG_ITEMS: &str =
-    "payload_owned_mir_provider_lang_items";
+    "payload_owned_core_extern_prelude_lang_items";
 pub const MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED: &str =
     MIR_HANDOFF_CONTEXT_STATE_HIR_LOWERING_ATTEMPTED;
 pub const MIR_HANDOFF_BRIDGE_MILESTONE_CRATE_AST_CREATED: &str =
@@ -49,8 +48,8 @@ pub const MIR_HANDOFF_BLOCKER_KIND_HIR_TYCX: &str = MIR_HANDOFF_BLOCKER_KIND_MIR
 pub const MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_HIR_TYCX: &str =
     MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_MIR_LANG_ITEMS;
 pub const MIR_HANDOFF_BRIDGE_WASM_SHA256: &str =
-    "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4";
-pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 4_249_509;
+    "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9";
+pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 88_463_758;
 pub const MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED: &str =
     MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED;
 pub const MIR_HANDOFF_BRIDGE_MILESTONE_SOURCE_MAP_CREATED: &str =
@@ -2024,6 +2023,7 @@ pub fn inspect_compiler_payload_bundle(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn execute_compiler_payload_wasm(
     artifact_path: &str,
     module_bytes: &[u8],
@@ -2057,12 +2057,24 @@ pub fn execute_compiler_payload_wasm(
     let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx| ctx)
         .map_err(|error| format!("failed to add WASIp1 imports: {error}"))?;
-    let mut store = wasmtime::Store::new(
-        &engine,
-        wasmtime_wasi::WasiCtxBuilder::new()
-            .args(&["rouwdi_mir_adapter_probe.wasm"])
-            .build_p1(),
-    );
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("adapter crate lives under workspace/crates/rouwdi-rustc-upstream");
+    let mut wasi = wasmtime_wasi::WasiCtxBuilder::new();
+    wasi.args(&["rouwdi_mir_adapter_probe.wasm"])
+        .preopened_dir(
+            workspace_root,
+            "/workspace",
+            wasmtime_wasi::DirPerms::READ,
+            wasmtime_wasi::FilePerms::READ,
+        )
+        .map_err(|error| {
+            format!(
+                "failed to grant payload read-only workspace storage for sysroot metadata: {error}"
+            )
+        })?;
+    let mut store = wasmtime::Store::new(&engine, wasi.build_p1());
     let instance = linker
         .instantiate(&mut store, &module)
         .map_err(|error| format!("failed to instantiate Wasm payload: {error}"))?;
@@ -2331,6 +2343,7 @@ pub fn required_runtime_export_names() -> &'static [&'static str] {
     ]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_guest_string<T>(
     memory: &wasmtime::Memory,
     store: impl wasmtime::AsContext<Data = T>,
@@ -2342,6 +2355,7 @@ fn read_guest_string<T>(
     String::from_utf8(bytes).map_err(|error| format!("{label} bytes were not UTF-8: {error}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_guest_u32<T>(
     memory: &wasmtime::Memory,
     store: impl wasmtime::AsContext<Data = T>,
@@ -2355,6 +2369,7 @@ fn read_guest_u32<T>(
     Ok(u32::from_le_bytes(raw))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_guest_bytes<T>(
     memory: &wasmtime::Memory,
     store: impl wasmtime::AsContext<Data = T>,
@@ -2371,6 +2386,7 @@ fn read_guest_bytes<T>(
     Ok(bytes)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn json_bool(value: &Option<serde_json::Value>, field: &str) -> bool {
     value
         .as_ref()
@@ -3352,11 +3368,11 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -3455,9 +3471,9 @@ mod tests {
         assert!(artifact.path.ends_with("rouwdi_mir_adapter_probe.wasm"));
         assert_eq!(
             artifact.sha256,
-            "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4"
+            "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
         );
-        assert_eq!(artifact.size_bytes, 88409655);
+        assert_eq!(artifact.size_bytes, 88463758);
         assert!(artifact.loadable_by_rouwdi_wasm);
         let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
         assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
@@ -3473,11 +3489,11 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         assert!(carrier
             .load_blocker_reason
@@ -3524,13 +3540,13 @@ mod tests {
             manifest.exported_payload.path,
             manifest.metadata_artifact.path
         );
-        assert_eq!(manifest.exported_payload.size_bytes, 88409655);
+        assert_eq!(manifest.exported_payload.size_bytes, 88463758);
         assert_eq!(manifest.metadata_artifact.size_bytes, 71523);
         assert!(manifest.exported_payload.loadable_by_rouwdi_wasm);
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             manifest.loader_blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert_eq!(
             manifest.loadability_status,
@@ -3550,13 +3566,10 @@ mod tests {
             CompilerPayloadAbiRouteStatus::Emitted
         );
         assert_eq!(abi.bridge_status, "context_attempted");
-        assert_eq!(
-            abi.bridge_blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(abi.bridge_blocker_kind, "missing_core_lang_item_copy");
         assert_eq!(
             abi.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -3579,10 +3592,7 @@ mod tests {
         );
         assert_eq!(bridge.command_exit_code, Some(0));
         assert_eq!(bridge.status, "context_attempted");
-        assert_eq!(
-            bridge.blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(bridge.blocker_kind, "missing_core_lang_item_copy");
         assert!(bridge
             .input_artifact_identities
             .iter()
@@ -3616,7 +3626,7 @@ mod tests {
         assert_eq!(manifest.status, "ready_bridge_context_attempted");
         assert_eq!(
             manifest.milestone_state,
-            "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+            "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
         );
         assert_eq!(manifest.dependency_closure.metadata_exit_code, 0);
         for root in [
@@ -3690,7 +3700,7 @@ mod tests {
             .contains("target-loadable wasm32-wasip1 rustc-private rlibs"));
         assert_eq!(
             manifest.route_decision.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         let fallback = manifest.fallback_architecture.as_ref().unwrap();
         assert_eq!(
@@ -3744,7 +3754,7 @@ mod tests {
         assert_eq!(direct_bridge.exit_code, 0);
         assert_eq!(
             direct_bridge.classification,
-            "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+            "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
         );
         assert!(direct_bridge.abi_v1_symbols_present);
         assert!(!direct_bridge.full_mir_payload_available);
@@ -3766,7 +3776,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sha256,
-            "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4"
+            "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
         );
         assert!(direct_bridge
             .exports
@@ -3775,7 +3785,7 @@ mod tests {
         assert!(direct_gate.attempted);
         assert_eq!(
             direct_gate.classification,
-            "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+            "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
         );
         let stage2_roots = manifest
             .stage2_wasm_host_root_crates
@@ -3960,16 +3970,13 @@ mod tests {
         assert_eq!(manifest.bridge.status, "context_attempted");
         assert_eq!(
             manifest.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         assert_eq!(
             manifest.bridge.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
-        assert_eq!(
-            manifest.bridge.blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(manifest.bridge.blocker_kind, "missing_core_lang_item_copy");
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
@@ -4055,7 +4062,7 @@ mod tests {
         assert_eq!(output.artifact_format, "wasm_module");
         assert_eq!(
             output.sha256,
-            "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4"
+            "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
         );
         assert!(output.loadable_by_rouwdi_wasm);
 
@@ -4095,10 +4102,7 @@ mod tests {
         assert!(runtime.valid_input_bytes_read);
         assert!(runtime.execute_called);
         assert!(runtime.output_or_error_bytes_read);
-        assert_eq!(
-            runtime.blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(runtime.blocker_kind, "missing_core_lang_item_copy");
     }
 
     #[test]
@@ -4114,7 +4118,7 @@ mod tests {
         assert_eq!(route.bridge_status, "context_attempted");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -4176,12 +4180,12 @@ mod tests {
         assert!(report.descriptor_bytes_read);
         assert!(report
             .descriptor_json
-            .contains("hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"));
+            .contains("rustc-interface-sysroot-mir-provider-attempt"));
         assert!(report.valid_input_bytes_read);
         assert!(report.valid_input_json.contains("UpstreamContextHandleV1"));
         assert!(report.valid_input_json.contains("\"raw_pointer\":false"));
         assert!(report.execute_called);
-        assert_eq!(report.execute_status, -1305);
+        assert_eq!(report.execute_status, -1307);
         assert!(report.output_bytes_read || report.error_bytes_read);
         assert!(report.error_bytes_read);
         assert_eq!(
@@ -4208,7 +4212,12 @@ mod tests {
             && json.contains("\"rustc_interface_config_created\":true")
             && json.contains("\"tyctx_entered\":true")
             && json.contains("\"hir_lowering_attempted\":true")
-            && json.contains("TyCtxt HIR query through rustc_interface providers")));
+            && json.contains("\"target_sysroot_visible_to_rustc\":true")
+            && json.contains("\"target_rustlib_visible_to_rustc\":true")
+            && json.contains("\"missing_core_lang_item_copy\"")
+            && json.contains(
+                "\"query_failed_before_mir_provider\":\"rustc_middle::ty::TyCtxt::lang_items\""
+            )));
     }
 
     #[test]
@@ -4242,7 +4251,7 @@ mod tests {
         );
         assert_eq!(
             bundle.next_required_artifact_format,
-            "payload_owned_mir_provider_lang_items"
+            "payload_owned_core_extern_prelude_lang_items"
         );
         assert_eq!(
             bundle.compiler_payload_abi_manifest.as_ref().unwrap().path,
@@ -4262,10 +4271,7 @@ mod tests {
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "context_attempted");
-        assert_eq!(
-            bridge.blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(bridge.blocker_kind, "missing_core_lang_item_copy");
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
         assert_eq!(target_pack.blocker_kind, "none");
@@ -4274,15 +4280,14 @@ mod tests {
         assert!(target_pack.alloc_available);
         assert_eq!(
             bundle.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         assert!(bridge.output_artifact_identity.is_some());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
                 && route.attempted
                 && route.status == CompilerPayloadExportRouteStatus::Emitted
-                && route.blocker_kind.as_deref()
-                    == Some("mir_provider_requires_lang_items_before_body_construction")
+                && route.blocker_kind.as_deref() == Some("missing_core_lang_item_copy")
         }));
     }
 
@@ -4445,11 +4450,11 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert_eq!(
             inspection.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -4459,9 +4464,7 @@ mod tests {
         let bridge = inspection.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "context_attempted");
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert!(bridge
-            .exact_blocker
-            .contains("mir_provider_requires_lang_items_before_body_construction"));
+        assert!(bridge.exact_blocker.contains("missing_core_lang_item_copy"));
         assert!(inspection
             .exact_loader_blocker
             .contains("must not fabricate"));
@@ -4516,7 +4519,7 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         assert_eq!(
             boundary.payload_adapter_status,
@@ -4574,8 +4577,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind
-                    == "mir_provider_requires_lang_items_before_body_construction"
+                && component.blocker_kind == "missing_core_lang_item_copy"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

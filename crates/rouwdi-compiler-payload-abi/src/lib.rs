@@ -13,7 +13,7 @@ pub const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 pub const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 pub const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
 
-const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"context_attempted_superseded_by_direct_rustc_private_bridge","bridge_state":"bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"}"#;
+const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"context_attempted_superseded_by_direct_rustc_private_bridge","bridge_state":"bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"}"#;
 const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: direct rustc-private bridge wasm is loadable and reaches SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt entry, and HIR lowering; MIR waits on lang-item/core setup";
 
 #[no_mangle]

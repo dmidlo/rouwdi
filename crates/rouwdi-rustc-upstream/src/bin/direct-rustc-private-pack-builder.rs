@@ -16,7 +16,7 @@ use std::process::{Command, ExitCode};
 
 const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
 const BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION: &str =
-    "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items";
+    "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy";
 const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
     "memory",
     "rouwdi_compiler_payload_abi_v1_version",

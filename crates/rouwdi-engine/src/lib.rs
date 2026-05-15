@@ -944,11 +944,11 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("mir_provider_requires_lang_items_before_body_construction")
+            Some("missing_core_lang_item_copy")
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
+            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -961,10 +961,7 @@ version = "0.1.0"
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
-        assert_eq!(
-            bridge_attempt.blocker_kind,
-            "mir_provider_requires_lang_items_before_body_construction"
-        );
+        assert_eq!(bridge_attempt.blocker_kind, "missing_core_lang_item_copy");
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff
