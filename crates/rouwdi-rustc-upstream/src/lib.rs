@@ -23,6 +23,20 @@ pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL: &str =
 pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL: &str =
     "rouwdi_compiler_payload_abi_v1_descriptor_len";
 pub const MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_PTR_SYMBOL: &str =
+    "rouwdi_mir_handoff_payload_v1_valid_input_ptr";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_LEN_SYMBOL: &str =
+    "rouwdi_mir_handoff_payload_v1_valid_input_len";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_RESULT_AREA_PTR_SYMBOL: &str =
+    "rouwdi_mir_handoff_payload_v1_result_area_ptr";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL: &str =
+    "rouwdi_mir_handoff_payload_v1_last_error_ptr";
+pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL: &str =
+    "rouwdi_mir_handoff_payload_v1_last_error_len";
+pub const MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED: &str =
+    "source_map_created_context_blocked_at_rustc_parse_not_linked";
+pub const MIR_HANDOFF_BRIDGE_MILESTONE_SOURCE_MAP_CREATED: &str =
+    "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked";
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
 const MIR_PAYLOAD_EXPORT_MANIFEST_TOML: &str =
@@ -153,6 +167,7 @@ pub enum MirHandoffPayloadAdapterStatus {
     PayloadLoadBlocked,
     PayloadExportedLoadBlocked,
     PayloadLoadableShimOnly,
+    PayloadContextAttempted,
     TypecheckedByBootstrapProbe,
     BlockedByBootstrapProbe,
     BlockedByNormalWorkspaceCargo,
@@ -166,6 +181,7 @@ impl MirHandoffPayloadAdapterStatus {
             Self::PayloadLoadBlocked => "payload_load_blocked",
             Self::PayloadExportedLoadBlocked => "payload_exported_load_blocked",
             Self::PayloadLoadableShimOnly => "payload_loadable_shim_only",
+            Self::PayloadContextAttempted => "payload_context_attempted",
             Self::TypecheckedByBootstrapProbe => "typechecked_by_bootstrap_probe",
             Self::BlockedByBootstrapProbe => "blocked_by_bootstrap_probe",
             Self::BlockedByNormalWorkspaceCargo => "blocked_by_normal_workspace_cargo",
@@ -181,6 +197,7 @@ pub enum MirHandoffPayloadCarrierState {
     PayloadLoadBlocked,
     PayloadExportedLoadBlocked,
     PayloadLoadableShimOnly,
+    PayloadContextAttempted,
     PayloadLoaded,
 }
 
@@ -192,6 +209,7 @@ impl MirHandoffPayloadCarrierState {
             Self::PayloadLoadBlocked => "payload_load_blocked",
             Self::PayloadExportedLoadBlocked => "payload_exported_load_blocked",
             Self::PayloadLoadableShimOnly => "payload_loadable_shim_only",
+            Self::PayloadContextAttempted => "payload_context_attempted",
             Self::PayloadLoaded => "payload_loaded",
         }
     }
@@ -267,6 +285,10 @@ pub struct MirPayloadExportManifest {
     #[serde(default)]
     pub milestone_state: Option<String>,
     #[serde(default)]
+    pub upstream_context_handle_v1: Option<UpstreamContextHandleV1Record>,
+    #[serde(default)]
+    pub wasm_runtime_execution: Option<CompilerPayloadWasmRuntimeExecutionRecord>,
+    #[serde(default)]
     pub exact_loader_blocker: Option<String>,
     #[serde(default)]
     pub next_required_artifact_format: Option<String>,
@@ -304,6 +326,38 @@ pub struct CompilerPayloadAbiReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamContextHandleV1Record {
+    pub selected_strategy: String,
+    pub owner: String,
+    pub scope: String,
+    #[serde(default)]
+    pub refers_to: Vec<String>,
+    pub lifetime_rules: String,
+    pub invalid_handle_behavior: String,
+    pub proof_identity: String,
+    pub opaque: bool,
+    pub serializable: bool,
+    pub may_cross_wasm_instance_boundaries: bool,
+    pub raw_pointers_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadWasmRuntimeExecutionRecord {
+    pub tool_command: String,
+    pub artifact_sha256: String,
+    pub module_instantiated: bool,
+    pub abi_exports_called: bool,
+    pub descriptor_bytes_read: bool,
+    pub valid_input_bytes_read: bool,
+    pub execute_called: bool,
+    pub output_or_error_bytes_read: bool,
+    pub classification: String,
+    pub context_state: String,
+    pub blocker_kind: String,
+    pub exact_blocker: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompilerPayloadAbiManifest {
     pub schema_version: u32,
     pub abi_name: String,
@@ -315,6 +369,10 @@ pub struct CompilerPayloadAbiManifest {
     pub selected_route: String,
     #[serde(default)]
     pub milestone_state: Option<String>,
+    #[serde(default)]
+    pub upstream_context_handle_v1: Option<UpstreamContextHandleV1Record>,
+    #[serde(default)]
+    pub wasm_runtime_execution: Option<CompilerPayloadWasmRuntimeExecutionRecord>,
     pub symbol_prefix: String,
     pub payload_identity: CompilerPayloadAbiIdentity,
     pub required_upstream: CompilerPayloadAbiRequiredUpstream,
@@ -466,6 +524,10 @@ pub struct RustcPrivateTargetPackManifest {
     pub milestone_state: String,
     #[serde(default)]
     pub route_decision: Option<String>,
+    #[serde(default)]
+    pub upstream_context_handle_v1: Option<UpstreamContextHandleV1Record>,
+    #[serde(default)]
+    pub wasm_runtime_execution: Option<CompilerPayloadWasmRuntimeExecutionRecord>,
     pub exact_blocker: String,
     pub next_command: String,
     pub dependency_closure: RustcPrivateDependencyClosure,
@@ -765,7 +827,7 @@ impl DirectRustcPrivateCommandModel {
             .join("stage0/bin/cargo.exe");
         let host_rustc_path = stage1.join("bin/rustc.exe");
         let target_rustflags = format!(
-            "-Zunstable-options --cfg=bootstrap --sysroot {}",
+            "-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot {}",
             stage1.display()
         );
 
@@ -1120,6 +1182,47 @@ pub struct CompilerPayloadLoaderInspection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompilerPayloadWasmRuntimeExecution {
+    pub artifact_path: String,
+    pub expected_sha256: String,
+    pub computed_sha256: String,
+    pub hash_verified: bool,
+    pub module_instantiated: bool,
+    pub exports: Vec<String>,
+    pub abi_v1_exports_verified: bool,
+    pub version_called: bool,
+    pub version: u32,
+    pub stage_called: bool,
+    pub stage: u32,
+    pub descriptor_ptr: u32,
+    pub descriptor_len: u32,
+    pub descriptor_bytes_read: bool,
+    pub descriptor_json: String,
+    pub valid_input_ptr: u32,
+    pub valid_input_len: u32,
+    pub valid_input_bytes_read: bool,
+    pub valid_input_json: String,
+    pub execute_called: bool,
+    pub execute_status: i32,
+    pub output_ptr: u32,
+    pub output_len: u32,
+    pub error_ptr: u32,
+    pub error_len: u32,
+    pub output_bytes_read: bool,
+    pub output_json: Option<String>,
+    pub error_bytes_read: bool,
+    pub error_json: Option<String>,
+    pub classification: String,
+    pub context_handle_strategy: String,
+    pub context_state: String,
+    pub generic_upstream_context_unavailable_replaced: bool,
+    pub fabricated_tyctx: bool,
+    pub fabricated_providers: bool,
+    pub fabricated_body: bool,
+    pub fabricated_mir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stage2WasmHostToolingManifest {
     pub schema_version: u32,
     pub milestone: String,
@@ -1357,6 +1460,7 @@ impl BootstrapAdapterProbeRecord {
                     "payload_carrier_created"
                         | "payload_load_blocked"
                         | "payload_exported_load_blocked"
+                        | "payload_context_attempted"
                         | "payload_loaded"
                 )
             )
@@ -1895,6 +1999,357 @@ pub fn inspect_compiler_payload_bundle(
     }
 }
 
+pub fn execute_compiler_payload_wasm(
+    artifact_path: &str,
+    module_bytes: &[u8],
+    expected_sha256: &str,
+) -> Result<CompilerPayloadWasmRuntimeExecution, String> {
+    let computed_sha256 = sha256_hex(module_bytes);
+    let hash_verified = computed_sha256.eq_ignore_ascii_case(expected_sha256);
+    if !hash_verified {
+        return Err(format!(
+            "payload hash mismatch: expected {expected_sha256}, computed {computed_sha256}"
+        ));
+    }
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::from_binary(&engine, module_bytes)
+        .map_err(|error| format!("failed to compile Wasm module: {error}"))?;
+    let exports = module
+        .exports()
+        .map(|export| export.name().to_owned())
+        .collect::<Vec<_>>();
+    let abi_v1_exports_verified = required_runtime_export_names()
+        .iter()
+        .all(|required| exports.iter().any(|export| export == required));
+    if !abi_v1_exports_verified {
+        return Err(format!(
+            "payload missing ABI exports; found [{}]",
+            exports.join(", ")
+        ));
+    }
+
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx| ctx)
+        .map_err(|error| format!("failed to add WASIp1 imports: {error}"))?;
+    let mut store = wasmtime::Store::new(
+        &engine,
+        wasmtime_wasi::WasiCtxBuilder::new()
+            .args(&["rouwdi_mir_adapter_probe.wasm"])
+            .build_p1(),
+    );
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|error| format!("failed to instantiate Wasm payload: {error}"))?;
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| "payload did not export memory".to_owned())?;
+
+    let version_func = instance
+        .get_typed_func::<(), u32>(&mut store, COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL)
+        .map_err(|error| format!("missing/corrupt version export: {error}"))?;
+    let stage_func = instance
+        .get_typed_func::<(), u32>(&mut store, COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL)
+        .map_err(|error| format!("missing/corrupt stage export: {error}"))?;
+    let descriptor_ptr_func = instance
+        .get_typed_func::<(), u32>(&mut store, COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL)
+        .map_err(|error| format!("missing/corrupt descriptor ptr export: {error}"))?;
+    let descriptor_len_func = instance
+        .get_typed_func::<(), u32>(&mut store, COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL)
+        .map_err(|error| format!("missing/corrupt descriptor len export: {error}"))?;
+    let valid_input_ptr_func = instance
+        .get_typed_func::<(), u32>(
+            &mut store,
+            MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_PTR_SYMBOL,
+        )
+        .map_err(|error| format!("missing/corrupt valid input ptr export: {error}"))?;
+    let valid_input_len_func = instance
+        .get_typed_func::<(), u32>(
+            &mut store,
+            MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_LEN_SYMBOL,
+        )
+        .map_err(|error| format!("missing/corrupt valid input len export: {error}"))?;
+    let result_area_ptr_func = instance
+        .get_typed_func::<(), u32>(
+            &mut store,
+            MIR_HANDOFF_PAYLOAD_ABI_V1_RESULT_AREA_PTR_SYMBOL,
+        )
+        .map_err(|error| format!("missing/corrupt result area ptr export: {error}"))?;
+    let execute_func = instance
+        .get_typed_func::<(u32, u32, u32, u32, u32, u32), i32>(
+            &mut store,
+            MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL,
+        )
+        .map_err(|error| format!("missing/corrupt execute export: {error}"))?;
+    let last_error_ptr_func = instance
+        .get_typed_func::<(), u32>(&mut store, MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL)
+        .map_err(|error| format!("missing/corrupt last-error ptr export: {error}"))?;
+    let last_error_len_func = instance
+        .get_typed_func::<(), u32>(&mut store, MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL)
+        .map_err(|error| format!("missing/corrupt last-error len export: {error}"))?;
+
+    let version = version_func
+        .call(&mut store, ())
+        .map_err(|error| format!("version export trapped: {error}"))?;
+    let stage = stage_func
+        .call(&mut store, ())
+        .map_err(|error| format!("stage export trapped: {error}"))?;
+    let descriptor_ptr = descriptor_ptr_func
+        .call(&mut store, ())
+        .map_err(|error| format!("descriptor ptr export trapped: {error}"))?;
+    let descriptor_len = descriptor_len_func
+        .call(&mut store, ())
+        .map_err(|error| format!("descriptor len export trapped: {error}"))?;
+    let descriptor_json = read_guest_string(
+        &memory,
+        &store,
+        descriptor_ptr,
+        descriptor_len,
+        "descriptor",
+    )?;
+    let valid_input_ptr = valid_input_ptr_func
+        .call(&mut store, ())
+        .map_err(|error| format!("valid input ptr export trapped: {error}"))?;
+    let valid_input_len = valid_input_len_func
+        .call(&mut store, ())
+        .map_err(|error| format!("valid input len export trapped: {error}"))?;
+    let valid_input_json = read_guest_string(
+        &memory,
+        &store,
+        valid_input_ptr,
+        valid_input_len,
+        "valid input",
+    )?;
+    let result_area_ptr = result_area_ptr_func
+        .call(&mut store, ())
+        .map_err(|error| format!("result area ptr export trapped: {error}"))?;
+    let output_ptr_slot = result_area_ptr;
+    let output_len_slot = result_area_ptr
+        .checked_add(4)
+        .ok_or_else(|| "result area output len slot overflowed".to_owned())?;
+    let error_ptr_slot = result_area_ptr
+        .checked_add(8)
+        .ok_or_else(|| "result area error ptr slot overflowed".to_owned())?;
+    let error_len_slot = result_area_ptr
+        .checked_add(12)
+        .ok_or_else(|| "result area error len slot overflowed".to_owned())?;
+    let execute_status = execute_func
+        .call(
+            &mut store,
+            (
+                valid_input_ptr,
+                valid_input_len,
+                output_ptr_slot,
+                output_len_slot,
+                error_ptr_slot,
+                error_len_slot,
+            ),
+        )
+        .map_err(|error| format!("execute export trapped: {error}"))?;
+
+    let output_ptr = read_guest_u32(&memory, &store, output_ptr_slot, "output ptr slot")?;
+    let output_len = read_guest_u32(&memory, &store, output_len_slot, "output len slot")?;
+    let error_ptr = read_guest_u32(&memory, &store, error_ptr_slot, "error ptr slot")?;
+    let error_len = read_guest_u32(&memory, &store, error_len_slot, "error len slot")?;
+    let output_json = if output_len > 0 {
+        Some(read_guest_string(
+            &memory,
+            &store,
+            output_ptr,
+            output_len,
+            "execute output",
+        )?)
+    } else {
+        None
+    };
+    let error_json = if error_len > 0 {
+        Some(read_guest_string(
+            &memory,
+            &store,
+            error_ptr,
+            error_len,
+            "execute error",
+        )?)
+    } else {
+        let last_error_ptr = last_error_ptr_func
+            .call(&mut store, ())
+            .map_err(|error| format!("last-error ptr export trapped: {error}"))?;
+        let last_error_len = last_error_len_func
+            .call(&mut store, ())
+            .map_err(|error| format!("last-error len export trapped: {error}"))?;
+        (last_error_len > 0)
+            .then(|| {
+                read_guest_string(
+                    &memory,
+                    &store,
+                    last_error_ptr,
+                    last_error_len,
+                    "last error",
+                )
+            })
+            .transpose()?
+    };
+    let evidence_json = error_json
+        .as_deref()
+        .or(output_json.as_deref())
+        .unwrap_or("");
+    let descriptor_value = serde_json::from_str::<serde_json::Value>(&descriptor_json).ok();
+    let evidence_value = serde_json::from_str::<serde_json::Value>(evidence_json).ok();
+    let classification = evidence_value
+        .as_ref()
+        .and_then(|value| value.get("context_state").or_else(|| value.get("code")))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            descriptor_value
+                .as_ref()
+                .and_then(|value| value.get("bridge_state"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown_payload_execution_result")
+        .to_owned();
+    let context_handle_strategy = evidence_value
+        .as_ref()
+        .and_then(|value| value.get("context_handle_strategy"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            descriptor_value
+                .as_ref()
+                .and_then(|value| value.get("context_handle_strategy"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown")
+        .to_owned();
+    let context_state = evidence_value
+        .as_ref()
+        .and_then(|value| value.get("context_state"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            descriptor_value
+                .as_ref()
+                .and_then(|value| value.get("bridge_state"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown")
+        .to_owned();
+    let fabricated_tyctx = json_bool(&evidence_value, "fabricated_tyctx");
+    let fabricated_providers = json_bool(&evidence_value, "fabricated_providers");
+    let fabricated_body = json_bool(&evidence_value, "fabricated_body");
+    let fabricated_mir = json_bool(&evidence_value, "fabricated_mir");
+    let generic_upstream_context_unavailable_replaced = ![
+        descriptor_json.as_str(),
+        valid_input_json.as_str(),
+        evidence_json,
+        classification.as_str(),
+        context_state.as_str(),
+    ]
+    .iter()
+    .any(|value| value.contains("upstream_context_unavailable"));
+
+    Ok(CompilerPayloadWasmRuntimeExecution {
+        artifact_path: artifact_path.to_owned(),
+        expected_sha256: expected_sha256.to_owned(),
+        computed_sha256,
+        hash_verified,
+        module_instantiated: true,
+        exports,
+        abi_v1_exports_verified,
+        version_called: true,
+        version,
+        stage_called: true,
+        stage,
+        descriptor_ptr,
+        descriptor_len,
+        descriptor_bytes_read: true,
+        descriptor_json,
+        valid_input_ptr,
+        valid_input_len,
+        valid_input_bytes_read: true,
+        valid_input_json,
+        execute_called: true,
+        execute_status,
+        output_ptr,
+        output_len,
+        error_ptr,
+        error_len,
+        output_bytes_read: output_len > 0,
+        output_json,
+        error_bytes_read: error_len > 0 || error_json.is_some(),
+        error_json,
+        classification,
+        context_handle_strategy,
+        context_state,
+        generic_upstream_context_unavailable_replaced,
+        fabricated_tyctx,
+        fabricated_providers,
+        fabricated_body,
+        fabricated_mir,
+    })
+}
+
+pub fn required_runtime_export_names() -> &'static [&'static str] {
+    &[
+        "memory",
+        COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL,
+        COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL,
+        COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL,
+        COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_PTR_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_LEN_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_RESULT_AREA_PTR_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL,
+        MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL,
+    ]
+}
+
+fn read_guest_string<T>(
+    memory: &wasmtime::Memory,
+    store: impl wasmtime::AsContext<Data = T>,
+    ptr: u32,
+    len: u32,
+    label: &str,
+) -> Result<String, String> {
+    let bytes = read_guest_bytes(memory, store, ptr, len, label)?;
+    String::from_utf8(bytes).map_err(|error| format!("{label} bytes were not UTF-8: {error}"))
+}
+
+fn read_guest_u32<T>(
+    memory: &wasmtime::Memory,
+    store: impl wasmtime::AsContext<Data = T>,
+    ptr: u32,
+    label: &str,
+) -> Result<u32, String> {
+    let bytes = read_guest_bytes(memory, store, ptr, 4, label)?;
+    let raw: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| format!("{label} did not contain 4 bytes"))?;
+    Ok(u32::from_le_bytes(raw))
+}
+
+fn read_guest_bytes<T>(
+    memory: &wasmtime::Memory,
+    store: impl wasmtime::AsContext<Data = T>,
+    ptr: u32,
+    len: u32,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let start = ptr as usize;
+    let len = len as usize;
+    let mut bytes = vec![0; len];
+    memory
+        .read(store, start, &mut bytes)
+        .map_err(|error| format!("failed to read {label} at {ptr:#x}+{len}: {error}"))?;
+    Ok(bytes)
+}
+
+fn json_bool(value: &Option<serde_json::Value>, field: &str) -> bool {
+    value
+        .as_ref()
+        .and_then(|value| value.get(field))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub fn inspect_compiler_payload_artifact(
     identity: &BootstrapMirAdapterArtifactRecord,
     bytes: Option<&[u8]>,
@@ -2141,6 +2596,9 @@ fn parse_payload_carrier_state(value: Option<&str>) -> Option<MirHandoffPayloadC
         Some("payload_loadable_shim_only") => {
             Some(MirHandoffPayloadCarrierState::PayloadLoadableShimOnly)
         }
+        Some("payload_context_attempted") => {
+            Some(MirHandoffPayloadCarrierState::PayloadContextAttempted)
+        }
         Some("payload_loaded") => Some(MirHandoffPayloadCarrierState::PayloadLoaded),
         _ => None,
     }
@@ -2268,8 +2726,13 @@ pub fn mir_handoff_payload_adapter() -> MirHandoffPayloadAdapter {
     let payload_loadable_shim_only = payload_carrier.as_ref().is_some_and(|carrier| {
         carrier.state == MirHandoffPayloadCarrierState::PayloadLoadableShimOnly
     });
+    let payload_context_attempted = payload_carrier.as_ref().is_some_and(|carrier| {
+        carrier.state == MirHandoffPayloadCarrierState::PayloadContextAttempted
+    });
     let status = if typechecked_under_current_build {
         MirHandoffPayloadAdapterStatus::Typechecked
+    } else if payload_context_attempted {
+        MirHandoffPayloadAdapterStatus::PayloadContextAttempted
     } else if payload_loadable_shim_only {
         MirHandoffPayloadAdapterStatus::PayloadLoadableShimOnly
     } else if payload_exported_load_blocked {
@@ -2822,7 +3285,7 @@ mod tests {
         assert_eq!(adapter.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             adapter.status,
-            MirHandoffPayloadAdapterStatus::PayloadLoadableShimOnly
+            MirHandoffPayloadAdapterStatus::PayloadContextAttempted
         );
         assert!(!adapter.adapter_available);
         assert!(adapter.bootstrap_adapter_typechecked);
@@ -2832,7 +3295,7 @@ mod tests {
         let carrier = adapter.payload_carrier.as_ref().unwrap();
         assert_eq!(
             carrier.state,
-            MirHandoffPayloadCarrierState::PayloadLoadableShimOnly
+            MirHandoffPayloadCarrierState::PayloadContextAttempted
         );
         assert_eq!(
             carrier.artifact.as_ref().unwrap().artifact_format,
@@ -2845,11 +3308,11 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -2883,7 +3346,7 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(|command| command.contains("upstream_context_handle")));
+            .is_some_and(|command| command.contains("ParseSess")));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -2913,7 +3376,7 @@ mod tests {
         assert!(adapter
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("upstream_context_handle")));
+            .is_some_and(|reason| reason.contains("SourceMap") || reason.contains("rustc_parse")));
     }
 
     #[test]
@@ -2922,7 +3385,7 @@ mod tests {
 
         assert_eq!(
             carrier.state,
-            MirHandoffPayloadCarrierState::PayloadLoadableShimOnly
+            MirHandoffPayloadCarrierState::PayloadContextAttempted
         );
         assert_eq!(
             carrier.bootstrap_adapter_crate,
@@ -2946,9 +3409,9 @@ mod tests {
         assert!(artifact.path.ends_with("rouwdi_mir_adapter_probe.wasm"));
         assert_eq!(
             artifact.sha256,
-            "9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c"
+            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
         );
-        assert_eq!(artifact.size_bytes, 1921);
+        assert_eq!(artifact.size_bytes, 175274);
         assert!(artifact.loadable_by_rouwdi_wasm);
         let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
         assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
@@ -2964,16 +3427,16 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         assert!(carrier
             .load_blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("upstream_context_handle")));
+            .is_some_and(|reason| reason.contains("SourceMap") || reason.contains("rustc_parse")));
         assert!(carrier.payload_bundle.is_some());
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.blocker_kind, "none");
@@ -3015,13 +3478,13 @@ mod tests {
             manifest.exported_payload.path,
             manifest.metadata_artifact.path
         );
-        assert_eq!(manifest.exported_payload.size_bytes, 1921);
+        assert_eq!(manifest.exported_payload.size_bytes, 175274);
         assert_eq!(manifest.metadata_artifact.size_bytes, 27097);
         assert!(manifest.exported_payload.loadable_by_rouwdi_wasm);
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             manifest.loader_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             manifest.loadability_status,
@@ -3040,11 +3503,11 @@ mod tests {
             abi.selected_route_status,
             CompilerPayloadAbiRouteStatus::Emitted
         );
-        assert_eq!(abi.bridge_status, "loadable_shim_only");
-        assert_eq!(abi.bridge_blocker_kind, "upstream_context_unavailable");
+        assert_eq!(abi.bridge_status, "context_attempted");
+        assert_eq!(abi.bridge_blocker_kind, "rustc_parse_not_linked");
         assert_eq!(
             abi.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -3066,13 +3529,13 @@ mod tests {
             "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
         );
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert_eq!(bridge.status, "loadable_shim_only");
-        assert_eq!(bridge.blocker_kind, "upstream_context_unavailable");
+        assert_eq!(bridge.status, "context_attempted");
+        assert_eq!(bridge.blocker_kind, "rustc_parse_not_linked");
         assert!(bridge
             .input_artifact_identities
             .iter()
             .any(
-                |artifact| artifact.role == "direct_rustc_private_root_rustc_middle"
+                |artifact| artifact.role == "direct_rustc_private_root_rustc_span"
                     && artifact.artifact_format == "rlib"
                     && artifact.loadable_by_rouwdi_wasm
             ));
@@ -3098,10 +3561,10 @@ mod tests {
 
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.target_triple, "wasm32-wasip1");
-        assert_eq!(manifest.status, "ready_bridge_shim_only");
+        assert_eq!(manifest.status, "ready_bridge_context_attempted");
         assert_eq!(
             manifest.milestone_state,
-            "rustc_private_bridge_wasm_loadable_shim_only"
+            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
         );
         assert_eq!(manifest.dependency_closure.metadata_exit_code, 0);
         for root in [
@@ -3151,7 +3614,7 @@ mod tests {
             .contains("target-loadable wasm32-wasip1 rustc-private rlibs"));
         assert_eq!(
             manifest.route_decision.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let fallback = manifest.fallback_architecture.as_ref().unwrap();
         assert_eq!(
@@ -3205,7 +3668,7 @@ mod tests {
         assert_eq!(direct_bridge.exit_code, 0);
         assert_eq!(
             direct_bridge.classification,
-            "rustc_private_bridge_wasm_loadable_shim_only"
+            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
         );
         assert!(direct_bridge.abi_v1_symbols_present);
         assert!(!direct_bridge.full_mir_payload_available);
@@ -3220,7 +3683,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sha256,
-            "9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c"
+            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
         );
         assert!(direct_bridge
             .exports
@@ -3229,7 +3692,7 @@ mod tests {
         assert!(direct_gate.attempted);
         assert_eq!(
             direct_gate.classification,
-            "rustc_private_bridge_wasm_loadable_shim_only"
+            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
         );
         let stage2_roots = manifest
             .stage2_wasm_host_root_crates
@@ -3393,7 +3856,7 @@ mod tests {
         assert!(manifest
             .output_contract
             .notes
-            .contains("must not emit this output until real rustc MIR"));
+            .contains("must not emit this output until real upstream rustc MIR"));
         assert!(manifest
             .error_contract
             .known_codes
@@ -3411,16 +3874,16 @@ mod tests {
             .emitted_fields
             .contains(&"rustc_private_bridge_status".to_owned()));
         assert_eq!(manifest.versioning.compatibility, "major_version_exact");
-        assert_eq!(manifest.bridge.status, "loadable_shim_only");
+        assert_eq!(manifest.bridge.status, "context_attempted");
         assert_eq!(
             manifest.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         assert_eq!(
             manifest.bridge.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
-        assert_eq!(manifest.bridge.blocker_kind, "upstream_context_unavailable");
+        assert_eq!(manifest.bridge.blocker_kind, "rustc_parse_not_linked");
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
@@ -3440,7 +3903,7 @@ mod tests {
             .commands_attempted
             .iter()
             .any(|command| command.classification
-                == "direct_rustc_private_pack_ready_bridge_shim_only"
+                == "direct_rustc_private_pack_ready_bridge_context_attempted"
                 && command.exit_code == 0));
         assert!(manifest
             .bridge
@@ -3506,7 +3969,7 @@ mod tests {
         assert_eq!(output.artifact_format, "wasm_module");
         assert_eq!(
             output.sha256,
-            "9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c"
+            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
         );
         assert!(output.loadable_by_rouwdi_wasm);
 
@@ -3515,11 +3978,42 @@ mod tests {
         assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL));
         assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL));
         assert!(required_symbols.contains(&COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_LEN_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_PTR_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_VALID_INPUT_LEN_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_RESULT_AREA_PTR_SYMBOL));
         assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_EXECUTE_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL));
+        assert!(required_symbols.contains(&MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL));
+
+        let handle = manifest.upstream_context_handle_v1.as_ref().unwrap();
+        assert_eq!(handle.selected_strategy, "payload_owned_context");
+        assert_eq!(handle.owner, "payload");
+        assert_eq!(handle.scope, "payload-local");
+        assert!(handle.opaque);
+        assert!(!handle.serializable);
+        assert!(!handle.may_cross_wasm_instance_boundaries);
+        assert!(!handle.raw_pointers_allowed);
+        assert!(handle
+            .refers_to
+            .iter()
+            .any(|item| item.contains("rustc_span::SourceMap")));
+
+        let runtime = manifest.wasm_runtime_execution.as_ref().unwrap();
+        assert_eq!(
+            runtime.classification,
+            MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED
+        );
+        assert!(runtime.module_instantiated);
+        assert!(runtime.abi_exports_called);
+        assert!(runtime.descriptor_bytes_read);
+        assert!(runtime.valid_input_bytes_read);
+        assert!(runtime.execute_called);
+        assert!(runtime.output_or_error_bytes_read);
+        assert_eq!(runtime.blocker_kind, "rustc_parse_not_linked");
     }
 
     #[test]
-    fn selected_abi_route_is_a_real_wasm_shim_with_bridge_attempt_recorded() {
+    fn selected_abi_route_is_a_real_wasm_context_attempt_with_bridge_execution_recorded() {
         let manifest = compiler_payload_abi_manifest();
         let route = manifest.selected_artifact_route().unwrap();
 
@@ -3528,10 +4022,10 @@ mod tests {
         assert_eq!(route.target_triple, "wasm32-wasip1");
         assert!(route.attempted);
         assert_eq!(route.status, CompilerPayloadAbiRouteStatus::Emitted);
-        assert_eq!(route.bridge_status, "loadable_shim_only");
+        assert_eq!(route.bridge_status, "context_attempted");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -3558,6 +4052,67 @@ mod tests {
             route.artifact_sha256.as_deref(),
             Some(artifact_hash.as_str())
         );
+    }
+
+    #[test]
+    fn compiler_payload_wasm_loader_instantiates_and_executes_context_attempt() {
+        let manifest = compiler_payload_abi_manifest();
+        let route = manifest.selected_artifact_route().unwrap();
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("adapter crate lives under workspace/crates/rouwdi-rustc-upstream");
+        let artifact_path = workspace.join(route.artifact_path.as_ref().unwrap());
+        let expected_sha256 = route.artifact_sha256.as_deref().unwrap();
+        let bytes = std::fs::read(&artifact_path).expect(
+            "run `cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder` first",
+        );
+
+        let report = execute_compiler_payload_wasm(
+            route.artifact_path.as_ref().unwrap(),
+            &bytes,
+            expected_sha256,
+        )
+        .expect("loadable bridge Wasm must instantiate and execute");
+
+        assert!(report.hash_verified);
+        assert!(report.module_instantiated);
+        assert!(report.abi_v1_exports_verified);
+        assert!(report.exports.iter().any(|export| export == "memory"));
+        assert!(report.exports.iter().any(|export| export == "_start"));
+        assert!(report.version_called);
+        assert_eq!(report.version, 1);
+        assert!(report.stage_called);
+        assert_eq!(report.stage, 1);
+        assert!(report.descriptor_bytes_read);
+        assert!(report
+            .descriptor_json
+            .contains("source_map_created_context_blocked_at_rustc_parse_not_linked"));
+        assert!(report.valid_input_bytes_read);
+        assert!(report.valid_input_json.contains("UpstreamContextHandleV1"));
+        assert!(report.valid_input_json.contains("\"raw_pointer\":false"));
+        assert!(report.execute_called);
+        assert_eq!(report.execute_status, -1101);
+        assert!(report.output_bytes_read || report.error_bytes_read);
+        assert!(report.error_bytes_read);
+        assert_eq!(
+            report.classification,
+            MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED
+        );
+        assert_eq!(report.context_handle_strategy, "payload_owned_context");
+        assert_eq!(
+            report.context_state,
+            MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED
+        );
+        assert!(report.generic_upstream_context_unavailable_replaced);
+        assert!(!report.fabricated_tyctx);
+        assert!(!report.fabricated_providers);
+        assert!(!report.fabricated_body);
+        assert!(!report.fabricated_mir);
+        assert!(report
+            .error_json
+            .as_deref()
+            .is_some_and(|json| json.contains("rustc_span::SourceMap::new_source_file")));
     }
 
     #[test]
@@ -3591,7 +4146,7 @@ mod tests {
         );
         assert_eq!(
             bundle.next_required_artifact_format,
-            "upstream_context_handle_full_mir_payload"
+            "payload_owned_parse_session_context"
         );
         assert_eq!(
             bundle.compiler_payload_abi_manifest.as_ref().unwrap().path,
@@ -3610,8 +4165,8 @@ mod tests {
             CompilerPayloadAbiRouteStatus::Emitted
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge.status, "loadable_shim_only");
-        assert_eq!(bridge.blocker_kind, "upstream_context_unavailable");
+        assert_eq!(bridge.status, "context_attempted");
+        assert_eq!(bridge.blocker_kind, "rustc_parse_not_linked");
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
         assert_eq!(target_pack.blocker_kind, "none");
@@ -3620,14 +4175,14 @@ mod tests {
         assert!(target_pack.alloc_available);
         assert_eq!(
             bundle.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         assert!(bridge.output_artifact_identity.is_some());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
                 && route.attempted
                 && route.status == CompilerPayloadExportRouteStatus::Emitted
-                && route.blocker_kind.as_deref() == Some("upstream_context_unavailable")
+                && route.blocker_kind.as_deref() == Some("rustc_parse_not_linked")
         }));
     }
 
@@ -3733,7 +4288,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_payload_loader_hash_verifies_current_wasm_and_keeps_shim_only_boundary() {
+    fn compiler_payload_loader_hash_verifies_current_wasm_and_records_context_attempt_boundary() {
         let bundle = mir_compiler_payload_bundle();
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -3790,11 +4345,11 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             inspection.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -3802,11 +4357,9 @@ mod tests {
         assert_eq!(target_pack.blocker_kind, "none");
         assert!(target_pack.exact_blocker.contains("exited 0"));
         let bridge = inspection.bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge.status, "loadable_shim_only");
+        assert_eq!(bridge.status, "context_attempted");
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert!(bridge
-            .exact_blocker
-            .contains("upstream_context_unavailable"));
+        assert!(bridge.exact_blocker.contains("rustc_parse_not_linked"));
         assert!(inspection
             .exact_loader_blocker
             .contains("must not fabricate"));
@@ -3821,11 +4374,11 @@ mod tests {
         assert!(manifest
             .input_contract
             .notes
-            .contains("does not serialize or fabricate TyCtxt, Providers, or MIR Body"));
+            .contains("does not serialize or fabricate TyCtxt"));
         assert!(manifest
             .output_contract
             .notes
-            .contains("must not emit this output until real rustc MIR"));
+            .contains("must not emit this output until real upstream rustc MIR"));
         assert_eq!(
             manifest
                 .bridge
@@ -3847,7 +4400,7 @@ mod tests {
         assert!(inspection
             .exact_loader_blocker
             .contains("must not fabricate"));
-        assert!(manifest.bridge.exact_blocker.contains("no TyCtxt"));
+        assert!(manifest.bridge.exact_blocker.contains("No TyCtxt"));
     }
 
     #[test]
@@ -3857,16 +4410,16 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         assert_eq!(
             boundary.payload_adapter_status,
-            MirHandoffPayloadAdapterStatus::PayloadLoadableShimOnly
+            MirHandoffPayloadAdapterStatus::PayloadContextAttempted
         );
         assert!(!boundary.payload_adapter_available);
         assert_eq!(
             boundary.payload_carrier_state,
-            Some(MirHandoffPayloadCarrierState::PayloadLoadableShimOnly)
+            Some(MirHandoffPayloadCarrierState::PayloadContextAttempted)
         );
         assert!(boundary.payload_carrier_created);
         assert!(boundary.bootstrap_artifact_located);
@@ -3877,7 +4430,7 @@ mod tests {
         );
         assert_eq!(
             boundary.blocker_import_status.as_deref(),
-            Some("payload_loadable_shim_only")
+            Some("payload_context_attempted")
         );
         assert!(boundary
             .embedded_prerequisite_adapters
@@ -3889,7 +4442,7 @@ mod tests {
         assert!(boundary
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("upstream_context_handle")));
+            .is_some_and(|reason| reason.contains("SourceMap") || reason.contains("rustc_parse")));
     }
 
     #[test]
@@ -3915,7 +4468,7 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "upstream_context_unavailable"
+                && component.blocker_kind == "rustc_parse_not_linked"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

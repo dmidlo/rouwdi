@@ -3922,7 +3922,7 @@ mod tests {
             handoff.payload_adapter_symbol,
             rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
         );
-        assert_eq!(handoff.payload_adapter_status, "payload_loadable_shim_only");
+        assert_eq!(handoff.payload_adapter_status, "payload_context_attempted");
         assert_eq!(handoff.payload_adapter_feature, "real-rustc-mir-payload");
         assert!(!handoff.payload_adapter_typechecked);
         assert!(handoff.payload_adapter_bootstrap_typechecked);
@@ -3931,7 +3931,7 @@ mod tests {
         assert!(!handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             handoff.payload_carrier_state.as_deref(),
-            Some("payload_loadable_shim_only")
+            Some("payload_context_attempted")
         );
         let payload_carrier = handoff.payload_carrier.as_ref().unwrap();
         assert_eq!(
@@ -3948,11 +3948,11 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -4008,23 +4008,23 @@ mod tests {
         assert_eq!(handoff.payload_abi_route_attempted, Some(true));
         assert_eq!(
             handoff.payload_abi_bridge_status.as_deref(),
-            Some("loadable_shim_only")
+            Some("context_attempted")
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
-            Some("rustc_private_bridge_wasm_loadable_shim_only")
+            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "loadable_shim_only");
-        assert_eq!(bridge_attempt.blocker_kind, "upstream_context_unavailable");
+        assert_eq!(bridge_attempt.status, "context_attempted");
+        assert_eq!(bridge_attempt.blocker_kind, "rustc_parse_not_linked");
         assert_eq!(bridge_attempt.command_exit_code, Some(0));
         assert!(bridge_attempt
             .exact_blocker
-            .contains("upstream_context_unavailable"));
+            .contains("rustc_parse_not_linked"));
         assert!(bridge_attempt.output_artifact_identity.is_some());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4049,7 +4049,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("upstream_context_handle_full_mir_payload")
+            Some("payload_owned_parse_session_context")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -4068,11 +4068,11 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("upstream_context_unavailable")
+            Some("rustc_parse_not_linked")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),
-            Some("payload_loadable_shim_only")
+            Some("payload_context_attempted")
         );
         assert!(handoff
             .blocker_probe_command
@@ -4102,7 +4102,7 @@ mod tests {
         assert!(handoff
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("payload_loadable_shim_only")
+            .is_some_and(|reason| reason.contains("payload_context_attempted")
                 && reason.contains("bootstrap artifact located true")
                 && reason.contains("bootstrap authoritative probe")));
     }
@@ -4538,7 +4538,7 @@ mod tests {
         );
         assert_eq!(
             mir_handoff.payload_adapter_status,
-            "payload_loadable_shim_only"
+            "payload_context_attempted"
         );
         assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
         assert!(mir_handoff.payload_adapter_bootstrap_artifact_located);
@@ -4546,7 +4546,7 @@ mod tests {
         assert!(!mir_handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             mir_handoff.payload_carrier_state.as_deref(),
-            Some("payload_loadable_shim_only")
+            Some("payload_context_attempted")
         );
         assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
         assert_eq!(

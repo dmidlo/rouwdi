@@ -14,6 +14,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
+const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
+    "memory",
+    "rouwdi_compiler_payload_abi_v1_version",
+    "rouwdi_compiler_payload_abi_v1_stage",
+    "rouwdi_compiler_payload_abi_v1_descriptor_ptr",
+    "rouwdi_compiler_payload_abi_v1_descriptor_len",
+    "rouwdi_mir_handoff_payload_v1_valid_input_ptr",
+    "rouwdi_mir_handoff_payload_v1_valid_input_len",
+    "rouwdi_mir_handoff_payload_v1_result_area_ptr",
+    "rouwdi_mir_handoff_payload_v1_execute",
+    "rouwdi_mir_handoff_payload_v1_last_error_ptr",
+    "rouwdi_mir_handoff_payload_v1_last_error_len",
+];
+
 #[derive(Debug, Clone)]
 struct Args {
     json: bool,
@@ -470,15 +485,12 @@ fn run_bridge_retry(
         .dependency_closure
         .root_crates
         .iter()
+        .filter(|root| bridge_runtime_extern_required(root))
         .filter_map(|root| {
             attempts
                 .iter()
                 .find(|attempt| attempt.name == *root)
-                .and_then(|attempt| {
-                    attempt.artifacts.iter().find(|artifact| {
-                        artifact.artifact_format == "rlib" && artifact.target_loadable
-                    })
-                })
+                .and_then(|attempt| select_bridge_extern_artifact(attempt, root))
                 .map(|artifact| (root.clone(), workspace_root.join(&artifact.path)))
         })
         .collect::<Vec<_>>();
@@ -487,12 +499,20 @@ fn run_bridge_retry(
         .map(|(name, path)| format!("--extern {name}={}", path.display()))
         .collect::<Vec<_>>()
         .join(" ");
+    let export_flags = BRIDGE_REQUIRED_EXPORTS
+        .iter()
+        .filter(|name| **name != "memory")
+        .map(|name| format!("-Clink-arg=-Wl,--export={name}"))
+        .chain(std::iter::once("-Clink-arg=-Wl,--export-memory".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" ");
     let target_rustflags = format!(
-        "{} -Clink-self-contained=no -C relocation-model=pic -L dependency={} -L dependency={} {}",
+        "{} -Clink-self-contained=no -L dependency={} -L dependency={} {} {}",
         env_value(&command_model.target_rustflags_env),
         target_deps.display(),
         target_release.display(),
-        extern_flags
+        extern_flags,
+        export_flags
     );
     let target_linker = env_value(&command_model.target_linker_env);
     let target_cc = env_value(&command_model.target_cc_env);
@@ -508,7 +528,7 @@ fn run_bridge_retry(
     let cfg_compiler_host_triple = env_value(&command_model.cfg_compiler_host_triple_env);
     let rustc_stage = env_value(&command_model.rustc_stage_env);
     let command_text = format!(
-        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --target {} --release --message-format short",
+        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --bin {} --target {} --release --message-format short",
         command_model.host_rustc_path,
         command_model.rustc_bootstrap,
         command_model.cargo_target_dir,
@@ -528,6 +548,7 @@ fn run_bridge_retry(
         command_model.rustc_stage_env,
         command_model.host_cargo_path,
         adapter_manifest.display(),
+        BRIDGE_BINARY_TARGET,
         manifest.target_triple
     );
 
@@ -536,6 +557,8 @@ fn run_bridge_retry(
             "build",
             "--manifest-path",
             &adapter_manifest.display().to_string(),
+            "--bin",
+            BRIDGE_BINARY_TARGET,
             "--target",
             &manifest.target_triple,
             "--release",
@@ -585,16 +608,7 @@ fn run_bridge_retry(
         .as_deref()
         .map(wasm_export_names)
         .unwrap_or_default();
-    let required_exports = [
-        "rouwdi_compiler_payload_abi_v1_version",
-        "rouwdi_compiler_payload_abi_v1_stage",
-        "rouwdi_compiler_payload_abi_v1_descriptor_ptr",
-        "rouwdi_compiler_payload_abi_v1_descriptor_len",
-        "rouwdi_mir_handoff_payload_v1_execute",
-        "rouwdi_mir_handoff_payload_v1_last_error_ptr",
-        "rouwdi_mir_handoff_payload_v1_last_error_len",
-    ];
-    let abi_v1_symbols_present = required_exports
+    let abi_v1_symbols_present = BRIDGE_REQUIRED_EXPORTS
         .iter()
         .all(|required| exports.iter().any(|export| export == required));
     let output_artifact_identity = wasm_bytes.as_ref().map(|bytes| {
@@ -637,15 +651,17 @@ fn run_bridge_retry(
         })
         .collect::<Vec<_>>();
     let classification = if exit_code == 0 && output_artifact_identity.is_some() {
-        "rustc_private_bridge_wasm_loadable_shim_only"
+        "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
     } else if exit_code == 0 {
         "direct_rustc_private_pack_ready_bridge_blocked_at_no_wasm_module"
     } else {
         "direct_rustc_private_pack_ready_bridge_blocked_at_wasm_link"
     }
     .to_owned();
-    let exact_blocker = if classification == "rustc_private_bridge_wasm_loadable_shim_only" {
-        "The direct pack builder produced target-loadable rustc-private root artifacts, retried the MIR adapter with explicit target --extern paths, and emitted a wasm32-wasip1 module with ABI v1 exports. The module is loadable shim-only: it reports upstream_context_unavailable and does not fabricate TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
+    let exact_blocker = if classification
+        == "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
+    {
+        "The direct pack builder produced target-loadable rustc-private root artifacts, retried the MIR adapter as a wasm32-wasip1 command module with the target rustc_span rlib, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now attempts a payload-owned rustc_span::SourceMap/source-file context step and reports source_map_created_context_blocked_at_rustc_parse_not_linked without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
     } else {
         first_relevant_error(&combined_output).unwrap_or_else(|| {
             format!(
@@ -668,6 +684,34 @@ fn run_bridge_retry(
         full_mir_payload_available: false,
         exact_blocker,
     }
+}
+
+fn bridge_runtime_extern_required(crate_name: &str) -> bool {
+    matches!(crate_name, "rustc_span")
+}
+
+fn select_bridge_extern_artifact<'a>(
+    attempt: &'a RustcPrivateDirectClosureAttempt,
+    crate_name: &str,
+) -> Option<&'a RustcPrivateDirectArtifactIdentity> {
+    let canonical_release_suffix = format!("release/lib{crate_name}.rlib");
+    attempt
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.artifact_format == "rlib"
+                && artifact.target_loadable
+                && artifact
+                    .path
+                    .replace('\\', "/")
+                    .ends_with(&canonical_release_suffix)
+        })
+        .or_else(|| {
+            attempt
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_format == "rlib" && artifact.target_loadable)
+        })
 }
 
 fn collect_artifact_identities(
