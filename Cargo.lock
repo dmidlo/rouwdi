@@ -2025,6 +2025,7 @@ dependencies = [
  "rouwdi-engine",
  "rouwdi-proof",
  "rouwdi-vfs",
+ "serde",
  "serde_json",
  "sha2",
 ]

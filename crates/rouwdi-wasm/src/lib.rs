@@ -3,6 +3,8 @@ use rouwdi_proof::RunStatus;
 use rouwdi_vfs::{HostStorage, Storage};
 use std::path::PathBuf;
 
+pub mod payloads;
+
 #[no_mangle]
 pub extern "C" fn rouwdi_abi_version() -> u32 {
     1
@@ -11,6 +13,28 @@ pub extern "C" fn rouwdi_abi_version() -> u32 {
 #[no_mangle]
 pub extern "C" fn rouwdi_host_toolchain_dependency_count() -> u32 {
     0
+}
+
+#[no_mangle]
+pub extern "C" fn rouwdi_embedded_compiler_payload_count() -> u32 {
+    payloads::embedded_compiler_payloads().len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn rouwdi_mir_payload_embedded_size_bytes() -> u64 {
+    payloads::embedded_compiler_payloads()
+        .iter()
+        .find(|payload| payload.name == "rouwdi-mir-handoff-payload")
+        .map(|payload| payload.bytes.len() as u64)
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn rouwdi_mir_payload_embedded_hash_verified() -> u32 {
+    payloads::mir_payload_report()
+        .filter(|report| report.hash_verified && report.size_verified)
+        .map(|_| 1)
+        .unwrap_or(0)
 }
 
 pub fn build_with_storage(storage: &mut dyn Storage, contract_path: &str) -> i32 {
@@ -79,6 +103,21 @@ pub fn cli_main() -> i32 {
             println!("{}", rouwdi_abi_version());
             0
         }
+        "payloads" => {
+            let reports = payloads::embedded_compiler_payload_reports();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reports).unwrap_or_default()
+            );
+            if reports
+                .iter()
+                .any(|report| report.hash_verified && report.size_verified)
+            {
+                0
+            } else {
+                1
+            }
+        }
         _ => {
             eprintln!("unknown rouwdi command: {command}");
             64
@@ -97,6 +136,9 @@ mod tests {
     fn exports_no_host_toolchain_dependency_claim() {
         assert_eq!(rouwdi_abi_version(), 1);
         assert_eq!(rouwdi_host_toolchain_dependency_count(), 0);
+        assert!(rouwdi_embedded_compiler_payload_count() >= 1);
+        assert!(rouwdi_mir_payload_embedded_size_bytes() > 80_000_000);
+        assert_eq!(rouwdi_mir_payload_embedded_hash_verified(), 1);
     }
 
     #[test]

@@ -49,9 +49,20 @@ On Windows/MSVC, run `scripts/verify.ps1` for workspace verification. It sets
 bare `cargo test --workspace` against Cargo's default `target/` tree.
 
 The product checkpoint is `scripts/package.ps1`. It builds
-`cargo build -p rouwdi-wasm --target wasm32-wasip1 --release`, copies only
-`target/wasm32-wasip1/release/rouwdi-assembly.wasm` to `dist/rouwdi.wasm`,
-and writes `dist/manifest.json` with the canonical path, source artifact path,
-size, SHA-256, cdylib-stub rejection evidence, and MIR payload state. The
-`target/.../rouwdi_wasm.wasm` cdylib output is a tiny stub and must not be
-renamed or treated as the product.
+`cargo build -p rouwdi-wasm --target wasm32-wasip1 --release` only after the
+direct MIR payload exists and matches `bootstrap/mir-payload-export-manifest.toml`.
+It generates the assembly-owned raw `include_bytes!` payload registry, embeds
+the MIR payload into `target/wasm32-wasip1/release/rouwdi-assembly.wasm`, copies
+that meaningful assembly to `dist/rouwdi.wasm`, verifies embedded payload byte
+fingerprints, rejects the cdylib stub, and writes `dist/manifest.json` with:
+
+- `package_mode = "canonical_single_file"`
+- `single_file_product = true`
+- `mir_payload.embedded = true`
+- `mir_payload.state = "embedded_payload"`
+
+The `target/.../rouwdi_wasm.wasm` cdylib output is a rejected stub and must not be
+renamed or treated as the product. External MIR payload mode is available only
+through `scripts/package-dev.ps1`, which writes `package_mode =
+"dev_external_payload"`, `single_file_product = false`, and
+`not_product_complete = true`; it is not a product checkpoint.

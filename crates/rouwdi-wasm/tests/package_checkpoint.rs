@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MIN_PRODUCT_SIZE_BYTES: u64 = 1_048_576;
+const EXTERNAL_ONLY_STATES: &[&str] =
+    &["metadata_reference_only", "external_hash_verified_payload"];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,6 +22,40 @@ fn sha256_hex(path: &Path) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
+    if manifest["package_mode"] != Value::String("canonical_single_file".to_owned()) {
+        return Some("package_mode must be canonical_single_file".to_owned());
+    }
+    if manifest["single_file_product"] != Value::Bool(true) {
+        return Some("single_file_product must be true".to_owned());
+    }
+    if manifest["canonical_artifact_path"] != Value::String("dist/rouwdi.wasm".to_owned()) {
+        return Some("canonical_artifact_path must point at dist/rouwdi.wasm".to_owned());
+    }
+
+    let payload = &manifest["mir_payload"];
+    if payload["embedded"] != Value::Bool(true) {
+        return Some("MIR payload must be embedded".to_owned());
+    }
+    if payload["external"] == Value::Bool(true) {
+        return Some("canonical package must not require external MIR payload".to_owned());
+    }
+    let state = payload["state"].as_str().unwrap_or_default();
+    if EXTERNAL_ONLY_STATES.contains(&state) {
+        return Some(format!("external-only MIR payload state rejected: {state}"));
+    }
+    if !matches!(
+        state,
+        "embedded_payload" | "embedded_payload_hash_verified" | "embedded_and_instantiated_payload"
+    ) {
+        return Some(format!("unexpected canonical MIR payload state: {state}"));
+    }
+    if payload["single_file_product"] != Value::Bool(true) {
+        return Some("MIR payload single_file_product must be true".to_owned());
+    }
+    None
+}
+
 #[test]
 fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     let workspace = workspace_root();
@@ -33,6 +69,11 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     )
     .expect("dist/manifest.json must be valid JSON");
 
+    assert_eq!(canonical_manifest_policy_error(&manifest), None);
+    assert_eq!(
+        manifest["package_mode"],
+        Value::String("canonical_single_file".to_owned())
+    );
     assert_eq!(
         manifest["canonical_artifact_path"],
         Value::String("dist/rouwdi.wasm".to_owned())
@@ -83,14 +124,16 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     assert!(
         matches!(
             state,
-            "metadata_reference_only" | "external_hash_verified_payload"
+            "embedded_payload"
+                | "embedded_payload_hash_verified"
+                | "embedded_and_instantiated_payload"
         ),
         "unexpected MIR payload state: {state}"
     );
-    assert_eq!(payload["embedded"], Value::Bool(false));
-    assert_ne!(state, "embedded_payload");
-    assert_ne!(state, "embedded_and_instantiated_payload");
-    assert_eq!(payload["single_file_product"], Value::Bool(false));
+    assert!(!EXTERNAL_ONLY_STATES.contains(&state));
+    assert_eq!(payload["embedded"], Value::Bool(true));
+    assert_eq!(payload["external"], Value::Bool(false));
+    assert_eq!(payload["single_file_product"], Value::Bool(true));
     assert_eq!(
         payload["metadata_source_path"],
         Value::String("bootstrap/mir-payload-export-manifest.toml".to_owned())
@@ -102,12 +145,83 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
         "manifest must retain MIR payload path/hash/size metadata"
     );
     assert_eq!(
-        payload["sha256"].as_str().map(str::len),
+        payload["original_sha256"].as_str().map(str::len),
         Some(64),
         "manifest must retain MIR payload SHA-256"
     );
     assert!(
-        payload["size_bytes"].as_u64().unwrap_or_default() > artifact.len(),
-        "current external MIR payload must not be implied to be inside dist/rouwdi.wasm"
+        payload["size_bytes"].as_u64().unwrap_or_default() > 80_000_000,
+        "embedded MIR payload must have the direct payload size recorded"
     );
+    assert_eq!(
+        payload["embedding_method"],
+        Value::String("raw_include_bytes".to_owned())
+    );
+    assert_eq!(payload["hash_verified"], Value::Bool(true));
+    assert_eq!(payload["size_verified"], Value::Bool(true));
+    assert_eq!(payload["payload_registry_entry"], Value::Bool(true));
+
+    let payload_size = payload["size_bytes"].as_u64().unwrap();
+    assert!(
+        artifact.len() >= payload_size + MIN_PRODUCT_SIZE_BYTES,
+        "dist/rouwdi.wasm is too small to carry the raw MIR payload"
+    );
+
+    let embedded_payloads = manifest["embedded_payloads"]
+        .as_array()
+        .expect("canonical manifest must list embedded payloads");
+    assert!(
+        embedded_payloads.iter().any(|entry| {
+            entry["name"] == Value::String("rouwdi-mir-handoff-payload".to_owned())
+                && entry["embedded"] == Value::Bool(true)
+                && entry["external"] == Value::Bool(false)
+                && entry["embedded_sha256"] == payload["embedded_sha256"]
+        }),
+        "embedded payload registry entry must include the MIR payload"
+    );
+}
+
+#[test]
+fn canonical_policy_rejects_external_only_payload_states() {
+    for state in EXTERNAL_ONLY_STATES {
+        let manifest = serde_json::json!({
+            "package_mode": "canonical_single_file",
+            "canonical_artifact_path": "dist/rouwdi.wasm",
+            "single_file_product": true,
+            "mir_payload": {
+                "state": state,
+                "embedded": false,
+                "external": true,
+                "single_file_product": false
+            }
+        });
+
+        let error = canonical_manifest_policy_error(&manifest)
+            .expect("external-only state must be rejected");
+        assert!(
+            error.contains("embedded")
+                || error.contains("external-only")
+                || error.contains("external"),
+            "unexpected rejection reason: {error}"
+        );
+    }
+}
+
+#[test]
+fn dev_external_payload_manifest_is_not_a_product_checkpoint() {
+    let manifest = serde_json::json!({
+        "package_mode": "dev_external_payload",
+        "single_file_product": false,
+        "not_product_complete": true,
+        "mir_payload": {
+            "state": "external_hash_verified_payload",
+            "embedded": false,
+            "external": true,
+            "single_file_product": false
+        }
+    });
+
+    let error = canonical_manifest_policy_error(&manifest)
+        .expect("dev external payload manifest must not satisfy canonical policy");
+    assert!(error.contains("package_mode"));
 }

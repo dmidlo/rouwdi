@@ -15,9 +15,12 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json.workspace = true
+serde.workspace = true
+sha2.workspace = true
 rouwdi-engine = { path = "../rouwdi-engine" }
 rouwdi-proof = { path = "../rouwdi-proof" }
 rouwdi-vfs = { path = "../rouwdi-vfs" }
 
-[dev-dependencies]
-sha2.workspace = true
+[features]
+default = ["embedded-mir-payload"]
+embedded-mir-payload = []
