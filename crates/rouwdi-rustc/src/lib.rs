@@ -3948,11 +3948,11 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+            Some("mir_provider_requires_lang_items_before_body_construction")
         );
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -4012,22 +4012,22 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+            Some("mir_provider_requires_lang_items_before_body_construction")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+            Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
         assert_eq!(
             bridge_attempt.blocker_kind,
-            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+            "mir_provider_requires_lang_items_before_body_construction"
         );
         assert_eq!(bridge_attempt.command_exit_code, Some(0));
         assert!(bridge_attempt
             .exact_blocker
-            .contains("hir_lowering_requires_expansion_resolution_and_tycx_global_context"));
+            .contains("mir_provider_requires_lang_items_before_body_construction"));
         assert!(bridge_attempt.output_artifact_identity.is_some());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4052,7 +4052,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("payload_owned_hir_tycx_context")
+            Some("payload_owned_mir_provider_lang_items")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -4071,7 +4071,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+            Some("mir_provider_requires_lang_items_before_body_construction")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

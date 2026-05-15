@@ -2,10 +2,10 @@ schema_version = 1
 target_triple = "wasm32-wasip1"
 host_triple = "x86_64-pc-windows-msvc"
 status = "ready_bridge_context_attempted"
-milestone_state = "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-route_decision = "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-exact_blocker = "The direct pack builder consumed this manifest and built the listed rustc-private closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route. The real rouwdi-mir-adapter-probe bridge emitted `.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm` (sha256 6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949, 4249509 bytes) with ABI v1 exports. The loader instantiated that module, called ABI v1 exports, passed a valid MIR handoff input contract, and the payload created a real rustc_span::SourceMap/source-file context, constructed rustc_session::parse::ParseSess, created a rustc_parse parser, and produced a real rustc_ast::ast::Crate before blocking at HIR lowering/TyCtxt global context setup. It does not fabricate TyCtxt, Providers, Body<'tcx>, or MIR."
-next_command = "Link and configure upstream expansion, resolution, HIR lowering, rustc_interface Session/global context, arenas, and providers inside the payload-owned Wasm execution model."
+milestone_state = "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+route_decision = "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+exact_blocker = "The direct pack builder consumed this manifest and built the listed rustc-private closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route. The real rouwdi-mir-adapter-probe bridge emitted `.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm` (sha256 a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4, 88409655 bytes) with ABI v1 exports. The loader instantiated that module, called ABI v1 exports, passed a valid MIR handoff input contract, created a real SourceMap, ParseSess, parser, and rustc_ast::ast::Crate, then created a real rustc_interface::Config, entered rustc_interface queries/global context/TyCtxt, and forced upstream HIR lowering by walking TyCtxt HIR items. It stops before TyCtxt::optimized_mir because the no-core fixture needs lang-item/core setup; it does not fabricate HIR, TyCtxt, Providers, Body<'tcx>, or MIR."
+next_command = "Provide the payload fixture lang-item/core target-pack context after HIR lowering and providers registration so TyCtxt::optimized_mir can construct a real Body<'tcx> without aborting."
 
 [upstream_context_handle_v1]
 selected_strategy = "payload_owned_context"
@@ -25,26 +25,34 @@ raw_pointers_allowed = false
 
 [wasm_runtime_execution]
 tool_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-loader -- --json"
-artifact_sha256 = "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949"
+artifact_sha256 = "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4"
 module_instantiated = true
 abi_exports_called = true
 descriptor_bytes_read = true
 valid_input_bytes_read = true
 execute_called = true
 output_or_error_bytes_read = true
-classification = "crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-context_state = "crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-blocker_kind = "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-exact_blocker = "Wasmtime instantiated the bridge module, verified the artifact hash and ABI v1 exports, called version/stage/descriptor/valid-input/execute, read error bytes from Wasm memory, and the payload attempted rustc_span::SourceMap::new_source_file before blocking after real ParseSess, rustc_parse parser construction, and Parser::parse_crate_mod execution because HIR lowering/TyCtxt acquisition requires upstream expansion, resolution, Session/global compiler context, arenas, and provider machinery."
+classification = "hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+context_state = "hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+blocker_kind = "mir_provider_requires_lang_items_before_body_construction"
+exact_blocker = "Wasmtime instantiated the bridge module, verified the artifact hash and ABI v1 exports, called version/stage/descriptor/valid-input/execute, read error bytes from Wasm memory, and the payload created real SourceMap, ParseSess, parser, and AST state before creating rustc_interface::Config, entering rustc_interface queries/global context/TyCtxt, forcing HIR lowering through TyCtxt HIR item access, and stopping before MIR provider invocation at the lang-item/core setup boundary."
 
 [dependency_closure]
 metadata_command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe metadata --format-version 1 --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml"
 metadata_exit_code = 0
 root_crates = [
+  "rustc_builtin_macros",
+  "rustc_expand",
   "rustc_hir",
+  "rustc_hir_analysis",
+  "rustc_interface",
+  "rustc_lint",
   "rustc_middle",
   "rustc_mir_build",
   "rustc_parse",
+  "rustc_passes",
+  "rustc_query_impl",
+  "rustc_resolve",
   "rustc_session",
   "rustc_span",
 ]
@@ -54,37 +62,63 @@ transitive_compiler_private_crates = [
   "rustc_arena",
   "rustc_ast",
   "rustc_ast_ir",
+  "rustc_ast_lowering",
+  "rustc_ast_passes",
   "rustc_ast_pretty",
+  "rustc_attr_parsing",
   "rustc_baked_icu_data",
+  "rustc_borrowck",
+  "rustc_builtin_macros",
+  "rustc_codegen_ssa",
+  "rustc_const_eval",
   "rustc_data_structures",
   "rustc_error_codes",
   "rustc_error_messages",
   "rustc_errors",
+  "rustc_expand",
   "rustc_feature",
   "rustc_fs_util",
   "rustc_graphviz",
   "rustc_hashes",
   "rustc_hir",
+  "rustc_hir_analysis",
   "rustc_hir_id",
   "rustc_hir_pretty",
+  "rustc_hir_typeck",
+  "rustc_incremental",
   "rustc_index",
   "rustc_index_macros",
   "rustc_infer",
+  "rustc_interface",
   "rustc_lexer",
+  "rustc_lint",
   "rustc_lint_defs",
   "rustc_macros",
+  "rustc_metadata",
   "rustc_middle",
   "rustc_mir_build",
+  "rustc_mir_dataflow",
+  "rustc_mir_transform",
+  "rustc_monomorphize",
   "rustc_next_trait_solver",
   "rustc_parse",
+  "rustc_parse_format",
+  "rustc_passes",
   "rustc_pattern_analysis",
+  "rustc_privacy",
+  "rustc_proc_macro",
+  "rustc_query_impl",
+  "rustc_resolve",
   "rustc_serialize",
   "rustc_session",
   "rustc_span",
+  "rustc_symbol_mangling",
   "rustc_target",
   "rustc_thread_pool",
   "rustc_trait_selection",
+  "rustc_traits",
   "rustc_transmute",
+  "rustc_ty_utils",
   "rustc_type_ir",
   "rustc_type_ir_macros",
 ]
@@ -286,9 +320,9 @@ rejected_strategies = [
 ]
 target_sysroot_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
 target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
-target_rustc_private_artifact_count = 35
+target_rustc_private_artifact_count = 538
 host_artifact_dir = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
-exact_blocker = "The direct pack now contains target-loadable wasm32-wasip1 rustc-private rlibs for the required MIR bridge roots and their target-loadable non-proc-macro closure, including rustc_parse and rustc_session for the parser/session path. Host proc-macro crates are recorded as host artifacts and are not relabeled. The remaining blocker is not target-pack construction; it is linking upstream expansion/resolution, HIR lowering, rustc_interface global context, arenas, and providers after the executed crate AST step."
+exact_blocker = "The direct pack now contains target-loadable wasm32-wasip1 rustc-private rlibs for the required MIR bridge roots and their target-loadable non-proc-macro closure, including rustc_expand, rustc_resolve, rustc_interface, rustc_hir_analysis, rustc_query_impl, rustc_passes, rustc_lint, rustc_builtin_macros, rustc_parse, and rustc_session for the context path. Host proc-macro crates are recorded as host artifacts and are not relabeled. The remaining blocker is not target-pack construction; the executed bridge reaches TyCtxt and HIR lowering and stops at lang-item/core setup before TyCtxt::optimized_mir."
 
 [fallback_architecture]
 selected = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
@@ -584,66 +618,117 @@ cfg_release_env = "CFG_RELEASE=1.97.0-nightly"
 cfg_release_channel_env = "CFG_RELEASE_CHANNEL=nightly"
 cfg_release_num_env = "CFG_RELEASE_NUM=1.97.0"
 cfg_compiler_host_triple_env = "CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc"
+rustc_install_bindir_env = "RUSTC_INSTALL_BINDIR=bin"
 rustc_stage_env = "RUSTC_STAGE=1"
 global_rustflags = ""
-target_rustflags_env = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap --sysroot third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+target_rustflags_env = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot third_party/rust/build/x86_64-pc-windows-msvc/stage1"
 target_linker_env = "CARGO_TARGET_WASM32_WASIP1_LINKER=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
 host_flags_separated = true
-command_model = "RUSTC points at stage1 host rustc; RUSTC_BOOTSTRAP=1 plus CFG_RELEASE/CFG_RELEASE_CHANNEL/CFG_RELEASE_NUM/CFG_COMPILER_HOST_TRIPLE/RUSTC_STAGE model the stage1 bootstrap environment; RUSTFLAGS is deliberately unset; target-only sysroot/linker/C/AR/WASI flags are passed through target-scoped environment variables so host build scripts and proc macros keep using the stage1 host sysroot while target C build scripts use the WASI SDK."
+command_model = "RUSTC points at stage1 host rustc; RUSTC_BOOTSTRAP=1 plus CFG_RELEASE/CFG_RELEASE_CHANNEL/CFG_RELEASE_NUM/CFG_COMPILER_HOST_TRIPLE/RUSTC_INSTALL_BINDIR/RUSTC_STAGE model the stage1 bootstrap environment; RUSTFLAGS is deliberately unset; target-only sysroot/linker/C/AR/WASI flags are passed through target-scoped environment variables so host build scripts and proc macros keep using the stage1 host sysroot while target C build scripts use the WASI SDK."
 
 [direct_pack]
 path = ".rouwdi/packs/rustc-private/wasm32-wasip1"
 manifest_path = ".rouwdi/packs/rustc-private/wasm32-wasip1/pack-manifest.json"
 status = "ready"
-root_crates = ["rustc_hir", "rustc_middle", "rustc_mir_build", "rustc_parse", "rustc_session", "rustc_span"]
+root_crates = [
+  "rustc_builtin_macros",
+  "rustc_expand",
+  "rustc_hir",
+  "rustc_hir_analysis",
+  "rustc_interface",
+  "rustc_lint",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_parse",
+  "rustc_passes",
+  "rustc_query_impl",
+  "rustc_resolve",
+  "rustc_session",
+  "rustc_span",
+]
 transitive_crates = [
   "rustc_abi",
   "rustc_apfloat",
   "rustc_arena",
   "rustc_ast",
   "rustc_ast_ir",
+  "rustc_ast_lowering",
+  "rustc_ast_passes",
   "rustc_ast_pretty",
+  "rustc_attr_parsing",
   "rustc_baked_icu_data",
+  "rustc_borrowck",
+  "rustc_builtin_macros",
+  "rustc_codegen_ssa",
+  "rustc_const_eval",
   "rustc_data_structures",
   "rustc_error_codes",
   "rustc_error_messages",
   "rustc_errors",
+  "rustc_expand",
   "rustc_feature",
   "rustc_fs_util",
   "rustc_graphviz",
   "rustc_hashes",
   "rustc_hir",
+  "rustc_hir_analysis",
   "rustc_hir_id",
   "rustc_hir_pretty",
+  "rustc_hir_typeck",
+  "rustc_incremental",
   "rustc_index",
   "rustc_index_macros",
   "rustc_infer",
+  "rustc_interface",
   "rustc_lexer",
+  "rustc_lint",
   "rustc_lint_defs",
   "rustc_macros",
+  "rustc_metadata",
   "rustc_middle",
   "rustc_mir_build",
+  "rustc_mir_dataflow",
+  "rustc_mir_transform",
+  "rustc_monomorphize",
   "rustc_next_trait_solver",
   "rustc_parse",
+  "rustc_parse_format",
+  "rustc_passes",
   "rustc_pattern_analysis",
+  "rustc_privacy",
+  "rustc_proc_macro",
+  "rustc_query_impl",
+  "rustc_resolve",
   "rustc_serialize",
   "rustc_session",
   "rustc_span",
+  "rustc_symbol_mangling",
   "rustc_target",
   "rustc_thread_pool",
   "rustc_trait_selection",
+  "rustc_traits",
   "rustc_transmute",
+  "rustc_ty_utils",
   "rustc_type_ir",
   "rustc_type_ir_macros",
 ]
 exact_missing_crates = []
 hash_list = [
-  "31ec2c7b54ffb3855239f76f9cc9e4381cab7f7cab78a0ebc512f03baeb6fbfa",
-  "e73afa0188b593c3e66fe0f95d8e8ef42d7a506aa8bb7afbd362178d58e6d44c",
-  "c9cec35d5adf143924aa7c1e4af2d8152e3fc99a1b87b412a94037da0f069052",
-  "287bcf5d1c8710a84fbb08b47f9af71b259d0658d1052c119fe94f3b2724266e",
-  "5be83d289a9ad19a1bab5245a5a370895b795d8d45993271737077240f6c8ce3",
-  "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949",
+  "37af76de72b5336a1b001bb461b81ce666a019caccaebee1aaee4773c58ccd24",
+  "553bc117b89df8d9c43614be7924a8d0c2135d4d558e33351161619c1d52175e",
+  "08a4549d7f4611411b4a6d6588ee5a9fa3973d7b101d394250e2f57245d99a36",
+  "d5eb9ff6c5bec28b9c40a3a612c19b3639396e1588a1710909b195e875e0a46d",
+  "fbb676f3ebb6cc9fa949226e12b0d3f18a881a78d84e560ac333c184c76be6e3",
+  "43633e8d1cce28d1bc8b01e9cd07ec2235657f31189e3a7cff8f0667a598317f",
+  "208b1cd6a05de7ce97728045d0e962dcf8d92983379a718d0629f725f618fdbf",
+  "f8ca4c4b4c89c5673b75e82abeb47fd022d2d020f3e2e41bbd3d5f2b138d77e4",
+  "5a534c50f41e4a68f0dbd52f820787635a253b05bb1b7e3a18980119b5c4b391",
+  "3434ea185072c5d52d80d8ca405b2a798a30462058ef955e13a215200fb894b3",
+  "226fc23f52db19328dee6ecfc71f8f10b69baa332425274955391f52d18deb05",
+  "dbfbab75ecb37363dace86ed95617e20e26d7d29e42a3592e9c62e8b5e69702d",
+  "0451cdd955ce0cab301c37c9c121581f5e29fd273a31d01390a6a0c24aae615d",
+  "470e5387d9bc9291140728b4c47f1052c7241320384cd938e9a8e7d07ec32c56",
+  "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4",
 ]
 target_triple = "wasm32-wasip1"
 all_required_roots_target_loadable = true
@@ -653,7 +738,7 @@ first_hard_blocker = "none"
 command = "cargo build --manifest-path third_party/rust/src/tools/rouwdi-mir-adapter-probe/Cargo.toml --target wasm32-wasip1 --release --message-format short"
 workdir = "third_party/rust"
 exit_code = 0
-classification = "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+classification = "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
 target_triple = "wasm32-wasip1"
 exports = [
   "memory",
@@ -671,14 +756,113 @@ exports = [
 ]
 abi_v1_symbols_present = true
 full_mir_payload_available = false
-exact_blocker = "The bridge Wasm is loadable and exports ABI v1, and execute reaches SourceMap creation, ParseSess construction, rustc_parse parser creation, and real crate AST creation. The next blocker is HIR lowering/TyCtxt global context setup; it does not fabricate HIR, TyCtxt, Providers, Body, or MIR."
+exact_blocker = "The bridge Wasm is loadable and exports ABI v1. The executed payload reaches SourceMap creation, ParseSess construction, rustc_parse parser creation, real crate AST creation, rustc_interface::Config creation, rustc_interface query/global context entry, TyCtxt entry, and HIR lowering through TyCtxt HIR item access. It stops before TyCtxt::optimized_mir because the no-core payload fixture needs lang-item/core setup; it does not fabricate HIR, TyCtxt, Providers, Body, or MIR."
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_builtin_macros"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_builtin_macros.rlib"
+sha256 = "37af76de72b5336a1b001bb461b81ce666a019caccaebee1aaee4773c58ccd24"
+size_bytes = 5557444
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_expand"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_expand.rlib"
+sha256 = "553bc117b89df8d9c43614be7924a8d0c2135d4d558e33351161619c1d52175e"
+size_bytes = 5387158
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_hir"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_hir.rlib"
+sha256 = "08a4549d7f4611411b4a6d6588ee5a9fa3973d7b101d394250e2f57245d99a36"
+size_bytes = 6579402
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_hir_analysis"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_hir_analysis.rlib"
+sha256 = "d5eb9ff6c5bec28b9c40a3a612c19b3639396e1588a1710909b195e875e0a46d"
+size_bytes = 19940938
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_interface"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_interface.rlib"
+sha256 = "fbb676f3ebb6cc9fa949226e12b0d3f18a881a78d84e560ac333c184c76be6e3"
+size_bytes = 8422646
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_lint"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_lint.rlib"
+sha256 = "43633e8d1cce28d1bc8b01e9cd07ec2235657f31189e3a7cff8f0667a598317f"
+size_bytes = 14065122
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_middle"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_middle.rlib"
+sha256 = "208b1cd6a05de7ce97728045d0e962dcf8d92983379a718d0629f725f618fdbf"
+size_bytes = 38685072
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_mir_build"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_mir_build.rlib"
+sha256 = "f8ca4c4b4c89c5673b75e82abeb47fd022d2d020f3e2e41bbd3d5f2b138d77e4"
+size_bytes = 6727864
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
 
 [[direct_bridge_retry.input_artifact_identities]]
 role = "direct_rustc_private_root_rustc_parse"
 artifact_format = "rlib"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_parse.rlib"
-sha256 = "ac799b3a3203116001574ae50adf6abef4b186e02046040d8fc224eac2d277f1"
+sha256 = "5a534c50f41e4a68f0dbd52f820787635a253b05bb1b7e3a18980119b5c4b391"
 size_bytes = 7873024
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_passes"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_passes.rlib"
+sha256 = "3434ea185072c5d52d80d8ca405b2a798a30462058ef955e13a215200fb894b3"
+size_bytes = 9915518
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_query_impl"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_query_impl.rlib"
+sha256 = "226fc23f52db19328dee6ecfc71f8f10b69baa332425274955391f52d18deb05"
+size_bytes = 30613572
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_resolve"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_resolve.rlib"
+sha256 = "dbfbab75ecb37363dace86ed95617e20e26d7d29e42a3592e9c62e8b5e69702d"
+size_bytes = 9867326
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
 
@@ -686,8 +870,8 @@ loadable_by_rouwdi_wasm = true
 role = "direct_rustc_private_root_rustc_session"
 artifact_format = "rlib"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_session.rlib"
-sha256 = "1a9d5476abd0464ba05b8552439f74f9b1728a448dbce954f817fc746c056d99"
-size_bytes = 4141126
+sha256 = "0451cdd955ce0cab301c37c9c121581f5e29fd273a31d01390a6a0c24aae615d"
+size_bytes = 4137376
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
 
@@ -695,7 +879,7 @@ loadable_by_rouwdi_wasm = true
 role = "direct_rustc_private_root_rustc_span"
 artifact_format = "rlib"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_span.rlib"
-sha256 = "5be83d289a9ad19a1bab5245a5a370895b795d8d45993271737077240f6c8ce3"
+sha256 = "470e5387d9bc9291140728b4c47f1052c7241320384cd938e9a8e7d07ec32c56"
 size_bytes = 3597380
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
@@ -704,13 +888,218 @@ loadable_by_rouwdi_wasm = true
 role = "direct_rustc_private_mir_adapter_wasm"
 artifact_format = "wasm_module"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
-sha256 = "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949"
-size_bytes = 4249509
+sha256 = "a422ed1d70a6d84ed9a122306983fb77eb93217c7b9ddda1e414719f53f0ecb4"
+size_bytes = 88409655
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
 
 [bridge_retry_after_direct_pack]
 attempted = true
-classification = "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
-reason = "The direct pack builder produced target-loadable root artifacts and retried the real MIR adapter bridge. The resulting wasm32-wasip1 module is loadable with ABI v1 exports, and its execute path reaches SourceMap creation, ParseSess construction, rustc_parse parser creation, and real crate AST creation; full MIR waits on HIR lowering/TyCtxt global context construction."
+classification = "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items"
+reason = "The direct pack builder produced target-loadable root artifacts and retried the real MIR adapter bridge. The resulting wasm32-wasip1 module is loadable with ABI v1 exports, and its execute path reaches SourceMap, ParseSess, parser, real AST, rustc_interface global context, TyCtxt entry, and HIR lowering; full MIR waits on lang-item/core setup for safe TyCtxt::optimized_mir execution."
 required_before_retry = []
+
+[upstream_context_closure_attempt]
+selected_route = "rustc_interface"
+manual_direct_pipeline_evaluated = true
+manual_direct_pipeline_rejected_reason = "TyCtxt, providers, arenas, and the global context are owned by rustc_interface; fabricating them would violate the milestone."
+rustc_driver_evaluated = true
+rustc_driver_rejected_reason = "rustc_interface exposes the needed Config/run_compiler/global-context boundary without pulling in the full rustc_driver host CLI wrapper."
+rustc_query_system_crate_present = false
+rustc_query_system_note = "This pinned upstream tree has rustc_query_impl and query modules under rustc_middle; there is no compiler/rustc_query_system crate."
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_builtin_macros"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_builtin_macros --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_builtin_macros.rlib"
+rlib_sha256 = "37af76de72b5336a1b001bb461b81ce666a019caccaebee1aaee4773c58ccd24"
+rlib_size_bytes = 5557444
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_builtin_macros-d4687768b1646ba5.rmeta"
+rmeta_sha256 = "8d82a2d25ac1a6478b3ddb3cf96cf9840c10bded2149397ba0c8f85494c44ed2"
+rmeta_size_bytes = 1295355
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_expand"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_expand --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_expand.rlib"
+rlib_sha256 = "553bc117b89df8d9c43614be7924a8d0c2135d4d558e33351161619c1d52175e"
+rlib_size_bytes = 5387158
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_expand-66c8e04617a9c754.rmeta"
+rmeta_sha256 = "424efe250bb3b0e69485123693201697f9ad1807c801436d0aed9be47c30a829"
+rmeta_size_bytes = 1546558
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_hir"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_hir --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_hir.rlib"
+rlib_sha256 = "08a4549d7f4611411b4a6d6588ee5a9fa3973d7b101d394250e2f57245d99a36"
+rlib_size_bytes = 6579402
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_hir_typeck-f49961dfa68cb73f.rmeta"
+rmeta_sha256 = "4017155af514e414036da1b606c5c977b942b1282f5447c729bb59a86698809c"
+rmeta_size_bytes = 4210601
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_hir_analysis"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_hir_analysis --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_hir_analysis.rlib"
+rlib_sha256 = "d5eb9ff6c5bec28b9c40a3a612c19b3639396e1588a1710909b195e875e0a46d"
+rlib_size_bytes = 19940938
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_hir_analysis-47fd90039cdef1a8.rmeta"
+rmeta_sha256 = "ef33e937f826bd2e96b98206a075429db537993777284c6c3d290c2a6753f885"
+rmeta_size_bytes = 3751656
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_interface"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_interface --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_interface.rlib"
+rlib_sha256 = "fbb676f3ebb6cc9fa949226e12b0d3f18a881a78d84e560ac333c184c76be6e3"
+rlib_size_bytes = 8422646
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_interface-ed4c9e525b6d797e.rmeta"
+rmeta_sha256 = "22e2d5644ee93b3c4d885ad37472deb7bce6714c6dc5b899fb8d72a160c482c9"
+rmeta_size_bytes = 605969
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_lint"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_lint --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_lint.rlib"
+rlib_sha256 = "43633e8d1cce28d1bc8b01e9cd07ec2235657f31189e3a7cff8f0667a598317f"
+rlib_size_bytes = 14065122
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_lint-4b770c36c6bb72c3.rmeta"
+rmeta_sha256 = "d5ffb928d270488800366f86d079ff076e294b6002ff5cc4f23e7b53d17ca695"
+rmeta_size_bytes = 3755204
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_middle"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_middle --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_middle.rlib"
+rlib_sha256 = "208b1cd6a05de7ce97728045d0e962dcf8d92983379a718d0629f725f618fdbf"
+rlib_size_bytes = 38685072
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_middle-fc0f1cc571eddc38.rmeta"
+rmeta_sha256 = "dcf0a1a725e5d4e23154bf1e4624ca8909ae32f8f632e36e8f9d5879c12b8eb1"
+rmeta_size_bytes = 30467669
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_mir_build"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_mir_build --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_mir_build.rlib"
+rlib_sha256 = "f8ca4c4b4c89c5673b75e82abeb47fd022d2d020f3e2e41bbd3d5f2b138d77e4"
+rlib_size_bytes = 6727864
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_mir_build-508ed5f29a7760f8.rmeta"
+rmeta_sha256 = "f5a97fffa958618c676e1c1784787b2de42e700f4cce5348349029615e2a8b81"
+rmeta_size_bytes = 2045967
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_parse"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_parse --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_parse.rlib"
+rlib_sha256 = "5a534c50f41e4a68f0dbd52f820787635a253b05bb1b7e3a18980119b5c4b391"
+rlib_size_bytes = 7873024
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_parse-962505ed30a9d980.rmeta"
+rmeta_sha256 = "7374e144cb25d4807c54c50812ba61c248ff70b95ddc415de2037c9f54af1e91"
+rmeta_size_bytes = 3326695
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_passes"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_passes --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_passes.rlib"
+rlib_sha256 = "3434ea185072c5d52d80d8ca405b2a798a30462058ef955e13a215200fb894b3"
+rlib_size_bytes = 9915518
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_passes-627b304565357170.rmeta"
+rmeta_sha256 = "322c7ff79b071a8d0fd9e793b1a96d7721f8f04eb0c5530b5858737978d5aa7f"
+rmeta_size_bytes = 1035750
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_query_impl"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_query_impl --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_query_impl.rlib"
+rlib_sha256 = "226fc23f52db19328dee6ecfc71f8f10b69baa332425274955391f52d18deb05"
+rlib_size_bytes = 30613572
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_query_impl-62b0784efaff96d0.rmeta"
+rmeta_sha256 = "ad5b943d555955d0ce3eee9ce3ad902f57b68e0a1279d01fd2c0a92804c883c5"
+rmeta_size_bytes = 14812355
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_resolve"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_resolve --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_resolve.rlib"
+rlib_sha256 = "dbfbab75ecb37363dace86ed95617e20e26d7d29e42a3592e9c62e8b5e69702d"
+rlib_size_bytes = 9867326
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_resolve-2154205cb98e95e3.rmeta"
+rmeta_sha256 = "4c27c64e5b88eefe7c6d7f94a6c74aeda897c3d1de10b96da0748ad8f0b627d8"
+rmeta_size_bytes = 2736774
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_session"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_session --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_session.rlib"
+rlib_sha256 = "0451cdd955ce0cab301c37c9c121581f5e29fd273a31d01390a6a0c24aae615d"
+rlib_size_bytes = 4137376
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_session-d0b3d1acec7de76a.rmeta"
+rmeta_sha256 = "723c9afb74fd349b948321e0e78cc77a9b812cb49d9853472eb275e84f68965b"
+rmeta_size_bytes = 2377606
+target_loadable = true
+blocker = "none"
+
+[[upstream_context_closure_artifacts]]
+crate = "rustc_span"
+command = "$env:RUSTC='C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1\\bin/rustc.exe'; $env:RUSTC_BOOTSTRAP='1'; $env:CARGO_TARGET_DIR='C:\\rouwdi\\.rouwdi/direct-rustc-private-pack/target'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage1; $env:CARGO_TARGET_WASM32_WASIP1_LINKER=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CC_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang.exe; $env:CXX_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/wasm32-wasip1-clang++.exe; $env:AR_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ar.exe; $env:RANLIB_wasm32_wasip1=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\bin/llvm-ranlib.exe; $env:WASI_SYSROOT=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CXXFLAGS_wasm32_wasip1=--sysroot=C:\\rouwdi\\.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows\\share/wasi-sysroot; $env:CFG_RELEASE=1.97.0-nightly; $env:CFG_RELEASE_CHANNEL=nightly; $env:CFG_RELEASE_NUM=1.97.0; $env:CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc; $env:RUSTC_INSTALL_BINDIR=bin; $env:RUSTC_STAGE=1; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; 'C:\\rouwdi\\third_party/rust\\build\\x86_64-pc-windows-msvc\\stage0/bin/cargo.exe' build --manifest-path 'C:\\rouwdi\\third_party/rust\\Cargo.toml' -p rustc_span --target wasm32-wasip1 --release --message-format short"
+exit_code = 0
+target_triple = "wasm32-wasip1"
+rlib_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/librustc_span.rlib"
+rlib_sha256 = "470e5387d9bc9291140728b4c47f1052c7241320384cd938e9a8e7d07ec32c56"
+rlib_size_bytes = 3597380
+rmeta_path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_span-9f2e0c89884bf216.rmeta"
+rmeta_sha256 = "6e8ae784268aa99ba9040736bdd22e6e6225434dafcc57514ee4833c2ec04614"
+rmeta_size_bytes = 2521918
+target_loadable = true
+blocker = "none"

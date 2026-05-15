@@ -150,11 +150,11 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         payload_carrier.load_blocker_kind.as_deref(),
-        Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+        Some("mir_provider_requires_lang_items_before_body_construction")
     );
     assert_eq!(
         mir_handoff.payload_milestone_state.as_deref(),
-        Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+        Some("bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items")
     );
     let target_pack = mir_handoff.payload_target_pack.as_ref().unwrap();
     assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -189,13 +189,13 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(mir_handoff.payload_abi_route_attempted, Some(true));
     assert_eq!(
         mir_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-        Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
+        Some("mir_provider_requires_lang_items_before_body_construction")
     );
     let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
     assert_eq!(bridge_attempt.status, "context_attempted");
     assert_eq!(
         bridge_attempt.blocker_kind,
-        "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        "mir_provider_requires_lang_items_before_body_construction"
     );
     assert_eq!(bridge_attempt.command_exit_code, Some(0));
     assert!(bridge_attempt
@@ -225,7 +225,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         mir_handoff.payload_next_required_artifact_format.as_deref(),
-        Some("payload_owned_hir_tycx_context")
+        Some("payload_owned_mir_provider_lang_items")
     );
     assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
     assert_eq!(

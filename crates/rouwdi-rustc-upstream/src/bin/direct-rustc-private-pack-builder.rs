@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
-const BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION: &str =
-    "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context";
+const BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION: &str =
+    "bridge_wasm_hir_lowering_attempted_blocked_at_mir_provider_requires_lang_items";
 const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
     "memory",
     "rouwdi_compiler_payload_abi_v1_version",
@@ -288,6 +288,7 @@ fn run_crate_attempt(
     let cfg_release_channel = env_value(&command_model.cfg_release_channel_env);
     let cfg_release_num = env_value(&command_model.cfg_release_num_env);
     let cfg_compiler_host_triple = env_value(&command_model.cfg_compiler_host_triple_env);
+    let rustc_install_bindir = env_value(&command_model.rustc_install_bindir_env);
     let rustc_stage = env_value(&command_model.rustc_stage_env);
     let command_text =
         render_cargo_command(command_model, &manifest_path, crate_name, target_triple);
@@ -321,6 +322,7 @@ fn run_crate_attempt(
         .env("CFG_RELEASE_CHANNEL", cfg_release_channel)
         .env("CFG_RELEASE_NUM", cfg_release_num)
         .env("CFG_COMPILER_HOST_TRIPLE", cfg_compiler_host_triple)
+        .env("RUSTC_INSTALL_BINDIR", rustc_install_bindir)
         .env("RUSTC_STAGE", rustc_stage)
         .env_remove("RUSTFLAGS")
         .current_dir(&rust_root)
@@ -528,9 +530,10 @@ fn run_bridge_retry(
     let cfg_release_channel = env_value(&command_model.cfg_release_channel_env);
     let cfg_release_num = env_value(&command_model.cfg_release_num_env);
     let cfg_compiler_host_triple = env_value(&command_model.cfg_compiler_host_triple_env);
+    let rustc_install_bindir = env_value(&command_model.rustc_install_bindir_env);
     let rustc_stage = env_value(&command_model.rustc_stage_env);
     let command_text = format!(
-        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --bin {} --target {} --release --message-format short",
+        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --bin {} --target {} --release --message-format short",
         command_model.host_rustc_path,
         command_model.rustc_bootstrap,
         command_model.cargo_target_dir,
@@ -547,6 +550,7 @@ fn run_bridge_retry(
         command_model.cfg_release_channel_env,
         command_model.cfg_release_num_env,
         command_model.cfg_compiler_host_triple_env,
+        command_model.rustc_install_bindir_env,
         command_model.rustc_stage_env,
         command_model.host_cargo_path,
         adapter_manifest.display(),
@@ -583,6 +587,7 @@ fn run_bridge_retry(
         .env("CFG_RELEASE_CHANNEL", cfg_release_channel)
         .env("CFG_RELEASE_NUM", cfg_release_num)
         .env("CFG_COMPILER_HOST_TRIPLE", cfg_compiler_host_triple)
+        .env("RUSTC_INSTALL_BINDIR", rustc_install_bindir)
         .env("RUSTC_STAGE", rustc_stage)
         .env_remove("RUSTFLAGS")
         .current_dir(&rust_root)
@@ -661,15 +666,15 @@ fn run_bridge_retry(
         })
         .collect::<Vec<_>>();
     let classification = if exit_code == 0 && output_artifact_identity.is_some() {
-        BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION
+        BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION
     } else if exit_code == 0 {
         "direct_rustc_private_pack_ready_bridge_blocked_at_no_wasm_module"
     } else {
         "direct_rustc_private_pack_ready_bridge_blocked_at_wasm_link"
     }
     .to_owned();
-    let exact_blocker = if classification == BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION {
-        "The direct pack builder produced target-loadable rustc-private root artifacts, including rustc_parse and rustc_session, retried the MIR adapter as a wasm32-wasip1 command module, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now attempts payload-owned rustc_span::SourceMap/source-file context, rustc_session::parse::ParseSess construction, rustc_parse parser creation, and Parser::parse_crate_mod before reporting the HIR/TyCtxt global-context blocker without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
+    let exact_blocker = if classification == BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION {
+        "The direct pack builder produced target-loadable rustc-private root artifacts, retried the MIR adapter as a wasm32-wasip1 command module, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now creates real SourceMap/ParseSess/parser/AST state, creates a real rustc_interface::Config, enters rustc_interface queries/global context/TyCtxt, forces upstream HIR lowering by walking TyCtxt HIR items, and reports the MIR-provider lang-item blocker without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
     } else {
         first_relevant_error(&combined_output).unwrap_or_else(|| {
             format!(
@@ -700,7 +705,23 @@ fn bridge_runtime_extern_required(crate_name: &str) -> bool {
 }
 
 fn bridge_runtime_input_identity_required(crate_name: &str) -> bool {
-    matches!(crate_name, "rustc_parse" | "rustc_session" | "rustc_span")
+    matches!(
+        crate_name,
+        "rustc_builtin_macros"
+            | "rustc_expand"
+            | "rustc_hir"
+            | "rustc_hir_analysis"
+            | "rustc_interface"
+            | "rustc_lint"
+            | "rustc_middle"
+            | "rustc_mir_build"
+            | "rustc_parse"
+            | "rustc_passes"
+            | "rustc_query_impl"
+            | "rustc_resolve"
+            | "rustc_session"
+            | "rustc_span"
+    )
 }
 
 fn select_bridge_extern_artifact<'a>(
@@ -845,7 +866,7 @@ fn render_cargo_command(
     target_triple: &str,
 ) -> String {
     format!(
-        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' -p {} --target {} --release --message-format short",
+        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' -p {} --target {} --release --message-format short",
         command_model.host_rustc_path,
         command_model.rustc_bootstrap,
         command_model.cargo_target_dir,
@@ -862,6 +883,7 @@ fn render_cargo_command(
         command_model.cfg_release_channel_env,
         command_model.cfg_release_num_env,
         command_model.cfg_compiler_host_triple_env,
+        command_model.rustc_install_bindir_env,
         command_model.rustc_stage_env,
         command_model.host_cargo_path,
         manifest_path.display(),
