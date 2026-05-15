@@ -1,11 +1,11 @@
 schema_version = 1
 target_triple = "wasm32-wasip1"
 host_triple = "x86_64-pc-windows-msvc"
-status = "blocked"
-milestone_state = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
-route_decision = "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
-exact_blocker = "Ninja 1.13.2 and CMake 4.3.2 were provisioned repo-locally, bootstrap.toml was updated with [llvm].download-ci-llvm=true, [llvm].ninja=true, [target.wasm32-wasip1].wasi-root, and explicit WASI SDK cc/cxx/ar/ranlib/linker .exe paths. The discovered stage2 wasm-host route was then rerun for rustc_span, rustc_session, rustc_hir, rustc_middle, and rustc_mir_build with `python x.py build compiler/<crate> --stage 2 --host wasm32-wasip1 -v`. Every root exited 1 before root rustc-private artifact emission while bootstrap attempted `Building LLVM for wasm32-wasip1`; Ninja invoked the WASI C++ compiler and LLVM Support failed on `fatal error: 'machine/endian.h' file not found` from llvm/include/llvm/ADT/bit.h. rustc_mir_build also exposed LLVM Support FileSystem status API compile errors under the same wasm32-wasip1 LLVM build. No target-loadable rustc_span, rustc_session, rustc_hir, rustc_middle, or rustc_mir_build rlib/rmeta was produced."
-next_command = "Switch to fallback architecture `direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm`; do not retry the MIR bridge until real target-loadable rustc-private root artifacts exist."
+status = "ready_bridge_shim_only"
+milestone_state = "rustc_private_bridge_wasm_loadable_shim_only"
+route_decision = "rustc_private_bridge_wasm_loadable_shim_only"
+exact_blocker = "The direct pack builder consumed this manifest and built the full listed rustc-private closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route. The five required roots rustc_span, rustc_session, rustc_hir, rustc_middle, and rustc_mir_build emitted target-loadable wasm32-wasip1 rlibs. The real rouwdi-mir-adapter-probe bridge was retried with explicit target --extern paths to those artifacts and emitted `.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm` (sha256 9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c, 1921 bytes) with ABI v1 exports. It is loadable shim-only: the ABI returns upstream_context_unavailable and does not fabricate TyCtxt, Providers, Body<'tcx>, or MIR."
+next_command = "Define the real upstream_context_handle ABI and execute the loadable shim against a real rustc TyCtxt/Providers context to advance from shim-only to full MIR payload."
 
 [dependency_closure]
 metadata_command = "C:\\rouwdi\\third_party\\rust\\build\\x86_64-pc-windows-msvc\\stage0\\bin\\cargo.exe metadata --format-version 1 --manifest-path C:\\rouwdi\\third_party\\rust\\compiler\\rustc\\Cargo.toml"
@@ -211,7 +211,7 @@ crates = [
 ]
 
 [target_loadable_resolution]
-selected_strategy = "fallback_selected_direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
+selected_strategy = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
 rejected_strategies = [
   "building_with_xpy_target: produced host compiler artifacts, not wasm32-wasip1 target artifacts",
   "passing_explicit_extern_host_paths: rejected because host x86_64-pc-windows-msvc rlibs are not target-loadable Wasm",
@@ -222,13 +222,13 @@ rejected_strategies = [
 ]
 target_sysroot_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
 target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
-target_rustc_private_artifact_count = 0
+target_rustc_private_artifact_count = 34
 host_artifact_dir = "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release"
-exact_blocker = "No target-loadable rustc-private sysroot or rouwdi compiler-private target-pack exists yet. The stage1 `--target wasm32-wasip1` route produced host compiler rlibs/rmetas only. The stage2 `--host wasm32-wasip1` route was attempted for all five root crates after provisioning Ninja, CMake, CI LLVM config, WASI SDK, and explicit linker/clang paths, but it blocked inside the LLVM-for-wasm32-wasip1 build before root crate Cargo emission. Host artifacts must not be passed as wasm32-wasip1 --extern inputs or copied into the wasm target pack."
+exact_blocker = "The direct pack now contains target-loadable wasm32-wasip1 rustc-private rlibs for the required MIR bridge roots and their target-loadable non-proc-macro closure. Host proc-macro crates are recorded as host artifacts and are not relabeled. The remaining blocker is not target-pack construction; it is the missing full upstream_context_handle execution ABI for TyCtxt/Providers/MIR handoff."
 
 [fallback_architecture]
 selected = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
-status = "selected"
+status = "completed"
 reason = "The stage2 wasm-host route tries to build an LLVM host library for wasm32-wasip1 and is blocked by LLVM C++ portability against the WASI sysroot before rustc-private crates are emitted. The next route must avoid building a full wasm-host rustc and instead construct only the rustc-private root closure required by the MIR adapter as a target pack."
 must_not_do = [
   "relabel host x86_64-pc-windows-msvc rlibs as wasm32-wasip1",
@@ -486,3 +486,180 @@ required_before_retry = [
   "target-loadable rustc_middle artifact",
   "target-loadable rustc_mir_build artifact",
 ]
+
+[direct_pack_builder]
+tool = "direct-rustc-private-pack-builder"
+command = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder -- --json"
+manifest_path = "bootstrap/rustc-private-target-pack.toml"
+pack_manifest_path = ".rouwdi/packs/rustc-private/wasm32-wasip1/pack-manifest.json"
+consumes_manifest = true
+machine_readable = true
+
+[direct_build_strategy]
+strategy = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
+host_cargo_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage0/bin/cargo.exe"
+host_rustc_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/bin/rustc.exe"
+host_triple = "x86_64-pc-windows-msvc"
+target_triple = "wasm32-wasip1"
+stage1_host_sysroot = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+stage1_target_sysroot = "third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+target_libdir_path = "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib"
+wasi_sdk_root = ".rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows"
+wasi_sysroot = ".rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/share/wasi-sysroot"
+wasi_linker_path = ".rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
+target_cc_env = "CC_wasm32_wasip1=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
+target_cxx_env = "CXX_wasm32_wasip1=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang++.exe"
+target_ar_env = "AR_wasm32_wasip1=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/llvm-ar.exe"
+target_ranlib_env = "RANLIB_wasm32_wasip1=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/llvm-ranlib.exe"
+wasi_sysroot_env = "WASI_SYSROOT=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/share/wasi-sysroot"
+target_cflags_env = "CFLAGS_wasm32_wasip1=--sysroot=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/share/wasi-sysroot"
+target_cxxflags_env = "CXXFLAGS_wasm32_wasip1=--sysroot=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/share/wasi-sysroot"
+cargo_target_dir = ".rouwdi/direct-rustc-private-pack/target"
+rustc_bootstrap = "1"
+cfg_release_env = "CFG_RELEASE=1.97.0-nightly"
+cfg_release_channel_env = "CFG_RELEASE_CHANNEL=nightly"
+cfg_release_num_env = "CFG_RELEASE_NUM=1.97.0"
+cfg_compiler_host_triple_env = "CFG_COMPILER_HOST_TRIPLE=x86_64-pc-windows-msvc"
+rustc_stage_env = "RUSTC_STAGE=1"
+global_rustflags = ""
+target_rustflags_env = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS=-Zunstable-options --cfg=bootstrap --sysroot third_party/rust/build/x86_64-pc-windows-msvc/stage1"
+target_linker_env = "CARGO_TARGET_WASM32_WASIP1_LINKER=.rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
+host_flags_separated = true
+command_model = "RUSTC points at stage1 host rustc; RUSTC_BOOTSTRAP=1 plus CFG_RELEASE/CFG_RELEASE_CHANNEL/CFG_RELEASE_NUM/CFG_COMPILER_HOST_TRIPLE/RUSTC_STAGE model the stage1 bootstrap environment; RUSTFLAGS is deliberately unset; target-only sysroot/linker/C/AR/WASI flags are passed through target-scoped environment variables so host build scripts and proc macros keep using the stage1 host sysroot while target C build scripts use the WASI SDK."
+
+[direct_pack]
+path = ".rouwdi/packs/rustc-private/wasm32-wasip1"
+manifest_path = ".rouwdi/packs/rustc-private/wasm32-wasip1/pack-manifest.json"
+status = "ready"
+root_crates = ["rustc_hir", "rustc_middle", "rustc_mir_build", "rustc_session", "rustc_span"]
+transitive_crates = [
+  "rustc_abi",
+  "rustc_apfloat",
+  "rustc_arena",
+  "rustc_ast",
+  "rustc_ast_ir",
+  "rustc_ast_pretty",
+  "rustc_baked_icu_data",
+  "rustc_data_structures",
+  "rustc_error_codes",
+  "rustc_error_messages",
+  "rustc_errors",
+  "rustc_feature",
+  "rustc_fs_util",
+  "rustc_graphviz",
+  "rustc_hashes",
+  "rustc_hir",
+  "rustc_hir_id",
+  "rustc_hir_pretty",
+  "rustc_index",
+  "rustc_index_macros",
+  "rustc_infer",
+  "rustc_lexer",
+  "rustc_lint_defs",
+  "rustc_macros",
+  "rustc_middle",
+  "rustc_mir_build",
+  "rustc_next_trait_solver",
+  "rustc_pattern_analysis",
+  "rustc_serialize",
+  "rustc_session",
+  "rustc_span",
+  "rustc_target",
+  "rustc_thread_pool",
+  "rustc_trait_selection",
+  "rustc_transmute",
+  "rustc_type_ir",
+  "rustc_type_ir_macros",
+]
+exact_missing_crates = []
+hash_list = [
+  "31ec2c7b54ffb3855239f76f9cc9e4381cab7f7cab78a0ebc512f03baeb6fbfa",
+  "e73afa0188b593c3e66fe0f95d8e8ef42d7a506aa8bb7afbd362178d58e6d44c",
+  "c9cec35d5adf143924aa7c1e4af2d8152e3fc99a1b87b412a94037da0f069052",
+  "287bcf5d1c8710a84fbb08b47f9af71b259d0658d1052c119fe94f3b2724266e",
+  "5b643181c3bd895d9d18bc263bb64739ac6a6f0cdaa9e86b16463a5949f58aa7",
+  "9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c",
+]
+target_triple = "wasm32-wasip1"
+all_required_roots_target_loadable = true
+first_hard_blocker = "none"
+
+[direct_bridge_retry]
+command = "cargo build --manifest-path third_party/rust/src/tools/rouwdi-mir-adapter-probe/Cargo.toml --target wasm32-wasip1 --release --message-format short"
+workdir = "third_party/rust"
+exit_code = 0
+classification = "rustc_private_bridge_wasm_loadable_shim_only"
+target_triple = "wasm32-wasip1"
+exports = [
+  "_initialize",
+  "rouwdi_compiler_payload_abi_v1_descriptor_len",
+  "rouwdi_compiler_payload_abi_v1_descriptor_ptr",
+  "rouwdi_compiler_payload_abi_v1_stage",
+  "rouwdi_mir_handoff_payload_v1_execute",
+  "rouwdi_mir_handoff_payload_v1_last_error_len",
+  "rouwdi_mir_handoff_payload_v1_last_error_ptr",
+  "rouwdi_compiler_payload_abi_v1_version",
+]
+abi_v1_symbols_present = true
+full_mir_payload_available = false
+exact_blocker = "The bridge Wasm is loadable and exports ABI v1, but it is shim-only because ABI v1 has no real upstream_context_handle into rustc TyCtxt/Providers yet. The execute export returns upstream_context_unavailable and does not fabricate MIR."
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_hir"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_hir-e1317964a18743a2.rlib"
+sha256 = "31ec2c7b54ffb3855239f76f9cc9e4381cab7f7cab78a0ebc512f03baeb6fbfa"
+size_bytes = 6520554
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_middle"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_middle-1a753a30e99507b7.rlib"
+sha256 = "e73afa0188b593c3e66fe0f95d8e8ef42d7a506aa8bb7afbd362178d58e6d44c"
+size_bytes = 38448594
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_mir_build"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_mir_build-d417b94b8f3ae0d7.rlib"
+sha256 = "c9cec35d5adf143924aa7c1e4af2d8152e3fc99a1b87b412a94037da0f069052"
+size_bytes = 6589164
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_session"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_session-c04083aaea526d8c.rlib"
+sha256 = "287bcf5d1c8710a84fbb08b47f9af71b259d0658d1052c119fe94f3b2724266e"
+size_bytes = 4105622
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[[direct_bridge_retry.input_artifact_identities]]
+role = "direct_rustc_private_root_rustc_span"
+artifact_format = "rlib"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/deps/librustc_span-22fdb7219a96524f.rlib"
+sha256 = "5b643181c3bd895d9d18bc263bb64739ac6a6f0cdaa9e86b16463a5949f58aa7"
+size_bytes = 3580546
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[direct_bridge_retry.output_artifact_identity]
+role = "direct_rustc_private_mir_adapter_wasm"
+artifact_format = "wasm_module"
+path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
+sha256 = "9b7a61f9581b8002bde212877c4d3a8559acb26a8e52253ddd158d8c4d85ca9c"
+size_bytes = 1921
+target_triple = "wasm32-wasip1"
+loadable_by_rouwdi_wasm = true
+
+[bridge_retry_after_direct_pack]
+attempted = true
+classification = "rustc_private_bridge_wasm_loadable_shim_only"
+reason = "The direct pack builder produced target-loadable root artifacts and retried the real MIR adapter bridge. The resulting wasm32-wasip1 module is loadable with ABI v1 exports, but it is shim-only until rouwdi defines a real upstream_context_handle into TyCtxt/Providers."
+required_before_retry = []

@@ -3922,10 +3922,7 @@ mod tests {
             handoff.payload_adapter_symbol,
             rouwdi_rustc_upstream::MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL
         );
-        assert_eq!(
-            handoff.payload_adapter_status,
-            "payload_exported_load_blocked"
-        );
+        assert_eq!(handoff.payload_adapter_status, "payload_loadable_shim_only");
         assert_eq!(handoff.payload_adapter_feature, "real-rustc-mir-payload");
         assert!(!handoff.payload_adapter_typechecked);
         assert!(handoff.payload_adapter_bootstrap_typechecked);
@@ -3934,12 +3931,12 @@ mod tests {
         assert!(!handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             handoff.payload_carrier_state.as_deref(),
-            Some("payload_exported_load_blocked")
+            Some("payload_loadable_shim_only")
         );
         let payload_carrier = handoff.payload_carrier.as_ref().unwrap();
         assert_eq!(
             payload_carrier.artifact.as_ref().unwrap().artifact_format,
-            "rlib"
+            "wasm_module"
         );
         assert_eq!(
             payload_carrier
@@ -3951,13 +3948,11 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
+            Some("upstream_context_unavailable")
         );
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
-            Some(
-                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
-            )
+            Some("rustc_private_bridge_wasm_loadable_shim_only")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -4000,7 +3995,7 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_route_status,
-            Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::ShimEmittedBridgeAttemptedBlocked)
+            Some(rouwdi_rustc_upstream::CompilerPayloadAbiRouteStatus::Emitted)
         );
         assert_eq!(
             handoff.payload_abi_route_artifact_format,
@@ -4008,35 +4003,32 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_route_artifact_path.as_deref(),
-            Some("target/wasm32-wasip1/release/rouwdi_compiler_payload_abi.wasm")
+            Some(".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm")
         );
         assert_eq!(handoff.payload_abi_route_attempted, Some(true));
         assert_eq!(
             handoff.payload_abi_bridge_status.as_deref(),
-            Some("attempted_blocked")
+            Some("loadable_shim_only")
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
+            Some("upstream_context_unavailable")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
-            Some(
-                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
-            )
+            Some("rustc_private_bridge_wasm_loadable_shim_only")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "attempted_blocked");
-        assert_eq!(
-            bridge_attempt.blocker_kind,
-            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
-        );
-        assert_eq!(bridge_attempt.command_exit_code, Some(101));
-        assert!(bridge_attempt.exact_blocker.contains("rustc_middle"));
-        assert!(bridge_attempt.output_artifact_identity.is_none());
+        assert_eq!(bridge_attempt.status, "loadable_shim_only");
+        assert_eq!(bridge_attempt.blocker_kind, "upstream_context_unavailable");
+        assert_eq!(bridge_attempt.command_exit_code, Some(0));
+        assert!(bridge_attempt
+            .exact_blocker
+            .contains("upstream_context_unavailable"));
+        assert!(bridge_attempt.output_artifact_identity.is_some());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
-            Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::RlibArchive)
+            Some(rouwdi_rustc_upstream::CompilerPayloadArtifactClass::WasmModule)
         );
         assert_eq!(
             handoff.payload_loader_metadata_artifact_class,
@@ -4048,20 +4040,18 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_loader_load_strategy,
-            Some(rouwdi_rustc_upstream::CompilerPayloadLoadStrategy::InspectRlibArchive)
+            Some(rouwdi_rustc_upstream::CompilerPayloadLoadStrategy::InstantiateWasmModule)
         );
         assert_eq!(
             handoff.payload_loader_loadability_status,
-            Some(
-                rouwdi_rustc_upstream::CompilerPayloadLoadabilityStatus::UnsupportedCompilerPrivateArtifact
-            )
+            Some(rouwdi_rustc_upstream::CompilerPayloadLoadabilityStatus::Loadable)
         );
-        assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(false));
+        assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("rustc_private_to_wasm_mir_handoff_bridge")
+            Some("upstream_context_handle_full_mir_payload")
         );
-        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(1));
+        assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
         assert!(handoff
             .payload_adapter_probe_command
@@ -4078,11 +4068,11 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
+            Some("upstream_context_unavailable")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),
-            Some("payload_exported_load_blocked")
+            Some("payload_loadable_shim_only")
         );
         assert!(handoff
             .blocker_probe_command
@@ -4112,7 +4102,7 @@ mod tests {
         assert!(handoff
             .blocker_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("payload_exported_load_blocked")
+            .is_some_and(|reason| reason.contains("payload_loadable_shim_only")
                 && reason.contains("bootstrap artifact located true")
                 && reason.contains("bootstrap authoritative probe")));
     }
@@ -4548,7 +4538,7 @@ mod tests {
         );
         assert_eq!(
             mir_handoff.payload_adapter_status,
-            "payload_exported_load_blocked"
+            "payload_loadable_shim_only"
         );
         assert!(mir_handoff.payload_adapter_bootstrap_typechecked);
         assert!(mir_handoff.payload_adapter_bootstrap_artifact_located);
@@ -4556,7 +4546,7 @@ mod tests {
         assert!(!mir_handoff.payload_loaded_into_rouwdi_facade);
         assert_eq!(
             mir_handoff.payload_carrier_state.as_deref(),
-            Some("payload_exported_load_blocked")
+            Some("payload_loadable_shim_only")
         );
         assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
         assert_eq!(

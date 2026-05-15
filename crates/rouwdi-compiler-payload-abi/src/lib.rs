@@ -13,8 +13,8 @@ pub const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 pub const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 pub const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
 
-const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"shim-only-bridge-attempted-blocked","bridge_blocker":"llvm_wasm32_wasip1_sysroot_missing_machine_endian"}"#;
-const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: wasm ABI shim is present, rustc-private bridge attempt is blocked at LLVM-for-wasm32-wasip1 missing machine/endian.h";
+const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"shim-only-superseded-by-direct-rustc-private-bridge","bridge_state":"rustc_private_bridge_wasm_loadable_shim_only"}"#;
+const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: direct rustc-private bridge wasm is loadable shim-only, but ABI v1 has no upstream TyCtxt/Providers context handle";
 
 #[no_mangle]
 pub extern "C" fn rouwdi_compiler_payload_abi_v1_version() -> u32 {
@@ -78,9 +78,9 @@ mod tests {
         );
         assert!(core::str::from_utf8(ABI_DESCRIPTOR_JSON)
             .unwrap()
-            .contains("bridge-attempted-blocked"));
+            .contains("loadable_shim_only"));
         assert!(core::str::from_utf8(LAST_ERROR)
             .unwrap()
-            .contains("machine/endian.h"));
+            .contains("TyCtxt/Providers"));
     }
 }

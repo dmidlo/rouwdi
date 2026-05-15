@@ -928,12 +928,12 @@ version = "0.1.0"
                 .as_ref()
                 .unwrap()
                 .payload_adapter_status,
-            "payload_exported_load_blocked"
+            "payload_loadable_shim_only"
         );
         let manifest_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
         assert_eq!(
             manifest_handoff.payload_carrier_state.as_deref(),
-            Some("payload_exported_load_blocked")
+            Some("payload_loadable_shim_only")
         );
         assert!(manifest_handoff.payload_adapter_bootstrap_artifact_located);
         assert!(manifest_handoff.payload_carrier_created);
@@ -944,13 +944,11 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("llvm_wasm32_wasip1_sysroot_missing_machine_endian")
+            Some("upstream_context_unavailable")
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
-            Some(
-                "stage2_wasm_host_route_blocked_at_llvm_wasm32_wasip1_machine_endian_header_missing"
-            )
+            Some("rustc_private_bridge_wasm_loadable_shim_only")
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -962,11 +960,8 @@ version = "0.1.0"
         assert!(target_pack.core_available);
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "attempted_blocked");
-        assert_eq!(
-            bridge_attempt.blocker_kind,
-            "llvm_wasm32_wasip1_sysroot_missing_machine_endian"
-        );
+        assert_eq!(bridge_attempt.status, "loadable_shim_only");
+        assert_eq!(bridge_attempt.blocker_kind, "upstream_context_unavailable");
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff
