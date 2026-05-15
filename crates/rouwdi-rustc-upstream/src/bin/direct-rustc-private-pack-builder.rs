@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
+const BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION: &str =
+    "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context";
 const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
     "memory",
     "rouwdi_compiler_payload_abi_v1_version",
@@ -629,12 +631,20 @@ fn run_bridge_retry(
             loadable_by_rouwdi_wasm: identity.target_loadable && abi_v1_symbols_present,
         }
     });
-    let input_artifact_identities = externs
+    let input_artifact_identities = manifest
+        .dependency_closure
+        .root_crates
         .iter()
-        .filter_map(|(name, path)| {
-            let bytes = fs::read(path).ok()?;
+        .filter(|root| bridge_runtime_input_identity_required(root))
+        .filter_map(|name| {
+            let artifact = attempts
+                .iter()
+                .find(|attempt| attempt.name == *name)
+                .and_then(|attempt| select_bridge_extern_artifact(attempt, name))?;
+            let path = workspace_root.join(&artifact.path);
+            let bytes = fs::read(&path).ok()?;
             let identity = classify_direct_rustc_private_artifact_bytes(
-                &relative_path(workspace_root, path),
+                &relative_path(workspace_root, &path),
                 &bytes,
                 &manifest.target_triple,
                 &manifest.host_triple,
@@ -651,17 +661,15 @@ fn run_bridge_retry(
         })
         .collect::<Vec<_>>();
     let classification = if exit_code == 0 && output_artifact_identity.is_some() {
-        "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
+        BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION
     } else if exit_code == 0 {
         "direct_rustc_private_pack_ready_bridge_blocked_at_no_wasm_module"
     } else {
         "direct_rustc_private_pack_ready_bridge_blocked_at_wasm_link"
     }
     .to_owned();
-    let exact_blocker = if classification
-        == "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
-    {
-        "The direct pack builder produced target-loadable rustc-private root artifacts, retried the MIR adapter as a wasm32-wasip1 command module with the target rustc_span rlib, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now attempts a payload-owned rustc_span::SourceMap/source-file context step and reports source_map_created_context_blocked_at_rustc_parse_not_linked without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
+    let exact_blocker = if classification == BRIDGE_CRATE_AST_BLOCKED_CLASSIFICATION {
+        "The direct pack builder produced target-loadable rustc-private root artifacts, including rustc_parse and rustc_session, retried the MIR adapter as a wasm32-wasip1 command module, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now attempts payload-owned rustc_span::SourceMap/source-file context, rustc_session::parse::ParseSess construction, rustc_parse parser creation, and Parser::parse_crate_mod before reporting the HIR/TyCtxt global-context blocker without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
     } else {
         first_relevant_error(&combined_output).unwrap_or_else(|| {
             format!(
@@ -687,7 +695,12 @@ fn run_bridge_retry(
 }
 
 fn bridge_runtime_extern_required(crate_name: &str) -> bool {
-    matches!(crate_name, "rustc_span")
+    let _ = crate_name;
+    false
+}
+
+fn bridge_runtime_input_identity_required(crate_name: &str) -> bool {
+    matches!(crate_name, "rustc_parse" | "rustc_session" | "rustc_span")
 }
 
 fn select_bridge_extern_artifact<'a>(

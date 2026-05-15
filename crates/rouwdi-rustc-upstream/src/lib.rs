@@ -33,10 +33,20 @@ pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_PTR_SYMBOL: &str =
     "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 pub const MIR_HANDOFF_PAYLOAD_ABI_V1_LAST_ERROR_LEN_SYMBOL: &str =
     "rouwdi_mir_handoff_payload_v1_last_error_len";
+pub const MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED: &str =
+    "crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context";
+pub const MIR_HANDOFF_BRIDGE_MILESTONE_CRATE_AST_CREATED: &str =
+    "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context";
+pub const MIR_HANDOFF_BLOCKER_KIND_HIR_TYCX: &str =
+    "hir_lowering_requires_expansion_resolution_and_tycx_global_context";
+pub const MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_HIR_TYCX: &str = "payload_owned_hir_tycx_context";
+pub const MIR_HANDOFF_BRIDGE_WASM_SHA256: &str =
+    "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949";
+pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 4_249_509;
 pub const MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED: &str =
-    "source_map_created_context_blocked_at_rustc_parse_not_linked";
+    MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED;
 pub const MIR_HANDOFF_BRIDGE_MILESTONE_SOURCE_MAP_CREATED: &str =
-    "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked";
+    MIR_HANDOFF_BRIDGE_MILESTONE_CRATE_AST_CREATED;
 
 const IMPORT_LEDGER_TOML: &str = include_str!("../../../bootstrap/upstream-rustc-import.toml");
 const MIR_PAYLOAD_EXPORT_MANIFEST_TOML: &str =
@@ -1216,6 +1226,8 @@ pub struct CompilerPayloadWasmRuntimeExecution {
     pub context_handle_strategy: String,
     pub context_state: String,
     pub generic_upstream_context_unavailable_replaced: bool,
+    pub fabricated_ast: bool,
+    pub fabricated_hir: bool,
     pub fabricated_tyctx: bool,
     pub fabricated_providers: bool,
     pub fabricated_body: bool,
@@ -2231,6 +2243,8 @@ pub fn execute_compiler_payload_wasm(
         })
         .unwrap_or("unknown")
         .to_owned();
+    let fabricated_ast = json_bool(&evidence_value, "fabricated_ast");
+    let fabricated_hir = json_bool(&evidence_value, "fabricated_hir");
     let fabricated_tyctx = json_bool(&evidence_value, "fabricated_tyctx");
     let fabricated_providers = json_bool(&evidence_value, "fabricated_providers");
     let fabricated_body = json_bool(&evidence_value, "fabricated_body");
@@ -2279,6 +2293,8 @@ pub fn execute_compiler_payload_wasm(
         context_handle_strategy,
         context_state,
         generic_upstream_context_unavailable_replaced,
+        fabricated_ast,
+        fabricated_hir,
         fabricated_tyctx,
         fabricated_providers,
         fabricated_body,
@@ -3308,11 +3324,11 @@ mod tests {
         );
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -3346,7 +3362,9 @@ mod tests {
         assert!(carrier
             .next_artifact_command
             .as_deref()
-            .is_some_and(|command| command.contains("ParseSess")));
+            .is_some_and(
+                |command| command.contains("HIR lowering") && command.contains("providers")
+            ));
         assert_eq!(adapter.authoritative_probe_kind, "bootstrap_xpy_stage1");
         assert!(adapter
             .authoritative_probe_command
@@ -3409,9 +3427,9 @@ mod tests {
         assert!(artifact.path.ends_with("rouwdi_mir_adapter_probe.wasm"));
         assert_eq!(
             artifact.sha256,
-            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
+            "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949"
         );
-        assert_eq!(artifact.size_bytes, 175274);
+        assert_eq!(artifact.size_bytes, 4249509);
         assert!(artifact.loadable_by_rouwdi_wasm);
         let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
         assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
@@ -3427,11 +3445,11 @@ mod tests {
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             carrier.load_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert!(carrier
             .load_blocker_reason
@@ -3478,13 +3496,13 @@ mod tests {
             manifest.exported_payload.path,
             manifest.metadata_artifact.path
         );
-        assert_eq!(manifest.exported_payload.size_bytes, 175274);
+        assert_eq!(manifest.exported_payload.size_bytes, 4249509);
         assert_eq!(manifest.metadata_artifact.size_bytes, 27097);
         assert!(manifest.exported_payload.loadable_by_rouwdi_wasm);
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(
             manifest.loader_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             manifest.loadability_status,
@@ -3504,10 +3522,13 @@ mod tests {
             CompilerPayloadAbiRouteStatus::Emitted
         );
         assert_eq!(abi.bridge_status, "context_attempted");
-        assert_eq!(abi.bridge_blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            abi.bridge_blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         assert_eq!(
             abi.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -3530,7 +3551,10 @@ mod tests {
         );
         assert_eq!(bridge.command_exit_code, Some(0));
         assert_eq!(bridge.status, "context_attempted");
-        assert_eq!(bridge.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            bridge.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         assert!(bridge
             .input_artifact_identities
             .iter()
@@ -3564,7 +3588,7 @@ mod tests {
         assert_eq!(manifest.status, "ready_bridge_context_attempted");
         assert_eq!(
             manifest.milestone_state,
-            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
+            "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
         );
         assert_eq!(manifest.dependency_closure.metadata_exit_code, 0);
         for root in [
@@ -3602,7 +3626,7 @@ mod tests {
             manifest
                 .target_loadable_resolution
                 .target_rustc_private_artifact_count,
-            34
+            35
         );
         assert_eq!(
             manifest.target_loadable_resolution.selected_strategy,
@@ -3614,7 +3638,7 @@ mod tests {
             .contains("target-loadable wasm32-wasip1 rustc-private rlibs"));
         assert_eq!(
             manifest.route_decision.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let fallback = manifest.fallback_architecture.as_ref().unwrap();
         assert_eq!(
@@ -3668,7 +3692,7 @@ mod tests {
         assert_eq!(direct_bridge.exit_code, 0);
         assert_eq!(
             direct_bridge.classification,
-            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
+            "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
         );
         assert!(direct_bridge.abi_v1_symbols_present);
         assert!(!direct_bridge.full_mir_payload_available);
@@ -3683,7 +3707,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sha256,
-            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
+            "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949"
         );
         assert!(direct_bridge
             .exports
@@ -3692,7 +3716,7 @@ mod tests {
         assert!(direct_gate.attempted);
         assert_eq!(
             direct_gate.classification,
-            "bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"
+            "bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"
         );
         let stage2_roots = manifest
             .stage2_wasm_host_root_crates
@@ -3877,13 +3901,16 @@ mod tests {
         assert_eq!(manifest.bridge.status, "context_attempted");
         assert_eq!(
             manifest.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             manifest.bridge.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
-        assert_eq!(manifest.bridge.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            manifest.bridge.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         let target_pack = manifest.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
         assert!(target_pack.attempted);
@@ -3969,7 +3996,7 @@ mod tests {
         assert_eq!(output.artifact_format, "wasm_module");
         assert_eq!(
             output.sha256,
-            "d6eeb372de7f547e524af263a432464fac9f33c106ea89349b64362c88fae687"
+            "6b05d70efb6bd7f2d1d5e19c9a150af75bddfd4552de2c498ebc94a6c7bee949"
         );
         assert!(output.loadable_by_rouwdi_wasm);
 
@@ -4009,7 +4036,10 @@ mod tests {
         assert!(runtime.valid_input_bytes_read);
         assert!(runtime.execute_called);
         assert!(runtime.output_or_error_bytes_read);
-        assert_eq!(runtime.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            runtime.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
     }
 
     #[test]
@@ -4025,7 +4055,7 @@ mod tests {
         assert_eq!(route.bridge_status, "context_attempted");
         assert_eq!(
             route.blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert!(!route.loadable_as_full_payload);
 
@@ -4087,12 +4117,12 @@ mod tests {
         assert!(report.descriptor_bytes_read);
         assert!(report
             .descriptor_json
-            .contains("source_map_created_context_blocked_at_rustc_parse_not_linked"));
+            .contains("crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"));
         assert!(report.valid_input_bytes_read);
         assert!(report.valid_input_json.contains("UpstreamContextHandleV1"));
         assert!(report.valid_input_json.contains("\"raw_pointer\":false"));
         assert!(report.execute_called);
-        assert_eq!(report.execute_status, -1101);
+        assert_eq!(report.execute_status, -1203);
         assert!(report.output_bytes_read || report.error_bytes_read);
         assert!(report.error_bytes_read);
         assert_eq!(
@@ -4105,14 +4135,18 @@ mod tests {
             MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED
         );
         assert!(report.generic_upstream_context_unavailable_replaced);
+        assert!(!report.fabricated_ast);
+        assert!(!report.fabricated_hir);
         assert!(!report.fabricated_tyctx);
         assert!(!report.fabricated_providers);
         assert!(!report.fabricated_body);
         assert!(!report.fabricated_mir);
-        assert!(report
-            .error_json
-            .as_deref()
-            .is_some_and(|json| json.contains("rustc_span::SourceMap::new_source_file")));
+        assert!(report.error_json.as_deref().is_some_and(|json| json
+            .contains("\"source_map_created\":true")
+            && json.contains("\"parse_session_created\":true")
+            && json.contains("\"parser_invoked\":true")
+            && json.contains("\"crate_ast_created\":true")
+            && json.contains("rustc_parse::parser::Parser::parse_crate_mod")));
     }
 
     #[test]
@@ -4146,7 +4180,7 @@ mod tests {
         );
         assert_eq!(
             bundle.next_required_artifact_format,
-            "payload_owned_parse_session_context"
+            "payload_owned_hir_tycx_context"
         );
         assert_eq!(
             bundle.compiler_payload_abi_manifest.as_ref().unwrap().path,
@@ -4166,7 +4200,10 @@ mod tests {
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "context_attempted");
-        assert_eq!(bridge.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            bridge.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
         assert_eq!(target_pack.blocker_kind, "none");
@@ -4175,14 +4212,15 @@ mod tests {
         assert!(target_pack.alloc_available);
         assert_eq!(
             bundle.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert!(bridge.output_artifact_identity.is_some());
         assert!(bundle.loadable_export_routes.iter().any(|route| {
             route.route == "explicit_rouwdi_compiler_payload_bundle"
                 && route.attempted
                 && route.status == CompilerPayloadExportRouteStatus::Emitted
-                && route.blocker_kind.as_deref() == Some("rustc_parse_not_linked")
+                && route.blocker_kind.as_deref()
+                    == Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         }));
     }
 
@@ -4345,11 +4383,11 @@ mod tests {
         );
         assert_eq!(
             inspection.abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             inspection.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let target_pack = inspection.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -4359,7 +4397,9 @@ mod tests {
         let bridge = inspection.bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge.status, "context_attempted");
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert!(bridge.exact_blocker.contains("rustc_parse_not_linked"));
+        assert!(bridge
+            .exact_blocker
+            .contains("hir_lowering_requires_expansion_resolution_and_tycx_global_context"));
         assert!(inspection
             .exact_loader_blocker
             .contains("must not fabricate"));
@@ -4410,7 +4450,7 @@ mod tests {
         assert_eq!(boundary.adapter_symbol, MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL);
         assert_eq!(
             boundary.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             boundary.payload_adapter_status,
@@ -4468,7 +4508,8 @@ mod tests {
             component.import_status == "adapter_partially_embedded"
                 && component.is_imported()
                 && component.probe_command.contains("rouwdi-mir-adapter-probe")
-                && component.blocker_kind == "rustc_parse_not_linked"
+                && component.blocker_kind
+                    == "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
                 && component.adapter_symbol.as_deref() == Some(MIR_HANDOFF_PAYLOAD_ADAPTER_SYMBOL)
         }));
     }

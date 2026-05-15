@@ -944,11 +944,11 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -961,7 +961,10 @@ version = "0.1.0"
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
-        assert_eq!(bridge_attempt.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            bridge_attempt.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff

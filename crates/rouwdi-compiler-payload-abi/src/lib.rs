@@ -13,8 +13,8 @@ pub const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 pub const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 pub const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
 
-const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"context_attempted_superseded_by_direct_rustc_private_bridge","bridge_state":"bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked"}"#;
-const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: direct rustc-private bridge wasm is loadable source-map context attempt, but ABI v1 has no upstream TyCtxt/Providers context handle";
+const ABI_DESCRIPTOR_JSON: &[u8] = br#"{"abi":"rouwdi.compiler-payload.mir-handoff","version":1,"stage":"mir_handoff","route":"wasm32-wasip1-module","status":"context_attempted_superseded_by_direct_rustc_private_bridge","bridge_state":"bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context"}"#;
+const LAST_ERROR: &[u8] = b"real MIR payload not executable yet: direct rustc-private bridge wasm is loadable and reaches SourceMap, ParseSess, rustc_parse parser, and rustc_ast::ast::Crate creation, but ABI v1 has no upstream HIR/TyCtxt/Providers context handle";
 
 #[no_mangle]
 pub extern "C" fn rouwdi_compiler_payload_abi_v1_version() -> u32 {

@@ -3948,11 +3948,11 @@ mod tests {
         );
         assert_eq!(
             payload_carrier.load_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -4012,19 +4012,22 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_source_map_created_blocked_at_rustc_parse_not_linked")
+            Some("bridge_wasm_crate_ast_created_blocked_at_hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
-        assert_eq!(bridge_attempt.blocker_kind, "rustc_parse_not_linked");
+        assert_eq!(
+            bridge_attempt.blocker_kind,
+            "hir_lowering_requires_expansion_resolution_and_tycx_global_context"
+        );
         assert_eq!(bridge_attempt.command_exit_code, Some(0));
         assert!(bridge_attempt
             .exact_blocker
-            .contains("rustc_parse_not_linked"));
+            .contains("hir_lowering_requires_expansion_resolution_and_tycx_global_context"));
         assert!(bridge_attempt.output_artifact_identity.is_some());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4049,7 +4052,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("payload_owned_parse_session_context")
+            Some("payload_owned_hir_tycx_context")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -4068,7 +4071,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("rustc_parse_not_linked")
+            Some("hir_lowering_requires_expansion_resolution_and_tycx_global_context")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),
