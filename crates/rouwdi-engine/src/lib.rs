@@ -741,6 +741,21 @@ fn artifact_compile_unit_from_record(
             .as_ref()
             .and_then(|handoff| handoff.monomorphization_handoff.as_ref())
             .map(|handoff| handoff.mono_item_collection_status.clone()),
+        mono_item_count: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.monomorphization_proof.as_ref())
+            .map(|proof| proof.mono_item_count),
+        mono_item_graph_hash: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.monomorphization_proof.as_ref())
+            .and_then(|proof| proof.mono_item_graph_hash.clone()),
+        codegen_handoff_status: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.codegen_handoff.as_ref())
+            .map(|handoff| handoff.current_status.clone()),
     }
 }
 
@@ -1041,7 +1056,7 @@ version = "0.1.0"
         assert!(target_pack.core_available);
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "mir_body_hash_emitted");
+        assert_eq!(bridge_attempt.status, "mono_items_collected");
         assert_eq!(bridge_attempt.blocker_kind, "none");
         assert_eq!(
             manifest.compiler_pipeline[0]

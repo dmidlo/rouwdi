@@ -719,6 +719,7 @@ fn bridge_runtime_input_identity_required(crate_name: &str) -> bool {
             | "rustc_lint"
             | "rustc_middle"
             | "rustc_mir_build"
+            | "rustc_monomorphize"
             | "rustc_parse"
             | "rustc_passes"
             | "rustc_query_impl"

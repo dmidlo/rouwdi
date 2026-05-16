@@ -46,8 +46,8 @@ pub const MIR_HANDOFF_BLOCKER_KIND_HIR_TYCX: &str = MIR_HANDOFF_BLOCKER_KIND_MIR
 pub const MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_HIR_TYCX: &str =
     MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_MIR_LANG_ITEMS;
 pub const MIR_HANDOFF_BRIDGE_WASM_SHA256: &str =
-    "fbaaf8538f005be4e8444777900a7c6ea9ec271c134f863685ada5b8843a162f";
-pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 88_473_455;
+    "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54";
+pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 88_495_302;
 pub const MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED: &str =
     MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED;
 pub const MIR_HANDOFF_BRIDGE_MILESTONE_SOURCE_MAP_CREATED: &str =
@@ -3443,7 +3443,7 @@ mod tests {
             .blocker_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("TyCtxt::optimized_mir")
-                && reason.contains("rustc_monomorphize::provide")));
+                && reason.contains("collect_and_partition_mono_items")));
     }
 
     #[test]
@@ -3476,9 +3476,9 @@ mod tests {
         assert!(artifact.path.ends_with("rouwdi_mir_adapter_probe.wasm"));
         assert_eq!(
             artifact.sha256,
-            "fbaaf8538f005be4e8444777900a7c6ea9ec271c134f863685ada5b8843a162f"
+            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
         );
-        assert_eq!(artifact.size_bytes, 88473455);
+        assert_eq!(artifact.size_bytes, 88495302);
         assert!(artifact.loadable_by_rouwdi_wasm);
         let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
         assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
@@ -3501,7 +3501,7 @@ mod tests {
             .load_blocker_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("TyCtxt::optimized_mir")
-                && reason.contains("rustc_monomorphize::provide")));
+                && reason.contains("collect_and_partition_mono_items")));
         assert!(carrier.payload_bundle.is_some());
         let target_pack = carrier.target_pack.as_ref().unwrap();
         assert_eq!(target_pack.blocker_kind, "none");
@@ -3543,7 +3543,7 @@ mod tests {
             manifest.exported_payload.path,
             manifest.metadata_artifact.path
         );
-        assert_eq!(manifest.exported_payload.size_bytes, 88473455);
+        assert_eq!(manifest.exported_payload.size_bytes, 88495302);
         assert_eq!(manifest.metadata_artifact.size_bytes, 213323);
         assert!(manifest.exported_payload.loadable_by_rouwdi_wasm);
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
@@ -3565,7 +3565,7 @@ mod tests {
             abi.selected_route_status,
             CompilerPayloadAbiRouteStatus::Emitted
         );
-        assert_eq!(abi.bridge_status, "mir_body_hash_emitted");
+        assert_eq!(abi.bridge_status, "mono_items_collected");
         assert_eq!(abi.bridge_blocker_kind, "none");
         assert_eq!(
             abi.milestone_state.as_deref(),
@@ -3591,7 +3591,7 @@ mod tests {
             "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
         );
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert_eq!(bridge.status, "mir_body_hash_emitted");
+        assert_eq!(bridge.status, "mono_items_collected");
         assert_eq!(bridge.blocker_kind, "none");
         assert!(bridge
             .input_artifact_identities
@@ -3623,7 +3623,7 @@ mod tests {
 
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.target_triple, "wasm32-wasip1");
-        assert_eq!(manifest.status, "ready_bridge_mir_body_hash_emitted");
+        assert_eq!(manifest.status, "ready_bridge_mono_items_collected");
         assert_eq!(
             manifest.milestone_state,
             "bridge_wasm_mir_payload_module_emitted"
@@ -3776,7 +3776,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sha256,
-            "fbaaf8538f005be4e8444777900a7c6ea9ec271c134f863685ada5b8843a162f"
+            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
         );
         assert!(direct_bridge
             .exports
@@ -3967,7 +3967,7 @@ mod tests {
             .emitted_fields
             .contains(&"rustc_private_bridge_status".to_owned()));
         assert_eq!(manifest.versioning.compatibility, "major_version_exact");
-        assert_eq!(manifest.bridge.status, "mir_body_hash_emitted");
+        assert_eq!(manifest.bridge.status, "mono_items_collected");
         assert_eq!(
             manifest.milestone_state.as_deref(),
             Some("bridge_wasm_mir_payload_module_emitted")
@@ -3996,7 +3996,7 @@ mod tests {
             .commands_attempted
             .iter()
             .any(|command| command.classification
-                == "direct_rustc_private_pack_ready_bridge_mir_body_hash_emitted"
+                == "direct_rustc_private_pack_ready_bridge_mono_items_collected"
                 && command.exit_code == 0));
         assert!(manifest
             .bridge
@@ -4062,7 +4062,7 @@ mod tests {
         assert_eq!(output.artifact_format, "wasm_module");
         assert_eq!(
             output.sha256,
-            "fbaaf8538f005be4e8444777900a7c6ea9ec271c134f863685ada5b8843a162f"
+            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
         );
         assert!(output.loadable_by_rouwdi_wasm);
 
@@ -4092,10 +4092,7 @@ mod tests {
             .any(|item| item.contains("rustc_span::SourceMap")));
 
         let runtime = manifest.wasm_runtime_execution.as_ref().unwrap();
-        assert_eq!(
-            runtime.classification,
-            MIR_HANDOFF_CONTEXT_STATE_MIR_BODY_HASH_EMITTED
-        );
+        assert_eq!(runtime.classification, "mono_items_collected");
         assert!(runtime.module_instantiated);
         assert!(runtime.abi_exports_called);
         assert!(runtime.descriptor_bytes_read);
@@ -4115,7 +4112,7 @@ mod tests {
         assert_eq!(route.target_triple, "wasm32-wasip1");
         assert!(route.attempted);
         assert_eq!(route.status, CompilerPayloadAbiRouteStatus::Emitted);
-        assert_eq!(route.bridge_status, "mir_body_hash_emitted");
+        assert_eq!(route.bridge_status, "mono_items_collected");
         assert_eq!(route.blocker_kind.as_deref(), Some("none"));
         assert!(route.loadable_as_full_payload);
 
@@ -4177,7 +4174,7 @@ mod tests {
         assert!(report.descriptor_bytes_read);
         assert!(report
             .descriptor_json
-            .contains("rustc-interface-sysroot-mir-body-hash-emitted"));
+            .contains("rustc-interface-sysroot-mono-items-collected"));
         assert!(report.valid_input_bytes_read);
         assert!(report.valid_input_json.contains("UpstreamContextHandleV1"));
         assert!(report.valid_input_json.contains("\"raw_pointer\":false"));
@@ -4186,15 +4183,9 @@ mod tests {
         assert!(report.output_bytes_read || report.error_bytes_read);
         assert!(report.output_bytes_read);
         assert!(!report.error_bytes_read);
-        assert_eq!(
-            report.classification,
-            MIR_HANDOFF_CONTEXT_STATE_MIR_BODY_HASH_EMITTED
-        );
+        assert_eq!(report.classification, "mono_items_collected");
         assert_eq!(report.context_handle_strategy, "payload_owned_context");
-        assert_eq!(
-            report.context_state,
-            MIR_HANDOFF_CONTEXT_STATE_MIR_BODY_HASH_EMITTED
-        );
+        assert_eq!(report.context_state, "mono_items_collected");
         assert!(report.generic_upstream_context_unavailable_replaced);
         assert!(!report.fabricated_ast);
         assert!(!report.fabricated_hir);
@@ -4246,10 +4237,7 @@ mod tests {
             bundle.loadability_status,
             CompilerPayloadLoadabilityStatus::Loadable
         );
-        assert_eq!(
-            bundle.next_required_artifact_format,
-            "monomorphization_handoff"
-        );
+        assert_eq!(bundle.next_required_artifact_format, "codegen_handoff");
         assert_eq!(
             bundle.compiler_payload_abi_manifest.as_ref().unwrap().path,
             COMPILER_PAYLOAD_ABI_MANIFEST_PATH
@@ -4267,7 +4255,7 @@ mod tests {
             CompilerPayloadAbiRouteStatus::Emitted
         );
         let bridge = bundle.bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge.status, "mir_body_hash_emitted");
+        assert_eq!(bridge.status, "mono_items_collected");
         assert_eq!(bridge.blocker_kind, "none");
         let target_pack = bundle.target_pack.as_ref().unwrap();
         assert!(target_pack.attempted);
@@ -4456,9 +4444,9 @@ mod tests {
         assert_eq!(target_pack.blocker_kind, "none");
         assert!(target_pack.exact_blocker.contains("exited 0"));
         let bridge = inspection.bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge.status, "mir_body_hash_emitted");
+        assert_eq!(bridge.status, "mono_items_collected");
         assert_eq!(bridge.command_exit_code, Some(0));
-        assert!(bridge.exact_blocker.contains("mir_body_hash_emitted"));
+        assert!(bridge.exact_blocker.contains("mono_items_collected"));
         assert!(inspection
             .exact_loader_blocker
             .contains("does not fabricate"));
@@ -4501,7 +4489,7 @@ mod tests {
         assert!(manifest
             .bridge
             .exact_blocker
-            .contains("mir_body_hash_emitted"));
+            .contains("mono_items_collected"));
         assert!(manifest
             .bridge
             .exact_blocker
@@ -4548,7 +4536,7 @@ mod tests {
             .blocker_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("TyCtxt::optimized_mir")
-                && reason.contains("rustc_monomorphize::provide")));
+                && reason.contains("collect_and_partition_mono_items")));
     }
 
     #[test]

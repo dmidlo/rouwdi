@@ -4,10 +4,11 @@ use rouwdi_cargo::{
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::{ArtifactKind, NormalizedContract};
 use rouwdi_rustc::{
-    RustBorrowCheckStageRecord, RustCompilerPipelineRecord, RustCompilerStage,
-    RustExpansionStageRecord, RustMirBodyProof, RustMirHandoffBlockerCategory,
-    RustMirHandoffRecord, RustMirHandoffStatus, RustNameResolutionStageRecord,
-    RustParseStageRecord, RustSourceLexProof, RustTypeCheckStageRecord,
+    RustBorrowCheckStageRecord, RustCodegenHandoffRecord, RustCompilerPipelineRecord,
+    RustCompilerStage, RustExpansionStageRecord, RustMirBodyProof, RustMirHandoffBlockerCategory,
+    RustMirHandoffRecord, RustMirHandoffStatus, RustMonomorphizationProof,
+    RustNameResolutionStageRecord, RustParseStageRecord, RustSourceLexProof,
+    RustTypeCheckStageRecord,
 };
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
@@ -91,6 +92,9 @@ pub struct ArtifactPipelineCompileUnit {
     pub mir_body_identity: Option<String>,
     pub mir_body_hash: Option<String>,
     pub monomorphization_handoff_status: Option<String>,
+    pub mono_item_count: Option<u64>,
+    pub mono_item_graph_hash: Option<String>,
+    pub codegen_handoff_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +363,34 @@ impl ProofBundle {
                 format!("{run_root}/proofs/mir-body.json")
             };
             storage.write(&path, &serde_json::to_vec_pretty(&mir_body_proofs)?)?;
+            written.push(path);
+        }
+        let monomorphization_proofs = self
+            .rust_source_mir_handoff
+            .iter()
+            .filter_map(|handoff| handoff.monomorphization_proof.as_ref())
+            .collect::<Vec<&RustMonomorphizationProof>>();
+        if !monomorphization_proofs.is_empty() {
+            let path = if run_root.is_empty() {
+                "proofs/monomorphization.json".to_owned()
+            } else {
+                format!("{run_root}/proofs/monomorphization.json")
+            };
+            storage.write(&path, &serde_json::to_vec_pretty(&monomorphization_proofs)?)?;
+            written.push(path);
+        }
+        let codegen_handoffs = self
+            .rust_source_mir_handoff
+            .iter()
+            .filter_map(|handoff| handoff.codegen_handoff.as_ref())
+            .collect::<Vec<&RustCodegenHandoffRecord>>();
+        if !codegen_handoffs.is_empty() {
+            let path = if run_root.is_empty() {
+                "graph/rust-source-codegen-handoff.json".to_owned()
+            } else {
+                format!("{run_root}/graph/rust-source-codegen-handoff.json")
+            };
+            storage.write(&path, &serde_json::to_vec_pretty(&codegen_handoffs)?)?;
             written.push(path);
         }
         for proof in &self.interface_proofs {

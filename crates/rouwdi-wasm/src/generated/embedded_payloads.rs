@@ -12,8 +12,8 @@ pub(super) const MIR_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasm_module";
 pub(super) const MIR_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
 pub(super) const MIR_PAYLOAD_STATE: &str = "embedded_payload";
 pub(super) const MIR_PAYLOAD_SHA256: &str =
-    "fbaaf8538f005be4e8444777900a7c6ea9ec271c134f863685ada5b8843a162f";
-pub(super) const MIR_PAYLOAD_SIZE_BYTES: u64 = 88473455;
+    "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54";
+pub(super) const MIR_PAYLOAD_SIZE_BYTES: u64 = 88495302;
 pub(super) const MIR_PAYLOAD_BYTES: &[u8] = include_bytes!(
     "../../../../.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
 );

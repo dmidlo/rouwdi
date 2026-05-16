@@ -48,6 +48,7 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
         state,
         "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
             | "embedded_payload_mir_body_hash_emitted"
+            | "embedded_payload_mono_items_collected"
     ) {
         return Some(format!("unexpected canonical MIR payload state: {state}"));
     }
@@ -157,6 +158,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             state,
             "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
                 | "embedded_payload_mir_body_hash_emitted"
+                | "embedded_payload_mono_items_collected"
         ),
         "unexpected MIR payload state: {state}"
     );
@@ -226,7 +228,13 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
         assert_eq!(payload["mir_provider_invoked"], Value::Bool(true));
         assert_eq!(
             payload["next_frontier"],
-            Value::String("monomorphization".to_owned())
+            if payload["monomorphization_status"]
+                == Value::String("mono_items_collected".to_owned())
+            {
+                Value::String("codegen".to_owned())
+            } else {
+                Value::String("monomorphization".to_owned())
+            }
         );
         assert_eq!(payload["rustc_monomorphize_invoked"], Value::Bool(true));
         assert!(
@@ -240,6 +248,32 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             "manifest must carry exact monomorphization contact status"
         );
         assert_eq!(payload["fabricated_mono_items"], Value::Bool(false));
+        if payload["monomorphization_status"] == Value::String("mono_items_collected".to_owned()) {
+            assert!(
+                payload["mono_item_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+                "mono success must carry mono_item_count"
+            );
+            assert!(
+                payload["mono_item_graph_hash"]
+                    .as_str()
+                    .is_some_and(|hash| !hash.is_empty()),
+                "mono success must carry mono_item_graph_hash"
+            );
+            assert!(
+                payload["mono_items"]
+                    .as_array()
+                    .is_some_and(|items| !items.is_empty()),
+                "mono success must carry upstream mono_items"
+            );
+            assert_eq!(
+                payload["mono_items_derived_from"],
+                Value::String(
+                    "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned()
+                )
+            );
+        }
         assert!(
             payload["mir_body_identity"]
                 .as_str()

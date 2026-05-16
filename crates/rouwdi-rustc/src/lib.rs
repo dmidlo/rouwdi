@@ -571,6 +571,80 @@ pub struct RustMonomorphizationHandoffRecord {
     pub fabricated_mono_items: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustMonoItemProof {
+    pub item_kind: String,
+    pub symbol_name: String,
+    pub instance_identity: Option<String>,
+    pub def_id: String,
+    pub codegen_unit: Option<String>,
+    pub linkage: Option<String>,
+    pub visibility: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustMonomorphizationProof {
+    pub compile_unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub target_triple: String,
+    pub profile: String,
+    pub source_path: String,
+    pub mir_body_identity: String,
+    pub mir_body_hash: String,
+    pub mono_provider: String,
+    pub mono_query: String,
+    pub mono_item_count: u64,
+    pub mono_items: Vec<RustMonoItemProof>,
+    pub mono_item_graph_hash: Option<String>,
+    pub partition_count: Option<u64>,
+    pub codegen_unit_count: Option<u64>,
+    pub upstream_component_identities: Vec<String>,
+    pub payload_sha256: String,
+    pub input_contract_sha256: String,
+    pub output_contract_sha256: String,
+    pub status: String,
+    pub blocker_kind: Option<String>,
+    pub blocker_component: Option<String>,
+    pub blocker_message: Option<String>,
+    pub failed_query: Option<String>,
+    pub last_successful_compiler_step: Option<String>,
+    pub fabricated_mono_items: bool,
+}
+
+impl RustMonomorphizationProof {
+    pub fn collected(&self) -> bool {
+        self.status == "mono_items_collected"
+            && self.mono_item_count > 0
+            && self
+                .mono_item_graph_hash
+                .as_ref()
+                .is_some_and(|hash| !hash.trim().is_empty())
+            && !self.mono_items.is_empty()
+            && !self.fabricated_mono_items
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustCodegenHandoffRecord {
+    pub compile_unit_id: String,
+    pub target_triple: String,
+    pub mir_body_hash: String,
+    pub mono_item_graph_hash: String,
+    pub mono_item_count: u64,
+    pub required_upstream_component: String,
+    pub backend_target: String,
+    pub required_object_module_output_kind: String,
+    pub current_status: String,
+    pub blocker_kind: String,
+    pub blocker_component: String,
+    pub blocker_reason: String,
+    pub next_command: String,
+    pub proof_path: String,
+}
+
 impl RustEmbeddedMirPayloadExecution {
     pub fn embedded_execution_verified(&self) -> bool {
         self.execution_source == "embedded_registry"
@@ -753,6 +827,117 @@ impl RustEmbeddedMirPayloadExecution {
             execution_source: self.execution_source.clone(),
         })
     }
+
+    pub fn monomorphization_proof(
+        &self,
+        mir_body_proof: &RustMirBodyProof,
+    ) -> Option<RustMonomorphizationProof> {
+        if !self.embedded_execution_verified()
+            || self.result_kind != "output"
+            || !self.output_bytes_read
+            || self.execute_trapped
+        {
+            return None;
+        }
+        let output_json = self.output_json.as_ref()?;
+        let output_contract_sha256 = self.output_contract_sha256.as_ref()?;
+        if output_contract_sha256.len() != 64 {
+            return None;
+        }
+        let value = serde_json::from_str::<serde_json::Value>(output_json).ok()?;
+        if json_value_bool_default_false(&value, "fabricated_mono_items") {
+            return None;
+        }
+        if json_value_bool(&value, "rustc_monomorphize_invoked") != Some(true) {
+            return None;
+        }
+        let mono_query = json_value_str(&value, "monomorphization_query")?;
+        if mono_query != "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items" {
+            return None;
+        }
+        let status = json_value_str(&value, "monomorphization_status")?.to_owned();
+        let collected = status == "mono_items_collected";
+        let blocked = status.starts_with("rustc_monomorphize_invoked_blocked_at_");
+        if !collected && !blocked {
+            return None;
+        }
+        let mono_item_count = json_value_u64(&value, "mono_item_count")?;
+        let mono_item_graph_hash =
+            json_value_str(&value, "mono_item_graph_hash").map(str::to_owned);
+        let mono_items = value
+            .get("mono_items")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(parse_mono_item_proof)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if collected
+            && (mono_item_count == 0
+                || mono_item_graph_hash
+                    .as_ref()
+                    .map_or(true, |hash| hash.trim().is_empty())
+                || mono_items.is_empty()
+                || mono_items
+                    .iter()
+                    .any(|item| item.source != mono_query || item.symbol_name.trim().is_empty()))
+        {
+            return None;
+        }
+        if blocked && mono_item_graph_hash.is_some() {
+            return None;
+        }
+        if json_value_str(&value, "mono_items_derived_from")
+            .is_some_and(|source| source != mono_query)
+        {
+            return None;
+        }
+
+        Some(RustMonomorphizationProof {
+            compile_unit_id: mir_body_proof.compile_unit_id.clone(),
+            package: mir_body_proof.package.clone(),
+            target: mir_body_proof.target.clone(),
+            target_kind: mir_body_proof.target_kind.clone(),
+            target_triple: mir_body_proof.target_triple.clone(),
+            profile: mir_body_proof.profile.clone(),
+            source_path: mir_body_proof.source_path.clone(),
+            mir_body_identity: mir_body_proof.mir_body_identity.clone(),
+            mir_body_hash: mir_body_proof.mir_body_hash.clone(),
+            mono_provider: json_value_str(&value, "monomorphization_provider")
+                .unwrap_or("rustc_monomorphize::partitioning::collect_and_partition_mono_items")
+                .to_owned(),
+            mono_query: mono_query.to_owned(),
+            mono_item_count,
+            mono_items,
+            mono_item_graph_hash,
+            partition_count: json_value_u64(&value, "partition_count"),
+            codegen_unit_count: json_value_u64(&value, "codegen_unit_count"),
+            upstream_component_identities: vec![
+                "rustc_monomorphize".to_owned(),
+                "rustc_monomorphize::partitioning".to_owned(),
+                "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned(),
+            ],
+            payload_sha256: self.actual_sha256.clone(),
+            input_contract_sha256: self.input_contract_sha256.clone(),
+            output_contract_sha256: output_contract_sha256.clone(),
+            status,
+            blocker_kind: json_value_str(&value, "monomorphization_blocker_kind")
+                .map(str::to_owned)
+                .filter(|kind| kind != "none"),
+            blocker_component: json_value_str(&value, "monomorphization_blocker_component")
+                .map(str::to_owned)
+                .filter(|component| component != "none"),
+            blocker_message: json_value_str(&value, "monomorphization_blocker_reason")
+                .map(str::to_owned)
+                .filter(|message| message != "none"),
+            failed_query: json_value_str(&value, "failed_query").map(str::to_owned),
+            last_successful_compiler_step: json_value_str(&value, "last_successful_compiler_step")
+                .map(str::to_owned),
+            fabricated_mono_items: false,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -831,6 +1016,8 @@ pub struct RustMirHandoffRecord {
     pub embedded_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
     pub mir_body_proof: Option<RustMirBodyProof>,
     pub monomorphization_handoff: Option<RustMonomorphizationHandoffRecord>,
+    pub monomorphization_proof: Option<RustMonomorphizationProof>,
+    pub codegen_handoff: Option<RustCodegenHandoffRecord>,
     pub blocker_import_status: Option<String>,
     pub blocker_probe_command: Option<String>,
     pub shared_blocker_component: Option<String>,
@@ -1173,7 +1360,7 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "third_party/rust/compiler/rustc_mir_build",
             "HIR-to-MIR lowering and MIR construction",
         ),
-        pending_component(
+        imported_component(
             "rustc_monomorphize",
             "third_party/rust/compiler/rustc_monomorphize",
             "monomorphization collector",
@@ -1435,17 +1622,60 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         };
     }
 
-    let first_missing_after_handoff = if mir_handoff
-        .monomorphization_handoff
+    let mono_proof_collected = mir_handoff
+        .monomorphization_proof
         .as_ref()
-        .is_some_and(|handoff| handoff.mono_item_collection_status == "mono_items_collected")
-    {
-        RustCompilerStage::Codegen
-    } else {
-        RustCompilerStage::Monomorphization
-    };
+        .is_some_and(RustMonomorphizationProof::collected);
+    if !mono_proof_collected {
+        let (required_component, reason) = mir_handoff
+            .monomorphization_handoff
+            .as_ref()
+            .map(|handoff| {
+                (
+                    handoff.blocker_component.clone(),
+                    format!(
+                        "{}: {}",
+                        handoff.mono_item_collection_status, handoff.blocker_reason
+                    ),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "rustc_monomorphize".to_owned(),
+                    "monomorphization did not produce a real mono item proof".to_owned(),
+                )
+            });
+        return RustCompilerPipelineRecord {
+            unit_id: request.unit_id.clone(),
+            package: request.package.clone(),
+            target: request.target.clone(),
+            target_kind: request.target_kind.clone(),
+            source_path: request.source_path.clone(),
+            triple: request.triple.clone(),
+            profile: request.profile.clone(),
+            status: RustCompilerPipelineStatus::MissingStage,
+            artifact: None,
+            parse_stage: Some(parse_stage),
+            expansion_stage: Some(expansion_stage),
+            name_resolution_stage: Some(name_resolution_stage),
+            type_check_stage: Some(type_check_stage),
+            borrow_check_stage: Some(borrow_check_stage),
+            mir_handoff: Some(mir_handoff),
+            missing_stage: Some(MissingRustCompilerStage {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                triple: request.triple.clone(),
+                stage: RustCompilerStage::Monomorphization,
+                error_code: RustCompilerStageErrorCode::MonomorphizationNotEmbedded,
+                required_component,
+                component_role: "upstream monomorphization collector".to_owned(),
+                reason,
+            }),
+        };
+    }
 
-    if let Some(missing) = first_missing_compiler_stage_from(request, first_missing_after_handoff) {
+    if let Some(missing) = first_missing_compiler_stage_from(request, RustCompilerStage::Codegen) {
         return RustCompilerPipelineRecord {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -1768,12 +1998,46 @@ pub fn handoff_rust_mir_for_compile_unit(
                 } else {
                     "Keep rustc_monomorphize query contact inside the embedded payload and clear the exact blocker without fabricating mono items".to_owned()
                 },
-                proof_path: "proofs/mir-body.json".to_owned(),
+                proof_path: "proofs/monomorphization.json".to_owned(),
                 rustc_monomorphize_invoked: mono_invoked,
                 mono_item_count,
                 mono_item_graph_hash,
                 fabricated_mono_items,
             });
+    let monomorphization_proof = embedded_execution
+        .as_ref()
+        .zip(mir_body_proof.as_ref())
+        .and_then(|(execution, proof)| execution.monomorphization_proof(proof));
+    let codegen_handoff = monomorphization_proof
+        .as_ref()
+        .filter(|proof| proof.collected())
+        .and_then(|proof| {
+            let mono_item_graph_hash = proof.mono_item_graph_hash.clone()?;
+            Some(RustCodegenHandoffRecord {
+                compile_unit_id: proof.compile_unit_id.clone(),
+                target_triple: proof.target_triple.clone(),
+                mir_body_hash: proof.mir_body_hash.clone(),
+                mono_item_graph_hash,
+                mono_item_count: proof.mono_item_count,
+                required_upstream_component: "rustc_codegen_llvm".to_owned(),
+                backend_target: "LLVM-grade".to_owned(),
+                required_object_module_output_kind: if proof.target_triple.starts_with("wasm32") {
+                    "wasm_module".to_owned()
+                } else {
+                    "native_object_or_executable".to_owned()
+                },
+                current_status: "rustc_codegen_llvm_not_embedded".to_owned(),
+                blocker_kind: "rustc_codegen_llvm_payload_required".to_owned(),
+                blocker_component: "rustc_codegen_llvm".to_owned(),
+                blocker_reason:
+                    "mono item graph proof exists; LLVM-grade codegen payload is the next required upstream component"
+                        .to_owned(),
+                next_command:
+                    "Embed rustc_codegen_llvm and invoke the LLVM-grade codegen backend without fabricating object bytes"
+                        .to_owned(),
+                proof_path: "proofs/monomorphization.json".to_owned(),
+            })
+        });
     let blocker_component_name = embedded_execution
         .as_ref()
         .filter(|_| embedded_execution_executed && !available)
@@ -2043,6 +2307,8 @@ pub fn handoff_rust_mir_for_compile_unit(
         embedded_payload_execution: embedded_execution,
         mir_body_proof,
         monomorphization_handoff,
+        monomorphization_proof,
+        codegen_handoff,
         blocker_import_status,
         blocker_probe_command,
         shared_blocker_component: shared_root.map(|root| root.id.clone()),
@@ -4269,6 +4535,23 @@ fn json_value_bool_default_false(value: &serde_json::Value, key: &str) -> bool {
     json_value_bool(value, key).unwrap_or(false)
 }
 
+fn parse_mono_item_proof(value: &serde_json::Value) -> Option<RustMonoItemProof> {
+    let item_kind = json_value_str(value, "item_kind")?;
+    let symbol_name = json_value_str(value, "symbol_name")?;
+    let def_id = json_value_str(value, "def_id")?;
+    let source = json_value_str(value, "source")?;
+    Some(RustMonoItemProof {
+        item_kind: item_kind.to_owned(),
+        symbol_name: symbol_name.to_owned(),
+        instance_identity: json_value_str(value, "instance_identity").map(str::to_owned),
+        def_id: def_id.to_owned(),
+        codegen_unit: json_value_str(value, "codegen_unit").map(str::to_owned),
+        linkage: json_value_str(value, "linkage").map(str::to_owned),
+        visibility: json_value_str(value, "visibility").map(str::to_owned),
+        source: source.to_owned(),
+    })
+}
+
 fn first_missing_compiler_stage_from(
     request: &RustCompileRequest,
     first_stage: RustCompilerStage,
@@ -4554,7 +4837,7 @@ mod tests {
         assert_eq!(handoff.payload_abi_route_attempted, Some(true));
         assert_eq!(
             handoff.payload_abi_bridge_status.as_deref(),
-            Some("mir_body_hash_emitted")
+            Some("mono_items_collected")
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
@@ -4565,12 +4848,12 @@ mod tests {
             Some("bridge_wasm_mir_payload_module_emitted")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "mir_body_hash_emitted");
+        assert_eq!(bridge_attempt.status, "mono_items_collected");
         assert_eq!(bridge_attempt.blocker_kind, "none");
         assert_eq!(bridge_attempt.command_exit_code, Some(0));
         assert!(bridge_attempt
             .exact_blocker
-            .contains("mir_body_hash_emitted"));
+            .contains("mono_items_collected"));
         assert!(bridge_attempt
             .exact_blocker
             .contains("rustc_monomorphize_invoked=true"));
@@ -4598,7 +4881,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("monomorphization_handoff")
+            Some("codegen_handoff")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");

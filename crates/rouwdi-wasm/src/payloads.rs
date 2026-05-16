@@ -1516,6 +1516,9 @@ fn canonical_execution_state(raw_state: &str, blocker_kind: Option<&str>) -> Str
     if raw_state == "mir_body_hash_emitted" {
         return "embedded_payload_mir_body_hash_emitted".to_owned();
     }
+    if raw_state == "mono_items_collected" {
+        return "embedded_payload_mono_items_collected".to_owned();
+    }
     if blocker_kind.is_some_and(|kind| kind.starts_with("missing_core_lang_item"))
         || raw_state.contains("lang_item")
     {
@@ -1624,6 +1627,7 @@ mod tests {
                 .execution_state
                 .starts_with("embedded_payload_executed")
                 || report.execution_state == "embedded_payload_mir_body_hash_emitted"
+                || report.execution_state == "embedded_payload_mono_items_collected"
         );
         assert_eq!(report.input_contract_sha256.len(), 64);
         assert!(

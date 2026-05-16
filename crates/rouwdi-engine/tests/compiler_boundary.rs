@@ -8,9 +8,9 @@ use rouwdi_rustc::{
     RustCompilerPipelineStatus, RustCompilerStage, RustEmbeddedMirPayloadExecution,
     RustExpansionStageRecord, RustExpansionStageStatus, RustMirBodyProof,
     RustMirHandoffBlockerCategory, RustMirHandoffRecord, RustMirHandoffStatus,
-    RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord, RustNameResolutionStageStatus,
-    RustParseStageRecord, RustParseStageStatus, RustTypeCheckDiagnosticCode,
-    RustTypeCheckStageRecord, RustTypeCheckStageStatus,
+    RustMonomorphizationProof, RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord,
+    RustNameResolutionStageStatus, RustParseStageRecord, RustParseStageStatus,
+    RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord, RustTypeCheckStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -153,6 +153,45 @@ fn synthetic_embedded_mir_payload_success_execution() -> RustEmbeddedMirPayloadE
     }
 }
 
+fn synthetic_embedded_mono_items_collected_execution() -> RustEmbeddedMirPayloadExecution {
+    let mut execution = synthetic_embedded_mir_payload_success_execution();
+    let output = execution
+        .output_json
+        .as_ref()
+        .unwrap()
+        .replace(
+            r#""code":"mir_body_hash_emitted""#,
+            r#""code":"mono_items_collected""#,
+        )
+        .replace(
+            r#""context_state":"mir_body_hash_emitted""#,
+            r#""context_state":"mono_items_collected""#,
+        )
+        .replace(
+            r#""monomorphization_status":"rustc_monomorphize_invoked_blocked_at_codegen_backend_not_ready""#,
+            r#""monomorphization_status":"mono_items_collected""#,
+        )
+        .replace(
+            r#""monomorphization_blocker_kind":"codegen_backend_not_ready""#,
+            r#""monomorphization_blocker_kind":"none""#,
+        )
+        .replace(
+            r#""monomorphization_blocker_component":"rustc_monomorphize/rustc_middle::ty::TyCtxt::collect_and_partition_mono_items""#,
+            r#""monomorphization_blocker_component":"none""#,
+        )
+        .replace(
+            r#""monomorphization_blocker_reason":"synthetic test blocker after real MIR proof""#,
+            r#""monomorphization_blocker_reason":"none""#,
+        )
+        .replace(
+            r#""mono_item_count":0,"codegen_unit_count":0,"mono_item_graph_hash":null"#,
+            r#""monomorphization_provider":"rustc_monomorphize::partitioning::collect_and_partition_mono_items","failed_query":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","last_successful_compiler_step":"rustc_middle::ty::TyCtxt::optimized_mir","mono_item_count":1,"mono_items":[{"item_kind":"fn","symbol_name":"_RNvC8rouwdi_4main","instance_identity":"Instance { def: Item(DefId(0:3 ~ rouwdi_payload[0000]::main)), args: [] }","def_id":"DefId(0:3 ~ rouwdi_payload[0000]::main)","codegen_unit":"rouwdi_payload.abc123","linkage":"External","visibility":"Default","source":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items"}],"mono_items_derived_from":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","partition_count":1,"codegen_unit_count":1,"mono_item_graph_hash":"0123456789abcdef""#,
+        );
+    execution.output_json = Some(output);
+    execution.execution_state = "mono_items_collected".to_owned();
+    execution
+}
+
 #[test]
 fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     let mut storage = no_deps_wasi_binary_storage();
@@ -268,7 +307,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         Some("none")
     );
     let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
-    assert_eq!(bridge_attempt.status, "mir_body_hash_emitted");
+    assert_eq!(bridge_attempt.status, "mono_items_collected");
     assert_eq!(bridge_attempt.blocker_kind, "none");
     assert_eq!(bridge_attempt.command_exit_code, Some(0));
     assert!(bridge_attempt
@@ -298,7 +337,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     );
     assert_eq!(
         mir_handoff.payload_next_required_artifact_format.as_deref(),
-        Some("monomorphization_handoff")
+        Some("codegen_handoff")
     );
     assert_eq!(mir_handoff.payload_adapter_probe_exit_code, 0);
     assert_eq!(
@@ -475,8 +514,11 @@ fn embedded_mir_body_output_becomes_mir_stage_success_and_monomorphization_front
         Some(RustCompilerStage::Monomorphization)
     );
     assert_eq!(
-        artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_monomorphize")
+        artifact_pipeline[0]
+            .blocker_component
+            .as_deref()
+            .is_some_and(|component| component.contains("rustc_monomorphize")),
+        true
     );
     assert!(artifact_pipeline[0].compile_units.iter().any(|unit| {
         unit.mir_handoff_status == Some(RustMirHandoffStatus::AdapterAvailable)
@@ -498,6 +540,157 @@ fn embedded_mir_body_output_becomes_mir_stage_success_and_monomorphization_front
     let mir_body_records: Vec<RustMirBodyProof> =
         serde_json::from_slice(&storage.read(&mir_body_path).unwrap()).unwrap();
     assert_eq!(mir_body_records, vec![mir_body_proof.clone()]);
+}
+
+#[test]
+fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let execution = synthetic_embedded_mono_items_collected_execution();
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+    let mono_proof = mir_handoff.monomorphization_proof.as_ref().unwrap();
+
+    assert_eq!(mono_proof.status, "mono_items_collected");
+    assert_eq!(mono_proof.mono_item_count, 1);
+    assert_eq!(
+        mono_proof.mono_query,
+        "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items"
+    );
+    assert_eq!(
+        mono_proof.mono_item_graph_hash.as_deref(),
+        Some("0123456789abcdef")
+    );
+    assert!(mono_proof
+        .mono_items
+        .iter()
+        .all(|item| item.source == mono_proof.mono_query));
+    let codegen_handoff = mir_handoff.codegen_handoff.as_ref().unwrap();
+    assert_eq!(
+        codegen_handoff.required_upstream_component,
+        "rustc_codegen_llvm"
+    );
+    assert_eq!(
+        codegen_handoff.current_status,
+        "rustc_codegen_llvm_not_embedded"
+    );
+    assert_eq!(
+        manifest.compiler_pipeline[0]
+            .missing_stage
+            .as_ref()
+            .unwrap()
+            .stage,
+        RustCompilerStage::Codegen
+    );
+
+    let mono_path = format!("{}/proofs/monomorphization.json", report.run_root);
+    assert!(manifest.proof_files.contains(&mono_path));
+    let mono_records: Vec<RustMonomorphizationProof> =
+        serde_json::from_slice(&storage.read(&mono_path).unwrap()).unwrap();
+    assert_eq!(mono_records, vec![mono_proof.clone()]);
+    let codegen_path = format!("{}/graph/rust-source-codegen-handoff.json", report.run_root);
+    assert!(manifest.proof_files.contains(&codegen_path));
+    assert!(manifest.artifact_pipeline[0]
+        .compile_units
+        .iter()
+        .any(|unit| {
+            unit.mono_item_count == Some(1)
+                && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
+                && unit.codegen_handoff_status.as_deref() == Some("rustc_codegen_llvm_not_embedded")
+        }));
+}
+
+#[test]
+fn mono_success_without_count_or_graph_does_not_open_codegen() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mono_items_collected_execution();
+    let output = execution
+        .output_json
+        .as_ref()
+        .unwrap()
+        .replace(r#""mono_item_count":1"#, r#""mono_item_count":0"#)
+        .replace(
+            r#""mono_item_graph_hash":"0123456789abcdef""#,
+            r#""mono_item_graph_hash":null"#,
+        );
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert!(mir_handoff.monomorphization_proof.is_none());
+    assert!(mir_handoff.codegen_handoff.is_none());
+    assert_eq!(
+        manifest.compiler_pipeline[0]
+            .missing_stage
+            .as_ref()
+            .unwrap()
+            .stage,
+        RustCompilerStage::Monomorphization
+    );
+}
+
+#[test]
+fn mono_success_from_non_upstream_derivation_is_rejected() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mono_items_collected_execution();
+    let output = execution.output_json.as_ref().unwrap().replace(
+        r#""mono_items_derived_from":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items""#,
+        r#""mono_items_derived_from":"hir_traversal_local_function_list""#,
+    );
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert!(mir_handoff.monomorphization_proof.is_none());
+    assert!(mir_handoff.codegen_handoff.is_none());
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Monomorphization)
+    );
+}
+
+#[test]
+fn codegen_handoff_requires_monomorphization_proof() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mono_items_collected_execution();
+    let output = execution
+        .output_json
+        .as_ref()
+        .unwrap()
+        .replace(r#""mono_items":[{"#, r#""mono_items_bypassed":[{"#);
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert!(mir_handoff.monomorphization_proof.is_none());
+    assert!(mir_handoff.codegen_handoff.is_none());
+    assert!(!manifest
+        .proof_files
+        .iter()
+        .any(|path| path.ends_with("rust-source-codegen-handoff.json")));
 }
 
 #[test]

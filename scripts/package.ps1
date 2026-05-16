@@ -468,6 +468,20 @@ try {
         if ([string]::IsNullOrWhiteSpace([string]$payloadOutput.monomorphization_status)) {
             throw "Canonical MIR payload output must record monomorphization_status"
         }
+        if ($payloadOutput.monomorphization_status -eq "mono_items_collected") {
+            if ($null -eq $payloadOutput.mono_item_count -or [int64]$payloadOutput.mono_item_count -le 0) {
+                throw "Canonical monomorphization success requires mono_item_count > 0"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$payloadOutput.mono_item_graph_hash)) {
+                throw "Canonical monomorphization success requires mono_item_graph_hash"
+            }
+            if ($null -eq $payloadOutput.mono_items -or $payloadOutput.mono_items.Count -le 0) {
+                throw "Canonical monomorphization success requires upstream mono_items"
+            }
+            if ([string]$payloadOutput.mono_items_derived_from -ne "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items") {
+                throw "Canonical mono items must be derived from collect_and_partition_mono_items"
+            }
+        }
     }
     if ($payloadExecution.execution_state -match "mir_body" -and -not $mirBodyIdentityEmitted) {
         throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
@@ -478,6 +492,8 @@ try {
     $monoBlockerComponent = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_component } else { $null }
     $monoBlockerReason = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_reason } else { $null }
     $monoItemCount = if ($null -ne $payloadOutput -and $payloadOutput.mono_item_count -ne $null) { [int64]$payloadOutput.mono_item_count } else { $null }
+    $monoItems = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_items) { @($payloadOutput.mono_items) } else { @() }
+    $partitionCount = if ($null -ne $payloadOutput -and $payloadOutput.partition_count -ne $null) { [int64]$payloadOutput.partition_count } else { $null }
     $codegenUnitCount = if ($null -ne $payloadOutput -and $payloadOutput.codegen_unit_count -ne $null) { [int64]$payloadOutput.codegen_unit_count } else { $null }
     $monoItemGraphHash = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_item_graph_hash) { [string]$payloadOutput.mono_item_graph_hash } else { $null }
     $nextFrontier = if ($mirBodyHashEmitted) {
@@ -538,6 +554,9 @@ try {
         monomorphization_blocker_component = $monoBlockerComponent
         monomorphization_blocker_reason = $monoBlockerReason
         mono_item_count = $monoItemCount
+        mono_items = @($monoItems)
+        mono_items_derived_from = if ($null -ne $payloadOutput) { [string]$payloadOutput.mono_items_derived_from } else { $null }
+        partition_count = $partitionCount
         codegen_unit_count = $codegenUnitCount
         mono_item_graph_hash = $monoItemGraphHash
         fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
@@ -621,6 +640,9 @@ try {
             monomorphization_blocker_component = $monoBlockerComponent
             monomorphization_blocker_reason = $monoBlockerReason
             mono_item_count = $monoItemCount
+            mono_items = @($monoItems)
+            mono_items_derived_from = if ($null -ne $payloadOutput) { [string]$payloadOutput.mono_items_derived_from } else { $null }
+            partition_count = $partitionCount
             codegen_unit_count = $codegenUnitCount
             mono_item_graph_hash = $monoItemGraphHash
             fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
