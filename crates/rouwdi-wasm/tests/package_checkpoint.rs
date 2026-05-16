@@ -273,6 +273,33 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned()
                 )
             );
+            assert_eq!(
+                payload["codegen_handoff_status"],
+                Value::String("rustc_codegen_llvm_invoked_blocked_at_llvm_dependency".to_owned())
+            );
+            assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
+            assert_eq!(
+                payload["codegen_backend_family"],
+                Value::String("llvm-grade".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_expected_output_kind"],
+                Value::String("wasm_object".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_blocker_kind"],
+                Value::String("llvm_dependency".to_owned())
+            );
+            assert!(
+                payload["codegen_blocker_reason"]
+                    .as_str()
+                    .is_some_and(|reason| {
+                        reason.contains("libloading::Library") && reason.contains("LLVM")
+                    }),
+                "codegen handoff must retain exact rustc_codegen_llvm blocker"
+            );
+            assert_eq!(payload["codegen_object_bytes_emitted"], Value::Bool(false));
+            assert_eq!(payload["linker_handoff_created"], Value::Bool(false));
         }
         assert!(
             payload["mir_body_identity"]

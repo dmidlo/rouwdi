@@ -5,9 +5,9 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{
     RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
-    RustCompilerPipelineStatus, RustCompilerStage, RustEmbeddedMirPayloadExecution,
-    RustExpansionStageRecord, RustExpansionStageStatus, RustMirBodyProof,
-    RustMirHandoffBlockerCategory, RustMirHandoffRecord, RustMirHandoffStatus,
+    RustCodegenHandoffRecord, RustCompilerPipelineStatus, RustCompilerStage,
+    RustEmbeddedMirPayloadExecution, RustExpansionStageRecord, RustExpansionStageStatus,
+    RustMirBodyProof, RustMirHandoffBlockerCategory, RustMirHandoffRecord, RustMirHandoffStatus,
     RustMonomorphizationProof, RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord,
     RustNameResolutionStageStatus, RustParseStageRecord, RustParseStageStatus,
     RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord, RustTypeCheckStageStatus,
@@ -190,6 +190,24 @@ fn synthetic_embedded_mono_items_collected_execution() -> RustEmbeddedMirPayload
     execution.output_json = Some(output);
     execution.execution_state = "mono_items_collected".to_owned();
     execution
+}
+
+fn collected_mono_proof_and_codegen_handoff(
+) -> (RustMonomorphizationProof, RustCodegenHandoffRecord) {
+    let mut storage = no_deps_wasi_binary_storage();
+    let execution = synthetic_embedded_mono_items_collected_execution();
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+    (
+        mir_handoff.monomorphization_proof.as_ref().unwrap().clone(),
+        mir_handoff.codegen_handoff.as_ref().unwrap().clone(),
+    )
 }
 
 #[test]
@@ -575,10 +593,57 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         codegen_handoff.required_upstream_component,
         "rustc_codegen_llvm"
     );
+    assert_eq!(codegen_handoff.package, "app");
+    assert_eq!(codegen_handoff.target, "wasi");
+    assert_eq!(codegen_handoff.target_kind, "bin");
+    assert_eq!(codegen_handoff.profile, "release");
+    assert_eq!(codegen_handoff.source_path, "src/main.rs");
+    assert_eq!(
+        codegen_handoff.mir_body_identity,
+        mono_proof.mir_body_identity
+    );
+    assert_eq!(codegen_handoff.mono_provider, mono_proof.mono_provider);
+    assert_eq!(codegen_handoff.mono_query, mono_proof.mono_query);
+    assert_eq!(codegen_handoff.backend_family, "llvm-grade");
+    assert_eq!(codegen_handoff.expected_output_kind, "wasm_object");
+    assert_eq!(
+        codegen_handoff.required_target_machine,
+        "LLVM TargetMachine for wasm32-wasip1"
+    );
+    assert_eq!(
+        codegen_handoff.required_target_spec,
+        "rustc_target target spec for wasm32-wasip1"
+    );
+    assert_eq!(codegen_handoff.required_relocation_model, "pic");
+    assert!(codegen_handoff
+        .required_upstream_crates
+        .contains(&"rustc_codegen_ssa".to_owned()));
+    assert!(codegen_handoff
+        .upstream_component_identities
+        .iter()
+        .any(|identity| identity.contains("LlvmCodegenBackend")));
+    assert!(codegen_handoff.backend_contact_attempted);
+    assert!(codegen_handoff
+        .codegen_backend_entrypoint
+        .contains("rustc_codegen_llvm::LlvmCodegenBackend"));
+    assert_eq!(codegen_handoff.target_loadable_probe_exit_code, 1);
     assert_eq!(
         codegen_handoff.current_status,
-        "rustc_codegen_llvm_not_embedded"
+        "rustc_codegen_llvm_invoked_blocked_at_llvm_dependency"
     );
+    assert_eq!(codegen_handoff.blocker_kind, "llvm_dependency");
+    assert_eq!(codegen_handoff.blocker_component, "rustc_codegen_llvm");
+    assert!(codegen_handoff
+        .blocker_reason
+        .contains("libloading::Library"));
+    assert!(codegen_handoff.blocker_reason.contains("llvm-wrapper"));
+    assert!(!codegen_handoff.object_bytes_emitted);
+    assert!(codegen_handoff.object_sha256.is_none());
+    assert!(!codegen_handoff.llvm_ir_emitted);
+    assert!(!codegen_handoff.linker_handoff_created);
+    codegen_handoff
+        .validate_against_monomorphization_proof(mono_proof)
+        .unwrap();
     assert_eq!(
         manifest.compiler_pipeline[0]
             .missing_stage
@@ -595,13 +660,32 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert_eq!(mono_records, vec![mono_proof.clone()]);
     let codegen_path = format!("{}/graph/rust-source-codegen-handoff.json", report.run_root);
     assert!(manifest.proof_files.contains(&codegen_path));
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Codegen)
+    );
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocker_component.as_deref(),
+        Some("rustc_codegen_llvm")
+    );
+    assert!(manifest.artifact_pipeline[0]
+        .remaining_stages
+        .iter()
+        .any(|stage| stage.stage == RustCompilerStage::Codegen
+            && stage.status == ArtifactPipelineStageStatus::Blocked));
+    assert!(manifest.artifact_pipeline[0]
+        .remaining_stages
+        .iter()
+        .any(|stage| stage.stage == RustCompilerStage::Monomorphization
+            && stage.status == ArtifactPipelineStageStatus::Completed));
     assert!(manifest.artifact_pipeline[0]
         .compile_units
         .iter()
         .any(|unit| {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
-                && unit.codegen_handoff_status.as_deref() == Some("rustc_codegen_llvm_not_embedded")
+                && unit.codegen_handoff_status.as_deref()
+                    == Some("rustc_codegen_llvm_invoked_blocked_at_llvm_dependency")
         }));
 }
 
@@ -691,6 +775,84 @@ fn codegen_handoff_requires_monomorphization_proof() {
         .proof_files
         .iter()
         .any(|path| path.ends_with("rust-source-codegen-handoff.json")));
+}
+
+#[test]
+fn codegen_success_without_real_backend_contact_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.backend_contact_attempted = false;
+    codegen_handoff.current_status = "object_bytes_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = true;
+    codegen_handoff.object_path = Some("run/artifacts/app.o".to_owned());
+    codegen_handoff.object_sha256 = Some("f".repeat(64));
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("no real rustc_codegen_llvm backend contact"));
+}
+
+#[test]
+fn fake_object_bytes_and_reused_mono_hash_are_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.current_status = "wasm_object_bytes_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = true;
+    codegen_handoff.object_path = Some("run/artifacts/app.wasm.o".to_owned());
+    codegen_handoff.object_sha256 = Some(codegen_handoff.mono_item_graph_hash.clone());
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("object hash must not reuse mono graph"));
+}
+
+#[test]
+fn fake_llvm_ir_reusing_mir_hash_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.llvm_ir_emitted = true;
+    codegen_handoff.llvm_ir_sha256 = Some(codegen_handoff.mir_body_hash.clone());
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("LLVM IR hash must not reuse"));
+}
+
+#[test]
+fn linker_handoff_without_codegen_bytes_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.linker_handoff_created = true;
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("linker handoff is forbidden"));
+}
+
+#[test]
+fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
+    let component = rouwdi_rustc_upstream::import_component("rustc_codegen_llvm")
+        .expect("rustc_codegen_llvm must be in upstream import ledger");
+
+    assert!(component.attempted);
+    assert_eq!(
+        component.source_path,
+        "third_party/rust/compiler/rustc_codegen_llvm"
+    );
+    assert_eq!(component.blocker_kind, "llvm_dependency");
+    assert!(component
+        .probe_command
+        .contains("compiler/rustc_codegen_llvm"));
+    assert!(component.exact_blocker.contains("libloading::Library"));
+    assert!(component.exact_blocker.contains("llvm-wrapper"));
+    assert!(component
+        .adapter_evidence
+        .as_deref()
+        .is_some_and(|evidence| evidence.contains("LlvmCodegenBackend::new")));
 }
 
 #[test]

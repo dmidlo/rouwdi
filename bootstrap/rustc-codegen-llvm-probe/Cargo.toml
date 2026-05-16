@@ -1,0 +1,10 @@
+[package]
+name = "rouwdi-rustc-codegen-llvm-probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rustc_codegen_llvm = { path = "../../third_party/rust/compiler/rustc_codegen_llvm", features = ["check_only"] }
+serde_json = "1"

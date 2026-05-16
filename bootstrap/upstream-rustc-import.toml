@@ -336,6 +336,84 @@ immediate_dependency_blocker = "mir_handoff_payload_adapter.none"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative bootstrap adapter probe in third_party/rust/src/tools/rouwdi-mir-adapter-probe type-checks rustc_mir_build::provide(&mut rustc_middle::util::Providers) and the MIR build hook surface in the pinned Rust stage1 bootstrap environment."
 
+[[components]]
+name = "rustc_monomorphize"
+source_path = "third_party/rust/compiler/rustc_monomorphize"
+desired_role = "upstream mono item collection and codegen-unit partitioning"
+import_status = "adapter_partially_embedded"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "canonical dist/rouwdi.wasm embedded-registry execution of rouwdi_mir_adapter_probe.wasm"
+blocker_kind = "none"
+exact_blocker = "Canonical embedded-registry execution enters rustc_middle::ty::TyCtxt::collect_and_partition_mono_items through rustc_monomorphize and records mono_items_collected with mono_item_count=1 and mono_item_graph_hash=bec5817d61819666. No fabricated mono items are accepted."
+adapter_symbol = "third_party/rust/src/tools/rouwdi-mir-adapter-probe::MonoContactProof::collected"
+adapter_evidence = "The embedded payload invokes rustc_monomorphize::partitioning::collect_and_partition_mono_items through TyCtxt::collect_and_partition_mono_items and serializes real MonoItem identities/codegen-unit membership into proofs/monomorphization.json."
+
+[[components]]
+name = "rustc_codegen_ssa"
+source_path = "third_party/rust/compiler/rustc_codegen_ssa"
+desired_role = "shared codegen backend traits, codegen-unit planning, target-machine factory contracts, and object write orchestration"
+import_status = "bootstrap_probe_passed"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "python x.py check compiler/rustc_codegen_llvm --stage 1 -v"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 check of rustc_codegen_llvm compiled rustc_codegen_ssa as a real upstream dependency, but rouwdi.wasm has not embedded a target-loadable rustc_codegen_ssa/rustc_codegen_llvm backend payload yet."
+adapter_symbol = "rustc_codegen_ssa::traits::CodegenBackend"
+adapter_evidence = "The successful stage1 rustc_codegen_llvm check compiled rustc_codegen_ssa and reached the upstream CodegenBackend trait surface used by rustc_codegen_llvm::LlvmCodegenBackend."
+
+[[components]]
+name = "rustc_target"
+source_path = "third_party/rust/compiler/rustc_target"
+desired_role = "target specification, ABI, relocation model, and target-machine input data for codegen"
+import_status = "bootstrap_probe_passed"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "python x.py check compiler/rustc_codegen_llvm --stage 1 -v"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 check of rustc_codegen_llvm compiled rustc_target as part of the real LLVM-grade backend dependency closure, but target-pack codegen has not embedded the target spec into a runnable rouwdi codegen payload yet."
+adapter_symbol = "rustc_target::spec"
+adapter_evidence = "rustc_codegen_llvm consumes rustc_target for ABI, target feature, and TargetMachine configuration; the stage1 check compiled that dependency through the real upstream crate graph."
+
+[[components]]
+name = "rustc_metadata"
+source_path = "third_party/rust/compiler/rustc_metadata"
+desired_role = "crate metadata and encoded metadata required by codegen and object/module emission"
+import_status = "bootstrap_probe_passed"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "python x.py check compiler/rustc_codegen_llvm --stage 1 -v"
+blocker_kind = "adapter_not_embedded"
+exact_blocker = "The pinned Rust bootstrap stage1 check of rustc_codegen_llvm compiled rustc_metadata as part of the real codegen dependency closure, but rouwdi.wasm has not embedded metadata handoff into target-loadable codegen execution yet."
+adapter_symbol = "rustc_metadata::EncodedMetadata"
+adapter_evidence = "rustc_codegen_llvm imports rustc_metadata::EncodedMetadata; the stage1 check compiled that path through the real upstream backend crate graph."
+
+[[components]]
+name = "rustc_llvm"
+source_path = "third_party/rust/compiler/rustc_llvm"
+desired_role = "LLVM C++ wrapper FFI used by rustc_codegen_llvm for target-machine setup, LLVM module operations, optimization, and object emission"
+import_status = "target_loadable_wasm_blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-host-probe.ps1; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
+blocker_kind = "llvm_dependency"
+exact_blocker = "The standalone backend-constructor probe reaches rustc_llvm/rustc_codegen_llvm and type-checks the real rustc_codegen_llvm::LlvmCodegenBackend::new entrypoint, but the runnable probe binary cannot link: first the native static library llvm-wrapper is missing from the standalone cargo route, and with the stage1 llvm-wrapper path supplied the link advances to unresolved LLVM C/C++ symbols (LNK2019/LNK1120). The wasm32-wasip1 target-loadable check separately reaches rustc_codegen_llvm and fails before object emission in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs because libloading::Library and libloading::Symbol are unavailable for wasm32-wasip1."
+adapter_symbol = "rustc_llvm::LLVMRustCreateTargetMachine"
+adapter_evidence = "rustc_codegen_llvm's target-machine/object path depends on rustc_llvm LLVMRust* FFI. The current target-loadable probe does not reach object setup because the wasm target cannot compile the dynamic-library Enzyme wrapper path first."
+
+[[components]]
+name = "rustc_codegen_llvm"
+source_path = "third_party/rust/compiler/rustc_codegen_llvm"
+desired_role = "LLVM-grade release codegen backend, LLVM module creation, target-machine setup, and object emission"
+import_status = "target_loadable_wasm_blocked"
+attempted = true
+adapter_path = "crates/rouwdi-rustc-upstream"
+probe_command = "python x.py check compiler/rustc_codegen_llvm --stage 1 -v; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-host-probe.ps1; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
+blocker_kind = "llvm_dependency"
+exact_blocker = "Real upstream codegen contact was attempted. Host stage1 bootstrap checked rustc_codegen_llvm successfully. The standalone backend-constructor probe type-checks the real rustc_codegen_llvm::LlvmCodegenBackend::new entrypoint, but the runnable probe binary cannot link: first rustc_codegen_llvm fails with missing native static library llvm-wrapper, and with the stage1 llvm-wrapper path supplied it advances to unresolved LLVM C/C++ symbols (LNK2019/LNK1120). The target-loadable wasm32-wasip1 check also reaches rustc_codegen_llvm with check_only enabled, then fails before LLVM module/object bytes because compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs references libloading::Library and libloading::Symbol, which are unavailable on wasm32-wasip1 (E0433/E0425). No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+adapter_symbol = "rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe"
+adapter_evidence = "The standalone bootstrap/rustc-codegen-llvm-probe crate owns the direct rustc_codegen_llvm dependency and type-checks a call to rustc_codegen_llvm::LlvmCodegenBackend::new; linking that runnable probe is blocked by the LLVM wrapper/C++ dependency chain, and the target-loadable build probe then demonstrates the exact wasm blocker before object emission. The normal workspace records this evidence without depending directly on rustc_codegen_llvm, because rustc_llvm pins cc=1.2.16 and would otherwise conflict with the runner's wasmtime dependency."
+
 [[frontend_stages]]
 stage = "lex"
 classification = "upstream_backed_adapter"

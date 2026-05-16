@@ -16,6 +16,12 @@ pub const RUSTC_PRIVATE_TARGET_PACK_MANIFEST_PATH: &str =
 pub const STAGE2_WASM_HOST_TOOLING_MANIFEST_PATH: &str = "bootstrap/tooling.toml";
 pub const DIRECT_RUSTC_PRIVATE_PACK_BUILDER_COMMAND: &str =
     "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder -- --json";
+pub const RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND: &str =
+    "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-host-probe.ps1";
+pub const RUSTC_CODEGEN_LLVM_HOST_STAGE1_CHECK_COMMAND: &str =
+    "python x.py check compiler/rustc_codegen_llvm --stage 1 -v";
+pub const RUSTC_CODEGEN_LLVM_WASM_TARGET_CHECK_COMMAND: &str =
+    "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1";
 pub const COMPILER_PAYLOAD_ABI_V1_VERSION_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_version";
 pub const COMPILER_PAYLOAD_ABI_V1_STAGE_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_stage";
 pub const COMPILER_PAYLOAD_ABI_V1_DESCRIPTOR_PTR_SYMBOL: &str =
@@ -115,6 +121,28 @@ pub struct UpstreamCompilerComponentImport {
     pub adapter_symbol: Option<String>,
     #[serde(default)]
     pub adapter_evidence: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustcCodegenLlvmBackendProbe {
+    pub probe_name: String,
+    pub feature_enabled: bool,
+    pub upstream_component: String,
+    pub upstream_path: String,
+    pub backend_family: String,
+    pub entrypoint: String,
+    pub backend_constructed: bool,
+    pub backend_name: Option<String>,
+    pub host_probe_command: String,
+    pub host_probe_exit_code: i32,
+    pub target_loadable_probe_command: String,
+    pub target_loadable_probe_exit_code: i32,
+    pub target_loadable_status: String,
+    pub blocker_kind: String,
+    pub blocker_component: String,
+    pub blocker_reason: String,
+    pub object_bytes_emitted: bool,
+    pub llvm_ir_emitted: bool,
 }
 
 impl UpstreamCompilerComponentImport {
@@ -2503,6 +2531,36 @@ pub fn import_component(name: &str) -> Option<UpstreamCompilerComponentImport> {
         .find(|component| component.name == name)
 }
 
+pub fn rustc_codegen_llvm_component() -> Option<UpstreamCompilerComponentImport> {
+    import_component("rustc_codegen_llvm")
+}
+
+pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
+    RustcCodegenLlvmBackendProbe {
+        probe_name: "rustc_codegen_llvm_backend_constructor".to_owned(),
+        feature_enabled: false,
+        upstream_component: "rustc_codegen_llvm".to_owned(),
+        upstream_path: "third_party/rust/compiler/rustc_codegen_llvm".to_owned(),
+        backend_family: "llvm-grade".to_owned(),
+        entrypoint: "rustc_codegen_llvm::LlvmCodegenBackend::new".to_owned(),
+        backend_constructed: false,
+        backend_name: None,
+        host_probe_command: RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND.to_owned(),
+        host_probe_exit_code: 1,
+        target_loadable_probe_command: RUSTC_CODEGEN_LLVM_WASM_TARGET_CHECK_COMMAND.to_owned(),
+        target_loadable_probe_exit_code: 1,
+        target_loadable_status:
+            "rustc_codegen_llvm_target_loadable_wasm_blocked_at_dynamic_library_dependency"
+                .to_owned(),
+        blocker_kind: "llvm_dependency".to_owned(),
+        blocker_component: "rustc_codegen_llvm/rustc_llvm/llvm-wrapper/LLVM C++ libraries"
+            .to_owned(),
+        blocker_reason: "The standalone bootstrap probe type-checks the real rustc_codegen_llvm::LlvmCodegenBackend::new entrypoint but cannot produce the runnable probe binary: first the link fails with missing native static library llvm-wrapper, and with the stage1 llvm-wrapper path supplied it advances to unresolved LLVM C/C++ symbols (LNK2019/LNK1120). The separate wasm32-wasip1 target-loadable check also reaches rustc_codegen_llvm and fails before object emission because libloading::Library and libloading::Symbol are unavailable for wasm32-wasip1 in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs (E0433/E0425).".to_owned(),
+        object_bytes_emitted: false,
+        llvm_ir_emitted: false,
+    }
+}
+
 pub fn root_blocker(id: &str) -> Option<UpstreamCompilerRootBlocker> {
     import_ledger()
         .root_blockers
@@ -4100,6 +4158,37 @@ mod tests {
         assert!(runtime.execute_called);
         assert!(runtime.output_or_error_bytes_read);
         assert_eq!(runtime.blocker_kind, "none");
+    }
+
+    #[test]
+    fn rustc_codegen_llvm_probe_records_real_backend_contact_and_target_blocker() {
+        let component = import_component("rustc_codegen_llvm").unwrap();
+        let probe = rustc_codegen_llvm_backend_probe();
+
+        assert!(component.attempted);
+        assert_eq!(
+            component.source_path,
+            "third_party/rust/compiler/rustc_codegen_llvm"
+        );
+        assert_eq!(component.blocker_kind, "llvm_dependency");
+        assert!(component
+            .probe_command
+            .contains("compiler/rustc_codegen_llvm"));
+        assert!(component.exact_blocker.contains("libloading::Library"));
+        assert_eq!(
+            component.adapter_symbol.as_deref(),
+            Some("rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe")
+        );
+        assert_eq!(
+            probe.entrypoint,
+            "rustc_codegen_llvm::LlvmCodegenBackend::new"
+        );
+        assert_eq!(probe.host_probe_exit_code, 1);
+        assert_eq!(probe.target_loadable_probe_exit_code, 1);
+        assert_eq!(probe.blocker_kind, "llvm_dependency");
+        assert!(probe.blocker_reason.contains("llvm-wrapper"));
+        assert!(!probe.object_bytes_emitted);
+        assert!(!probe.llvm_ir_emitted);
     }
 
     #[test]

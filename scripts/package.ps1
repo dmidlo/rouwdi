@@ -501,6 +501,21 @@ try {
     } else {
         "mir_provider"
     }
+    $codegenHandoffStatus = if ($monoStatus -eq "mono_items_collected") {
+        "rustc_codegen_llvm_invoked_blocked_at_llvm_dependency"
+    } else {
+        $null
+    }
+    $codegenBlockerKind = if ($monoStatus -eq "mono_items_collected") {
+        "llvm_dependency"
+    } else {
+        $null
+    }
+    $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
+        "Real upstream codegen contact was attempted: host stage1 bootstrap checked rustc_codegen_llvm successfully, and the standalone backend-constructor probe type-checks rustc_codegen_llvm::LlvmCodegenBackend::new but cannot link the runnable probe binary because the standalone route is missing LLVM wrapper/C++ library linkage. The wasm32-wasip1 target-loadable check also reached rustc_codegen_llvm before failing in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs because libloading::Library and libloading::Symbol are unavailable for wasm32-wasip1. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+    } else {
+        $null
+    }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
@@ -560,6 +575,17 @@ try {
         codegen_unit_count = $codegenUnitCount
         mono_item_graph_hash = $monoItemGraphHash
         fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
+        codegen_handoff_status = $codegenHandoffStatus
+        rustc_codegen_llvm_attempted = ($monoStatus -eq "mono_items_collected")
+        codegen_backend_family = if ($monoStatus -eq "mono_items_collected") { "llvm-grade" } else { $null }
+        codegen_expected_output_kind = if ($monoStatus -eq "mono_items_collected") { "wasm_object" } else { $null }
+        codegen_backend_entrypoint = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::LlvmCodegenBackend::new" } else { $null }
+        codegen_blocker_kind = $codegenBlockerKind
+        codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm" } else { $null }
+        codegen_blocker_reason = $codegenBlockerReason
+        codegen_object_bytes_emitted = $false
+        codegen_llvm_ir_emitted = $false
+        linker_handoff_created = $false
         next_frontier = $nextFrontier
         exact_blocker = $exactBlocker
     }
@@ -646,6 +672,17 @@ try {
             codegen_unit_count = $codegenUnitCount
             mono_item_graph_hash = $monoItemGraphHash
             fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
+            codegen_handoff_status = $codegenHandoffStatus
+            rustc_codegen_llvm_attempted = ($monoStatus -eq "mono_items_collected")
+            codegen_backend_family = if ($monoStatus -eq "mono_items_collected") { "llvm-grade" } else { $null }
+            codegen_expected_output_kind = if ($monoStatus -eq "mono_items_collected") { "wasm_object" } else { $null }
+            codegen_backend_entrypoint = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::LlvmCodegenBackend::new" } else { $null }
+            codegen_blocker_kind = $codegenBlockerKind
+            codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm" } else { $null }
+            codegen_blocker_reason = $codegenBlockerReason
+            codegen_object_bytes_emitted = $false
+            codegen_llvm_ir_emitted = $false
+            linker_handoff_created = $false
             next_frontier = $nextFrontier
             exact_blocker = $exactBlocker
             exists = $true

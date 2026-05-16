@@ -630,19 +630,263 @@ impl RustMonomorphizationProof {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustCodegenHandoffRecord {
     pub compile_unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
     pub target_triple: String,
+    pub profile: String,
+    pub source_path: String,
+    pub mir_body_identity: String,
     pub mir_body_hash: String,
+    pub mono_provider: String,
+    pub mono_query: String,
     pub mono_item_graph_hash: String,
     pub mono_item_count: u64,
+    pub mono_items: Vec<RustMonoItemProof>,
     pub required_upstream_component: String,
-    pub backend_target: String,
-    pub required_object_module_output_kind: String,
+    pub required_upstream_crates: Vec<String>,
+    pub upstream_component_identities: Vec<String>,
+    pub backend_family: String,
+    pub expected_output_kind: String,
+    pub required_target_machine: String,
+    pub required_target_spec: String,
+    pub required_linker: String,
+    pub required_relocation_model: String,
+    pub codegen_backend_entrypoint: String,
+    pub backend_contact_attempted: bool,
+    pub backend_contact_command: String,
+    pub backend_contact_status: String,
+    pub target_loadable_probe_command: String,
+    pub target_loadable_probe_exit_code: i32,
     pub current_status: String,
     pub blocker_kind: String,
     pub blocker_component: String,
     pub blocker_reason: String,
     pub next_command: String,
     pub proof_path: String,
+    pub object_bytes_emitted: bool,
+    pub object_path: Option<String>,
+    pub object_sha256: Option<String>,
+    pub llvm_ir_emitted: bool,
+    pub llvm_ir_sha256: Option<String>,
+    pub linker_handoff_created: bool,
+}
+
+impl RustCodegenHandoffRecord {
+    pub fn from_valid_monomorphization_proof(proof: &RustMonomorphizationProof) -> Option<Self> {
+        if !proof.collected() {
+            return None;
+        }
+        let mono_item_graph_hash = proof.mono_item_graph_hash.clone()?;
+        if mono_item_graph_hash.trim().is_empty() {
+            return None;
+        }
+
+        let codegen_component = rouwdi_rustc_upstream::rustc_codegen_llvm_component();
+        let codegen_probe = rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe();
+        let expected_output_kind = if proof.target_triple.starts_with("wasm32") {
+            "wasm_object"
+        } else {
+            "object"
+        };
+        let blocker_kind = codegen_component
+            .as_ref()
+            .map(|component| component.blocker_kind.clone())
+            .filter(|kind| !kind.trim().is_empty() && kind != "none")
+            .unwrap_or_else(|| codegen_probe.blocker_kind.clone());
+        let blocker_component = codegen_component
+            .as_ref()
+            .map(|component| component.name.clone())
+            .unwrap_or_else(|| codegen_probe.blocker_component.clone());
+        let blocker_reason = codegen_component
+            .as_ref()
+            .map(|component| component.exact_blocker.clone())
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or_else(|| codegen_probe.blocker_reason.clone());
+        let current_status = format!("rustc_codegen_llvm_invoked_blocked_at_{blocker_kind}");
+
+        let record = Self {
+            compile_unit_id: proof.compile_unit_id.clone(),
+            package: proof.package.clone(),
+            target: proof.target.clone(),
+            target_kind: proof.target_kind.clone(),
+            target_triple: proof.target_triple.clone(),
+            profile: proof.profile.clone(),
+            source_path: proof.source_path.clone(),
+            mir_body_identity: proof.mir_body_identity.clone(),
+            mir_body_hash: proof.mir_body_hash.clone(),
+            mono_provider: proof.mono_provider.clone(),
+            mono_query: proof.mono_query.clone(),
+            mono_item_graph_hash,
+            mono_item_count: proof.mono_item_count,
+            mono_items: proof.mono_items.clone(),
+            required_upstream_component: "rustc_codegen_llvm".to_owned(),
+            required_upstream_crates: vec![
+                "rustc_codegen_llvm".to_owned(),
+                "rustc_codegen_ssa".to_owned(),
+                "rustc_target".to_owned(),
+                "rustc_metadata".to_owned(),
+                "rustc_middle".to_owned(),
+                "rustc_llvm".to_owned(),
+                "object".to_owned(),
+                "ar_archive_writer".to_owned(),
+            ],
+            upstream_component_identities: vec![
+                "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
+                "rustc_codegen_ssa::traits::CodegenBackend".to_owned(),
+                "rustc_codegen_ssa::back::write::TargetMachineFactoryConfig".to_owned(),
+                "rustc_codegen_llvm::back::write::target_machine_factory".to_owned(),
+                "rustc_codegen_llvm::back::owned_target_machine::OwnedTargetMachine".to_owned(),
+            ],
+            backend_family: "llvm-grade".to_owned(),
+            expected_output_kind: expected_output_kind.to_owned(),
+            required_target_machine: format!(
+                "LLVM TargetMachine for {}",
+                proof.target_triple
+            ),
+            required_target_spec: format!("rustc_target target spec for {}", proof.target_triple),
+            required_linker:
+                "linker handoff is forbidden until real codegen object/module bytes exist"
+                    .to_owned(),
+            required_relocation_model: "pic".to_owned(),
+            codegen_backend_entrypoint: codegen_probe.entrypoint,
+            backend_contact_attempted: true,
+            backend_contact_command: rouwdi_rustc_upstream::RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND
+                .to_owned(),
+            backend_contact_status: if codegen_probe.backend_constructed {
+                "rustc_codegen_llvm_backend_constructed_host_probe".to_owned()
+            } else {
+                "rustc_codegen_llvm_entrypoint_typechecked_blocked_at_llvm_dependency".to_owned()
+            },
+            target_loadable_probe_command: codegen_probe.target_loadable_probe_command,
+            target_loadable_probe_exit_code: codegen_probe.target_loadable_probe_exit_code,
+            current_status,
+            blocker_kind,
+            blocker_component,
+            blocker_reason,
+            next_command:
+                "Clear the wasm32-wasip1 rustc_codegen_llvm target-loadable blocker, then invoke target-machine setup or object emission without dummy bytes"
+                    .to_owned(),
+            proof_path: "graph/rust-source-codegen-handoff.json".to_owned(),
+            object_bytes_emitted: false,
+            object_path: None,
+            object_sha256: None,
+            llvm_ir_emitted: false,
+            llvm_ir_sha256: None,
+            linker_handoff_created: false,
+        };
+        record.validate_against_monomorphization_proof(proof).ok()?;
+        Some(record)
+    }
+
+    pub fn validate_against_monomorphization_proof(
+        &self,
+        proof: &RustMonomorphizationProof,
+    ) -> Result<(), String> {
+        if !proof.collected() {
+            return Err("codegen handoff requires collected monomorphization proof".to_owned());
+        }
+        let mono_hash = proof
+            .mono_item_graph_hash
+            .as_deref()
+            .ok_or_else(|| "mono proof is missing mono_item_graph_hash".to_owned())?;
+        let expected_pairs = [
+            (
+                &self.compile_unit_id,
+                proof.compile_unit_id.as_str(),
+                "compile_unit_id",
+            ),
+            (&self.package, proof.package.as_str(), "package"),
+            (&self.target, proof.target.as_str(), "target"),
+            (&self.target_kind, proof.target_kind.as_str(), "target_kind"),
+            (
+                &self.target_triple,
+                proof.target_triple.as_str(),
+                "target_triple",
+            ),
+            (&self.profile, proof.profile.as_str(), "profile"),
+            (&self.source_path, proof.source_path.as_str(), "source_path"),
+            (
+                &self.mir_body_identity,
+                proof.mir_body_identity.as_str(),
+                "mir_body_identity",
+            ),
+            (
+                &self.mir_body_hash,
+                proof.mir_body_hash.as_str(),
+                "mir_body_hash",
+            ),
+            (
+                &self.mono_provider,
+                proof.mono_provider.as_str(),
+                "mono_provider",
+            ),
+            (&self.mono_query, proof.mono_query.as_str(), "mono_query"),
+            (
+                &self.mono_item_graph_hash,
+                mono_hash,
+                "mono_item_graph_hash",
+            ),
+        ];
+        for (actual, expected, field) in expected_pairs {
+            if actual != expected {
+                return Err(format!("codegen handoff {field} does not match mono proof"));
+            }
+        }
+        if self.mono_item_count != proof.mono_item_count {
+            return Err("codegen handoff mono_item_count does not match mono proof".to_owned());
+        }
+        if self.mono_items != proof.mono_items {
+            return Err("codegen handoff mono_items do not match mono proof".to_owned());
+        }
+        if self.required_upstream_component != "rustc_codegen_llvm" {
+            return Err("codegen handoff must require rustc_codegen_llvm".to_owned());
+        }
+        if self.backend_family != "llvm-grade" {
+            return Err("codegen handoff must stay on the llvm-grade backend family".to_owned());
+        }
+        if !self.backend_contact_attempted
+            || !self
+                .codegen_backend_entrypoint
+                .contains("rustc_codegen_llvm::LlvmCodegenBackend")
+        {
+            return Err(
+                "codegen handoff has no real rustc_codegen_llvm backend contact".to_owned(),
+            );
+        }
+        if self.current_status == "object_bytes_emitted"
+            || self.current_status == "wasm_object_bytes_emitted"
+        {
+            if !self.object_bytes_emitted {
+                return Err("codegen success requires real object bytes".to_owned());
+            }
+            let object_sha = self
+                .object_sha256
+                .as_deref()
+                .ok_or_else(|| "codegen success requires object_sha256".to_owned())?;
+            if object_sha == self.mono_item_graph_hash || object_sha == self.mir_body_hash {
+                return Err("object hash must not reuse mono graph or MIR body hashes".to_owned());
+            }
+        } else if self.object_bytes_emitted
+            || self.object_path.is_some()
+            || self.object_sha256.is_some()
+        {
+            return Err("blocked codegen handoff must not claim object bytes".to_owned());
+        }
+        if self.llvm_ir_emitted {
+            let llvm_ir_sha = self
+                .llvm_ir_sha256
+                .as_deref()
+                .ok_or_else(|| "LLVM IR emission requires llvm_ir_sha256".to_owned())?;
+            if llvm_ir_sha == self.mono_item_graph_hash || llvm_ir_sha == self.mir_body_hash {
+                return Err("LLVM IR hash must not reuse mono graph or MIR body hashes".to_owned());
+            }
+        }
+        if self.linker_handoff_created && !self.object_bytes_emitted {
+            return Err("linker handoff is forbidden without real codegen bytes".to_owned());
+        }
+        Ok(())
+    }
 }
 
 impl RustEmbeddedMirPayloadExecution {
@@ -2010,34 +2254,7 @@ pub fn handoff_rust_mir_for_compile_unit(
         .and_then(|(execution, proof)| execution.monomorphization_proof(proof));
     let codegen_handoff = monomorphization_proof
         .as_ref()
-        .filter(|proof| proof.collected())
-        .and_then(|proof| {
-            let mono_item_graph_hash = proof.mono_item_graph_hash.clone()?;
-            Some(RustCodegenHandoffRecord {
-                compile_unit_id: proof.compile_unit_id.clone(),
-                target_triple: proof.target_triple.clone(),
-                mir_body_hash: proof.mir_body_hash.clone(),
-                mono_item_graph_hash,
-                mono_item_count: proof.mono_item_count,
-                required_upstream_component: "rustc_codegen_llvm".to_owned(),
-                backend_target: "LLVM-grade".to_owned(),
-                required_object_module_output_kind: if proof.target_triple.starts_with("wasm32") {
-                    "wasm_module".to_owned()
-                } else {
-                    "native_object_or_executable".to_owned()
-                },
-                current_status: "rustc_codegen_llvm_not_embedded".to_owned(),
-                blocker_kind: "rustc_codegen_llvm_payload_required".to_owned(),
-                blocker_component: "rustc_codegen_llvm".to_owned(),
-                blocker_reason:
-                    "mono item graph proof exists; LLVM-grade codegen payload is the next required upstream component"
-                        .to_owned(),
-                next_command:
-                    "Embed rustc_codegen_llvm and invoke the LLVM-grade codegen backend without fabricating object bytes"
-                        .to_owned(),
-                proof_path: "proofs/monomorphization.json".to_owned(),
-            })
-        });
+        .and_then(RustCodegenHandoffRecord::from_valid_monomorphization_proof);
     let blocker_component_name = embedded_execution
         .as_ref()
         .filter(|_| embedded_execution_executed && !available)
@@ -4566,6 +4783,20 @@ fn first_missing_compiler_stage_from(
             .find(|component| component.name == component_name)
             .expect("compiler stage component inventory is complete");
         if !component.embedded_in_assembly {
+            let reason = component.blocker.as_ref().map_or_else(
+                || {
+                    format!(
+                        "{} is not embedded in rouwdi.wasm; source custody is present at {}",
+                        component.role, component.upstream_path
+                    )
+                },
+                |blocker| {
+                    format!(
+                        "{} is not embedded in rouwdi.wasm; source custody is present at {}; latest upstream probe: {}",
+                        component.role, component.upstream_path, blocker
+                    )
+                },
+            );
             return Some(MissingRustCompilerStage {
                 unit_id: request.unit_id.clone(),
                 package: request.package.clone(),
@@ -4575,10 +4806,7 @@ fn first_missing_compiler_stage_from(
                 error_code: RustCompilerStageErrorCode::for_stage(stage),
                 required_component: component.name.clone(),
                 component_role: component.role.clone(),
-                reason: format!(
-                    "{} is not embedded in rouwdi.wasm; source custody is present at {}",
-                    component.role, component.upstream_path
-                ),
+                reason,
             });
         }
     }
