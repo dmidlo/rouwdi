@@ -1623,7 +1623,6 @@ mod tests {
             report
                 .execution_state
                 .starts_with("embedded_payload_executed")
-                || report.execution_state == "embedded_payload_mir_body_identity_emitted"
                 || report.execution_state == "embedded_payload_mir_body_hash_emitted"
         );
         assert_eq!(report.input_contract_sha256.len(), 64);

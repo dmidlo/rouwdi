@@ -135,7 +135,7 @@ fn synthetic_embedded_mir_payload_execution() -> RustEmbeddedMirPayloadExecution
 }
 
 fn synthetic_embedded_mir_payload_success_execution() -> RustEmbeddedMirPayloadExecution {
-    let output_json = r#"{"code":"mir_body_identity_emitted","kind":"context_attempt_succeeded","message":"real upstream MIR body observed","blocker_kind":"none","blocker_component":"none","context_state":"mir_body_identity_emitted","compile_unit_id":"app:rust:app:wasm32-wasip1","source_hash":"8fd8d3f8a05c9b7b","target_triple":"wasm32-wasip1","crate_hash":"0123456789abcdef","local_def_id":"LocalDefId(0)","def_id":"DefId(0:3 ~ rouwdi_payload[0000]::main)","mir_body_identity":"def_id=DefId(0:3 ~ rouwdi_payload[0000]::main);phase=optimized;basic_blocks=1;locals=1;source_path=src/main.rs","mir_body_hash":"feedfacecafebeef","provider_query":"rustc_middle::ty::TyCtxt::optimized_mir","upstream_crates":["core","alloc","std"],"payload_artifact_hash":"recorded-by-host-loader-sha256","core_metadata_loaded":true,"alloc_metadata_loaded":true,"std_metadata_loaded":true,"mir_provider_invoked":true,"real_mir_body_observed":true,"fabricated_ast":false,"fabricated_hir":false,"fabricated_tyctx":false,"fabricated_providers":false,"fabricated_body":false,"fabricated_mir":false}"#;
+    let output_json = r#"{"code":"mir_body_hash_emitted","kind":"context_attempt_succeeded","message":"real upstream MIR body observed and rustc_monomorphize contacted","blocker_kind":"none","blocker_component":"none","context_state":"mir_body_hash_emitted","compile_unit_id":"app:rust:app:wasm32-wasip1","package":"app","target":"wasi","target_kind":"bin","target_triple":"wasm32-wasip1","profile":"release","source_path":"src/main.rs","source_hash":"8fd8d3f8a05c9b7b","crate_name":"rouwdi_payload","crate_hash":"0123456789abcdef","item_path":"rouwdi_payload::main","local_def_id":"LocalDefId(0)","def_id":"DefId(0:3 ~ rouwdi_payload[0000]::main)","def_path_hash":"DefPathHash(0123456789abcdef)","mir_provider":"rustc_mir_build","mir_query":"rustc_middle::ty::TyCtxt::optimized_mir","mir_stage":"optimized","mir_body_identity":"def_id=DefId(0:3 ~ rouwdi_payload[0000]::main);phase=optimized;basic_blocks=1;locals=1;source_path=src/main.rs","mir_body_hash":"feedfacecafebeef","body_basic_block_count":1,"body_local_count":1,"body_statement_count":0,"provider_query":"rustc_middle::ty::TyCtxt::optimized_mir","upstream_crates":["core","alloc","std"],"payload_artifact_hash":"recorded-by-host-loader-sha256","payload_sha256":"recorded-by-host-loader-sha256","input_contract_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","core_metadata_loaded":true,"alloc_metadata_loaded":true,"std_metadata_loaded":true,"mir_provider_invoked":true,"real_mir_body_observed":true,"rustc_monomorphize_imported":true,"rustc_monomorphize_invoked":true,"monomorphization_query":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_status":"rustc_monomorphize_invoked_blocked_at_codegen_backend_not_ready","monomorphization_blocker_kind":"codegen_backend_not_ready","monomorphization_blocker_component":"rustc_monomorphize/rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_blocker_reason":"synthetic test blocker after real MIR proof","mono_item_count":0,"codegen_unit_count":0,"mono_item_graph_hash":null,"fabricated_ast":false,"fabricated_hir":false,"fabricated_tyctx":false,"fabricated_providers":false,"fabricated_body":false,"fabricated_mir":false,"fabricated_mono_items":false}"#;
     RustEmbeddedMirPayloadExecution {
         execute_status: 0,
         execute_trapped: false,
@@ -146,7 +146,7 @@ fn synthetic_embedded_mir_payload_success_execution() -> RustEmbeddedMirPayloadE
         error_json: None,
         output_contract_sha256: Some("d".repeat(64)),
         error_contract_sha256: None,
-        execution_state: "embedded_payload_mir_body_identity_emitted".to_owned(),
+        execution_state: "embedded_payload_mir_body_hash_emitted".to_owned(),
         blocker_kind: Some("none".to_owned()),
         result_kind: "output".to_owned(),
         ..synthetic_embedded_mir_payload_execution()
@@ -230,7 +230,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     assert_eq!(payload_carrier.load_blocker_kind.as_deref(), Some("none"));
     assert_eq!(
         mir_handoff.payload_milestone_state.as_deref(),
-        Some("bridge_wasm_mir_body_identity_emitted")
+        Some("bridge_wasm_mir_payload_module_emitted")
     );
     let target_pack = mir_handoff.payload_target_pack.as_ref().unwrap();
     assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -268,7 +268,7 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
         Some("none")
     );
     let bridge_attempt = mir_handoff.payload_bridge_attempt.as_ref().unwrap();
-    assert_eq!(bridge_attempt.status, "context_attempted");
+    assert_eq!(bridge_attempt.status, "mir_body_hash_emitted");
     assert_eq!(bridge_attempt.blocker_kind, "none");
     assert_eq!(bridge_attempt.command_exit_code, Some(0));
     assert!(bridge_attempt
@@ -450,10 +450,7 @@ fn embedded_mir_body_output_becomes_mir_stage_success_and_monomorphization_front
         "rustc_middle::ty::TyCtxt::optimized_mir"
     );
     assert_eq!(mir_body_proof.compile_unit_id, "app:rust:app:wasm32-wasip1");
-    assert_eq!(
-        mir_body_proof.mir_body_hash.as_deref(),
-        Some("feedfacecafebeef")
-    );
+    assert_eq!(mir_body_proof.mir_body_hash, "feedfacecafebeef");
     assert!(mir_body_proof.core_metadata_loaded);
     assert!(mir_body_proof.lang_items_resolved);
     assert!(mir_body_proof.mir_provider_invoked);
@@ -484,7 +481,8 @@ fn embedded_mir_body_output_becomes_mir_stage_success_and_monomorphization_front
     assert!(artifact_pipeline[0].compile_units.iter().any(|unit| {
         unit.mir_handoff_status == Some(RustMirHandoffStatus::AdapterAvailable)
             && unit.mir_body_hash.as_deref() == Some("feedfacecafebeef")
-            && unit.monomorphization_handoff_status.as_deref() == Some("blocked")
+            && unit.monomorphization_handoff_status.as_deref()
+                == Some("rustc_monomorphize_invoked_blocked_at_codegen_backend_not_ready")
     }));
     assert!(artifact_pipeline[0].remaining_stages.iter().any(|stage| {
         stage.stage == RustCompilerStage::Mir
@@ -568,6 +566,115 @@ fn metadata_only_payload_output_cannot_satisfy_mir_success() {
 
     assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
     assert!(mir_handoff.mir_body_proof.is_none());
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Mir)
+    );
+}
+
+#[test]
+fn mir_success_without_body_hash_is_rejected() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mir_payload_success_execution();
+    let output = execution
+        .output_json
+        .as_ref()
+        .unwrap()
+        .replace(r#","mir_body_hash":"feedfacecafebeef""#, "");
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+    assert!(mir_handoff.mir_body_proof.is_none());
+    assert!(mir_handoff.monomorphization_handoff.is_none());
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Mir)
+    );
+}
+
+#[test]
+fn stale_pre_mir_provider_text_rejects_mir_success() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mir_payload_success_execution();
+    let output = execution.output_json.as_ref().unwrap().replace(
+        "real upstream MIR body observed and rustc_monomorphize contacted",
+        "stops before MIR provider invocation",
+    );
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+    assert!(mir_handoff.mir_body_proof.is_none());
+    assert!(mir_handoff.monomorphization_handoff.is_none());
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Mir)
+    );
+}
+
+#[test]
+fn blocker_none_with_blocker_reason_rejects_mir_success() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mir_payload_success_execution();
+    let output = execution.output_json.as_ref().unwrap().replace(
+        r#""blocker_component":"none""#,
+        r#""blocker_component":"none","blocker_reason":"still blocked""#,
+    );
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+    assert!(mir_handoff.mir_body_proof.is_none());
+    assert!(mir_handoff.monomorphization_handoff.is_none());
+    assert_eq!(
+        manifest.artifact_pipeline[0].blocked_at_stage,
+        Some(RustCompilerStage::Mir)
+    );
+}
+
+#[test]
+fn fabricated_mono_items_reject_monomorphization_handoff() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let mut execution = synthetic_embedded_mir_payload_success_execution();
+    let output = execution.output_json.as_ref().unwrap().replace(
+        r#""fabricated_mono_items":false"#,
+        r#""fabricated_mono_items":true"#,
+    );
+    execution.output_json = Some(output);
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let mir_handoff = manifest.compiler_pipeline[0].mir_handoff.as_ref().unwrap();
+
+    assert_eq!(mir_handoff.status, RustMirHandoffStatus::AdapterUnavailable);
+    assert!(mir_handoff.mir_body_proof.is_none());
+    assert!(mir_handoff.monomorphization_handoff.is_none());
     assert_eq!(
         manifest.artifact_pipeline[0].blocked_at_stage,
         Some(RustCompilerStage::Mir)

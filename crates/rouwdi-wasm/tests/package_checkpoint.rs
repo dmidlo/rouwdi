@@ -47,10 +47,24 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
     if !matches!(
         state,
         "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
-            | "embedded_payload_mir_body_identity_emitted"
             | "embedded_payload_mir_body_hash_emitted"
     ) {
         return Some(format!("unexpected canonical MIR payload state: {state}"));
+    }
+    if payload["mir_body_identity_emitted"] == Value::Bool(true)
+        && payload["mir_body_hash"]
+            .as_str()
+            .is_none_or(|hash| hash.is_empty())
+    {
+        return Some("MIR success must include mir_body_hash".to_owned());
+    }
+    if payload["mir_body_identity_emitted"] == Value::Bool(true)
+        && payload["rustc_monomorphize_invoked"] != Value::Bool(true)
+    {
+        return Some("MIR success must attempt rustc_monomorphize".to_owned());
+    }
+    if payload["fabricated_mono_items"] == Value::Bool(true) {
+        return Some("fabricated mono items are rejected".to_owned());
     }
     if payload["instantiated"] != Value::Bool(true) {
         return Some("MIR payload must be instantiated".to_owned());
@@ -142,7 +156,6 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
         matches!(
             state,
             "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
-                | "embedded_payload_mir_body_identity_emitted"
                 | "embedded_payload_mir_body_hash_emitted"
         ),
         "unexpected MIR payload state: {state}"
@@ -215,6 +228,18 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             payload["next_frontier"],
             Value::String("monomorphization".to_owned())
         );
+        assert_eq!(payload["rustc_monomorphize_invoked"], Value::Bool(true));
+        assert!(
+            payload["monomorphization_status"]
+                .as_str()
+                .is_some_and(|status| {
+                    status == "mono_items_collected"
+                        || status == "rustc_monomorphize_adapter_embedded"
+                        || status.starts_with("rustc_monomorphize_invoked_blocked_at_")
+                }),
+            "manifest must carry exact monomorphization contact status"
+        );
+        assert_eq!(payload["fabricated_mono_items"], Value::Bool(false));
         assert!(
             payload["mir_body_identity"]
                 .as_str()

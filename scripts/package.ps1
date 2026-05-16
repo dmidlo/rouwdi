@@ -419,11 +419,39 @@ try {
     $mirProviderInvoked = ($null -ne $payloadOutput -and $payloadOutput.mir_provider_invoked -eq $true) -or ($null -ne $payloadError -and $payloadError.mir_provider_invoked -eq $true)
     $coreMetadataLoaded = ($null -ne $payloadOutput -and $payloadOutput.core_metadata_loaded -eq $true) -or ($null -ne $payloadError -and $payloadError.core_metadata_loaded -eq $true)
     $langItemsResolved = $mirProviderInvoked -or $mirBodyIdentityEmitted
+    $payloadExecutionEvidenceText = @(
+        [string]$payloadExecution.output_json,
+        [string]$payloadExecution.error_json
+    ) -join "`n"
+    $payloadExecutionEvidenceLower = $payloadExecutionEvidenceText.ToLowerInvariant()
+    foreach ($forbiddenEvidence in @(
+        "stops before mir provider invocation",
+        "mir provider was not invoked",
+        "before tycxt::optimized_mir",
+        "before tyctxt::optimized_mir",
+        "before tyctx::optimized_mir"
+    )) {
+        if ($payloadExecutionEvidenceLower.Contains($forbiddenEvidence)) {
+            throw "Canonical MIR payload evidence contains stale pre-MIR-provider blocker text: $forbiddenEvidence"
+        }
+    }
+    if ($mirBodyIdentityEmitted -and -not $mirBodyHashEmitted) {
+        throw "Canonical MIR payload emitted MIR identity without MIR body hash"
+    }
     if ($mirBodyIdentityEmitted) {
         foreach ($fabricatedFlag in @("fabricated_ast", "fabricated_hir", "fabricated_tyctx", "fabricated_providers", "fabricated_body", "fabricated_mir")) {
             if ($payloadOutput.$fabricatedFlag -eq $true) {
                 throw "Canonical MIR payload output cannot claim MIR success with $fabricatedFlag=true"
             }
+        }
+        foreach ($blockerTextField in @("blocker_reason", "exact_blocker", "blocker_text")) {
+            $blockerTextValue = [string]$payloadOutput.$blockerTextField
+            if (-not [string]::IsNullOrWhiteSpace($blockerTextValue) -and $blockerTextValue -ne "none") {
+                throw "Canonical MIR payload output cannot claim MIR success with $blockerTextField=$blockerTextValue"
+            }
+        }
+        if ($payloadOutput.blocker_kind -ne "none") {
+            throw "Canonical MIR payload output cannot claim MIR success with blocker_kind=$($payloadOutput.blocker_kind)"
         }
         if ($payloadOutput.provider_query -ne "rustc_middle::ty::TyCtxt::optimized_mir") {
             throw "Canonical MIR payload output used unexpected provider query: $($payloadOutput.provider_query)"
@@ -431,11 +459,32 @@ try {
         if ($payloadOutput.real_mir_body_observed -ne $true) {
             throw "Canonical MIR payload output did not record a real MIR body"
         }
+        if ($payloadOutput.fabricated_mono_items -eq $true) {
+            throw "Canonical MIR payload output cannot enter monomorphization with fabricated mono items"
+        }
+        if ($payloadOutput.rustc_monomorphize_invoked -ne $true) {
+            throw "Canonical MIR payload output must attempt rustc_monomorphize after MIR proof"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$payloadOutput.monomorphization_status)) {
+            throw "Canonical MIR payload output must record monomorphization_status"
+        }
     }
     if ($payloadExecution.execution_state -match "mir_body" -and -not $mirBodyIdentityEmitted) {
         throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
     }
-    $nextFrontier = if ($mirBodyIdentityEmitted) { "monomorphization" } else { "mir_provider" }
+    $monoInvoked = $null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_invoked -eq $true
+    $monoStatus = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_status } else { $null }
+    $monoBlockerKind = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_kind } else { $null }
+    $monoBlockerComponent = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_component } else { $null }
+    $monoBlockerReason = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_reason } else { $null }
+    $monoItemCount = if ($null -ne $payloadOutput -and $payloadOutput.mono_item_count -ne $null) { [int64]$payloadOutput.mono_item_count } else { $null }
+    $codegenUnitCount = if ($null -ne $payloadOutput -and $payloadOutput.codegen_unit_count -ne $null) { [int64]$payloadOutput.codegen_unit_count } else { $null }
+    $monoItemGraphHash = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_item_graph_hash) { [string]$payloadOutput.mono_item_graph_hash } else { $null }
+    $nextFrontier = if ($mirBodyHashEmitted) {
+        if ($monoStatus -eq "mono_items_collected") { "codegen" } else { "monomorphization" }
+    } else {
+        "mir_provider"
+    }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
@@ -481,6 +530,17 @@ try {
         mir_body_hash_emitted = $mirBodyHashEmitted
         mir_body_identity = $mirBodyIdentity
         mir_body_hash = $mirBodyHash
+        rustc_monomorphize_imported = ($null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_imported -eq $true)
+        rustc_monomorphize_invoked = $monoInvoked
+        monomorphization_query = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_query } else { $null }
+        monomorphization_status = $monoStatus
+        monomorphization_blocker_kind = $monoBlockerKind
+        monomorphization_blocker_component = $monoBlockerComponent
+        monomorphization_blocker_reason = $monoBlockerReason
+        mono_item_count = $monoItemCount
+        codegen_unit_count = $codegenUnitCount
+        mono_item_graph_hash = $monoItemGraphHash
+        fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
         next_frontier = $nextFrontier
         exact_blocker = $exactBlocker
     }
@@ -553,6 +613,17 @@ try {
             mir_body_hash_emitted = $mirBodyHashEmitted
             mir_body_identity = $mirBodyIdentity
             mir_body_hash = $mirBodyHash
+            rustc_monomorphize_imported = ($null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_imported -eq $true)
+            rustc_monomorphize_invoked = $monoInvoked
+            monomorphization_query = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_query } else { $null }
+            monomorphization_status = $monoStatus
+            monomorphization_blocker_kind = $monoBlockerKind
+            monomorphization_blocker_component = $monoBlockerComponent
+            monomorphization_blocker_reason = $monoBlockerReason
+            mono_item_count = $monoItemCount
+            codegen_unit_count = $codegenUnitCount
+            mono_item_graph_hash = $monoItemGraphHash
+            fabricated_mono_items = ($null -ne $payloadOutput -and $payloadOutput.fabricated_mono_items -eq $true)
             next_frontier = $nextFrontier
             exact_blocker = $exactBlocker
             exists = $true

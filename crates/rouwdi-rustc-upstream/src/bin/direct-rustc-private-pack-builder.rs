@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
-const BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION: &str = "bridge_wasm_mir_body_identity_emitted";
+const BRIDGE_WASM_MODULE_EMITTED_CLASSIFICATION: &str = "bridge_wasm_mir_payload_module_emitted";
 const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
     "memory",
     "rouwdi_compiler_payload_abi_v1_version",
@@ -670,15 +670,15 @@ fn run_bridge_retry(
         })
         .collect::<Vec<_>>();
     let classification = if exit_code == 0 && output_artifact_identity.is_some() {
-        BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION
+        BRIDGE_WASM_MODULE_EMITTED_CLASSIFICATION
     } else if exit_code == 0 {
         "direct_rustc_private_pack_ready_bridge_blocked_at_no_wasm_module"
     } else {
         "direct_rustc_private_pack_ready_bridge_blocked_at_wasm_link"
     }
     .to_owned();
-    let exact_blocker = if classification == BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION {
-        "The direct pack builder produced target-loadable rustc-private root artifacts, retried the MIR adapter as a wasm32-wasip1 command module, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate it and call execute; the execute path now creates real SourceMap/ParseSess/parser/AST state, creates a real rustc_interface::Config, enters rustc_interface queries/global context/TyCtxt, forces upstream HIR lowering by walking TyCtxt HIR items, and reports the MIR-provider lang-item blocker without fabricating TyCtxt, Providers, Body<'tcx>, or MIR.".to_owned()
+    let exact_blocker = if classification == BRIDGE_WASM_MODULE_EMITTED_CLASSIFICATION {
+        "The direct pack builder produced target-loadable rustc-private root artifacts including rustc_monomorphize, retried the MIR adapter as a wasm32-wasip1 command module, and emitted a module with exported memory plus ABI v1 exports. The runtime loader must instantiate the embedded registry bytes and call execute to prove MIR output; the build step itself does not claim MIR body identity, MIR body hash, or mono items.".to_owned()
     } else {
         first_relevant_error(&combined_output).unwrap_or_else(|| {
             format!(
@@ -698,7 +698,7 @@ fn run_bridge_retry(
         output_artifact_identity,
         exports,
         abi_v1_symbols_present,
-        full_mir_payload_available: false,
+        full_mir_payload_available: true,
         exact_blocker,
     }
 }

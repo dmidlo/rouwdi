@@ -735,7 +735,7 @@ fn artifact_compile_unit_from_record(
             .mir_handoff
             .as_ref()
             .and_then(|handoff| handoff.mir_body_proof.as_ref())
-            .and_then(|proof| proof.mir_body_hash.clone()),
+            .map(|proof| proof.mir_body_hash.clone()),
         monomorphization_handoff_status: record
             .mir_handoff
             .as_ref()
@@ -1029,7 +1029,7 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_mir_body_identity_emitted")
+            Some("bridge_wasm_mir_payload_module_emitted")
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -1041,7 +1041,7 @@ version = "0.1.0"
         assert!(target_pack.core_available);
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
-        assert_eq!(bridge_attempt.status, "context_attempted");
+        assert_eq!(bridge_attempt.status, "mir_body_hash_emitted");
         assert_eq!(bridge_attempt.blocker_kind, "none");
         assert_eq!(
             manifest.compiler_pipeline[0]
