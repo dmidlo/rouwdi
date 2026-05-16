@@ -46,9 +46,26 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
     }
     if !matches!(
         state,
-        "embedded_payload" | "embedded_payload_hash_verified" | "embedded_and_instantiated_payload"
+        "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
+            | "embedded_payload_mir_body_identity_emitted"
+            | "embedded_payload_mir_body_hash_emitted"
     ) {
         return Some(format!("unexpected canonical MIR payload state: {state}"));
+    }
+    if payload["instantiated"] != Value::Bool(true) {
+        return Some("MIR payload must be instantiated".to_owned());
+    }
+    if payload["abi_verified"] != Value::Bool(true) {
+        return Some("MIR payload ABI must be verified".to_owned());
+    }
+    if payload["executed"] != Value::Bool(true) {
+        return Some("MIR payload execute must be called".to_owned());
+    }
+    if payload["execution_source"] != Value::String("embedded_registry".to_owned()) {
+        return Some("MIR payload execution_source must be embedded_registry".to_owned());
+    }
+    if payload["opened_external_file"] != Value::Bool(false) {
+        return Some("MIR payload execution must not open an external payload file".to_owned());
     }
     if payload["single_file_product"] != Value::Bool(true) {
         return Some("MIR payload single_file_product must be true".to_owned());
@@ -124,15 +141,23 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     assert!(
         matches!(
             state,
-            "embedded_payload"
-                | "embedded_payload_hash_verified"
-                | "embedded_and_instantiated_payload"
+            "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
+                | "embedded_payload_mir_body_identity_emitted"
+                | "embedded_payload_mir_body_hash_emitted"
         ),
         "unexpected MIR payload state: {state}"
     );
     assert!(!EXTERNAL_ONLY_STATES.contains(&state));
     assert_eq!(payload["embedded"], Value::Bool(true));
+    assert_eq!(payload["instantiated"], Value::Bool(true));
+    assert_eq!(payload["abi_verified"], Value::Bool(true));
+    assert_eq!(payload["executed"], Value::Bool(true));
+    assert_eq!(
+        payload["execution_source"],
+        Value::String("embedded_registry".to_owned())
+    );
     assert_eq!(payload["external"], Value::Bool(false));
+    assert_eq!(payload["opened_external_file"], Value::Bool(false));
     assert_eq!(payload["single_file_product"], Value::Bool(true));
     assert_eq!(
         payload["metadata_source_path"],
@@ -159,6 +184,34 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     );
     assert_eq!(payload["hash_verified"], Value::Bool(true));
     assert_eq!(payload["size_verified"], Value::Bool(true));
+    assert_eq!(payload["wasm_magic_verified"], Value::Bool(true));
+    assert_eq!(payload["module_instantiated"], Value::Bool(true));
+    assert_eq!(payload["abi_v1_exports_verified"], Value::Bool(true));
+    assert_eq!(payload["version_called"], Value::Bool(true));
+    assert_eq!(payload["stage_called"], Value::Bool(true));
+    assert_eq!(payload["descriptor_bytes_read"], Value::Bool(true));
+    assert_eq!(payload["valid_input_bytes_read"], Value::Bool(true));
+    assert_eq!(payload["execute_called"], Value::Bool(true));
+    assert!(
+        payload["execute_trapped"].is_boolean(),
+        "manifest must record whether embedded execute trapped"
+    );
+    if payload["execute_trapped"] == Value::Bool(true) {
+        assert!(
+            payload["execute_trap"]
+                .as_str()
+                .is_some_and(|trap| !trap.is_empty()),
+            "manifest must retain the embedded execute trap string"
+        );
+    }
+    assert!(
+        payload["output_bytes_read"] == Value::Bool(true)
+            || payload["error_bytes_read"] == Value::Bool(true)
+    );
+    assert_eq!(
+        payload["input_contract_sha256"].as_str().map(str::len),
+        Some(64)
+    );
     assert_eq!(payload["payload_registry_entry"], Value::Bool(true));
 
     let payload_size = payload["size_bytes"].as_u64().unwrap();
@@ -175,6 +228,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             entry["name"] == Value::String("rouwdi-mir-handoff-payload".to_owned())
                 && entry["embedded"] == Value::Bool(true)
                 && entry["external"] == Value::Bool(false)
+                && entry["instantiated"] == Value::Bool(true)
+                && entry["abi_verified"] == Value::Bool(true)
+                && entry["executed"] == Value::Bool(true)
+                && entry["execution_source"] == Value::String("embedded_registry".to_owned())
                 && entry["embedded_sha256"] == payload["embedded_sha256"]
         }),
         "embedded payload registry entry must include the MIR payload"

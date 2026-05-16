@@ -373,6 +373,38 @@ try {
             -Description "registry identity string $identityString"
     }
 
+    Write-Host "executing embedded MIR payload through dist/rouwdi.wasm"
+    $payloadExecutionJsonLines = & cargo run -q -p rouwdi -- run-wasm $canonicalArtifact payloads
+    if ($LASTEXITCODE -ne 0) {
+        throw "dist/rouwdi.wasm embedded MIR payload execution failed with exit code $LASTEXITCODE"
+    }
+    $payloadExecutionJson = $payloadExecutionJsonLines -join "`n"
+    $payloadExecution = $payloadExecutionJson | ConvertFrom-Json
+    if ($payloadExecution.execution_source -ne "embedded_registry") {
+        throw "Canonical MIR payload execution source must be embedded_registry; got $($payloadExecution.execution_source)"
+    }
+    if ($payloadExecution.external -ne $false) {
+        throw "Canonical MIR payload execution must not be external"
+    }
+    if ($payloadExecution.opened_external_file -ne $false) {
+        throw "Canonical MIR payload execution opened an external payload file"
+    }
+    if ($payloadExecution.hash_verified -ne $true -or $payloadExecution.size_verified -ne $true) {
+        throw "Canonical MIR payload execution did not verify payload hash/size"
+    }
+    if ($payloadExecution.module_instantiated -ne $true) {
+        throw "Canonical MIR payload execution did not instantiate the embedded module"
+    }
+    if ($payloadExecution.abi_v1_exports_verified -ne $true) {
+        throw "Canonical MIR payload execution did not verify ABI v1 exports"
+    }
+    if ($payloadExecution.execute_called -ne $true) {
+        throw "Canonical MIR payload execution did not call execute"
+    }
+    if ($payloadExecution.output_bytes_read -ne $true -and $payloadExecution.error_bytes_read -ne $true) {
+        throw "Canonical MIR payload execution did not read output or error bytes"
+    }
+
     $embeddedPayload = [ordered]@{
         name = "rouwdi-mir-handoff-payload"
         kind = "compiler_payload"
@@ -384,9 +416,14 @@ try {
         generation_command = [string]$payloadMetadata["emitted_by"]
         load_strategy = "instantiate_wasm_module"
         embedding_method = "raw_include_bytes"
-        state = "embedded_payload_hash_verified"
+        state = [string]$payloadExecution.execution_state
         embedded = $true
         external = $false
+        instantiated = $true
+        abi_verified = $true
+        executed = $true
+        execution_source = "embedded_registry"
+        opened_external_file = $false
         uncompressed_size_bytes = $payload.size_bytes
         compressed_size_bytes = $null
         size_bytes = $payload.size_bytes
@@ -395,7 +432,15 @@ try {
         hash_verified = $true
         size_verified = $true
         registry_entry = $true
-        loader_status = "embedded_bytes_available"
+        loader_status = "embedded_payload_executed"
+        execute_status = [int]$payloadExecution.execute_status
+        execute_trapped = [bool]$payloadExecution.execute_trapped
+        execute_trap = $payloadExecution.execute_trap
+        result_kind = [string]$payloadExecution.result_kind
+        blocker_kind = $payloadExecution.blocker_kind
+        input_contract_sha256 = [string]$payloadExecution.input_contract_sha256
+        output_contract_sha256 = $payloadExecution.output_contract_sha256
+        error_contract_sha256 = $payloadExecution.error_contract_sha256
     }
 
     $manifest = [ordered]@{
@@ -417,9 +462,14 @@ try {
         }
         embedded_payloads = @($embeddedPayload)
         mir_payload = [ordered]@{
-            state = "embedded_payload"
+            state = [string]$payloadExecution.execution_state
             embedded = $true
+            instantiated = $true
+            abi_verified = $true
+            executed = $true
+            execution_source = "embedded_registry"
             external = $false
+            opened_external_file = $false
             metadata_source_path = "bootstrap/mir-payload-export-manifest.toml"
             path = $payload.path
             original_sha256 = $payload.sha256
@@ -432,10 +482,28 @@ try {
             target_triple = [string]$mirRootMetadata["target_triple"]
             embedding_method = "raw_include_bytes"
             load_strategy = "instantiate_wasm_module"
-            loader_status = "embedded_payload_hash_verified"
+            loader_status = "embedded_payload_executed"
             payload_registry_entry = $true
             hash_verified = $true
             size_verified = $true
+            wasm_magic_verified = $true
+            module_instantiated = $true
+            abi_v1_exports_verified = $true
+            version_called = $true
+            stage_called = $true
+            descriptor_bytes_read = $true
+            valid_input_bytes_read = $true
+            execute_called = $true
+            execute_status = [int]$payloadExecution.execute_status
+            execute_trapped = [bool]$payloadExecution.execute_trapped
+            execute_trap = $payloadExecution.execute_trap
+            output_bytes_read = [bool]$payloadExecution.output_bytes_read
+            error_bytes_read = [bool]$payloadExecution.error_bytes_read
+            result_kind = [string]$payloadExecution.result_kind
+            blocker_kind = $payloadExecution.blocker_kind
+            input_contract_sha256 = [string]$payloadExecution.input_contract_sha256
+            output_contract_sha256 = $payloadExecution.output_contract_sha256
+            error_contract_sha256 = $payloadExecution.error_contract_sha256
             exists = $true
             single_file_product = $true
             not_product_complete = $false
@@ -453,6 +521,9 @@ try {
             payload_suffix_fingerprint_present = $true
             registry_identity_present = $true
             cdylib_stub_rejected = $true
+            embedded_payload_execution_source_required = "embedded_registry"
+            embedded_payload_instantiation_required = $true
+            embedded_payload_execute_required = $true
         }
     }
 
@@ -466,8 +537,11 @@ try {
     Write-Host "sha256=$($canonicalIdentity.sha256)"
     Write-Host "manifest=dist/manifest.json"
     Write-Host "single_file_product=true"
-    Write-Host "mir_payload_state=embedded_payload"
+    Write-Host "mir_payload_state=$($payloadExecution.execution_state)"
     Write-Host "mir_payload_embedded=true"
+    Write-Host "mir_payload_instantiated=true"
+    Write-Host "mir_payload_abi_verified=true"
+    Write-Host "mir_payload_executed=true"
     $exitCode = 0
 } catch {
     Write-Error $_

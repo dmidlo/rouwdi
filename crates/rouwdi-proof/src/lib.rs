@@ -326,6 +326,23 @@ impl ProofBundle {
             storage.write(&path, &serde_json::to_vec_pretty(lockfile)?)?;
             written.push(path);
         }
+        let embedded_mir_payload_executions = self
+            .rust_source_mir_handoff
+            .iter()
+            .filter_map(|handoff| handoff.embedded_payload_execution.as_ref())
+            .collect::<Vec<_>>();
+        if !embedded_mir_payload_executions.is_empty() {
+            let path = if run_root.is_empty() {
+                "proofs/mir-handoff-payload.json".to_owned()
+            } else {
+                format!("{run_root}/proofs/mir-handoff-payload.json")
+            };
+            storage.write(
+                &path,
+                &serde_json::to_vec_pretty(&embedded_mir_payload_executions)?,
+            )?;
+            written.push(path);
+        }
         for proof in &self.interface_proofs {
             let path = proof_path(run_root, "interface", &proof.target_name);
             storage.write(&path, &serde_json::to_vec_pretty(proof)?)?;

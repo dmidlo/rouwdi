@@ -5,11 +5,12 @@ use rouwdi_proof::{
 };
 use rouwdi_rustc::{
     RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
-    RustCompilerPipelineStatus, RustCompilerStage, RustExpansionStageRecord,
-    RustExpansionStageStatus, RustMirHandoffBlockerCategory, RustMirHandoffRecord,
-    RustMirHandoffStatus, RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord,
-    RustNameResolutionStageStatus, RustParseStageRecord, RustParseStageStatus,
-    RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord, RustTypeCheckStageStatus,
+    RustCompilerPipelineStatus, RustCompilerStage, RustEmbeddedMirPayloadExecution,
+    RustExpansionStageRecord, RustExpansionStageStatus, RustMirHandoffBlockerCategory,
+    RustMirHandoffRecord, RustMirHandoffStatus, RustNameResolutionDiagnosticCode,
+    RustNameResolutionStageRecord, RustNameResolutionStageStatus, RustParseStageRecord,
+    RustParseStageStatus, RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord,
+    RustTypeCheckStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -72,6 +73,65 @@ version = "0.1.0"
         .unwrap();
     storage.write("src/main.rs", b"fn main() {}\n").unwrap();
     storage
+}
+
+fn synthetic_embedded_mir_payload_execution() -> RustEmbeddedMirPayloadExecution {
+    RustEmbeddedMirPayloadExecution {
+        payload_identity: "rouwdi-mir-handoff-payload".to_owned(),
+        registry_identity: "rouwdi-mir-handoff-payload".to_owned(),
+        execution_source: "embedded_registry".to_owned(),
+        external: false,
+        opened_external_file: false,
+        embedded: true,
+        expected_sha256: "a".repeat(64),
+        actual_sha256: "a".repeat(64),
+        hash_verified: true,
+        expected_size_bytes: 8,
+        actual_size_bytes: 8,
+        size_verified: true,
+        wasm_magic_verified: true,
+        module_instantiated: true,
+        abi_v1_exports_verified: true,
+        exports: vec![
+            "memory".to_owned(),
+            "rouwdi_compiler_payload_abi_v1_version".to_owned(),
+            "rouwdi_compiler_payload_abi_v1_stage".to_owned(),
+            "rouwdi_compiler_payload_abi_v1_descriptor_ptr".to_owned(),
+            "rouwdi_compiler_payload_abi_v1_descriptor_len".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_valid_input_ptr".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_valid_input_len".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_result_area_ptr".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_execute".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_last_error_ptr".to_owned(),
+            "rouwdi_mir_handoff_payload_v1_last_error_len".to_owned(),
+        ],
+        imports: Vec::new(),
+        abi_version_called: true,
+        abi_version: 1,
+        stage_called: true,
+        stage: 1,
+        descriptor_called: true,
+        descriptor_json: "{}".to_owned(),
+        valid_input_called: true,
+        valid_input_json: "{}".to_owned(),
+        execute_called: true,
+        execute_status: -1901,
+        execute_trapped: true,
+        execute_trap: Some("wasm `unreachable` instruction executed".to_owned()),
+        output_bytes_read: false,
+        output_json: None,
+        error_bytes_read: true,
+        error_json: Some(
+            r#"{"blocker_kind":"lang_items_query_failed_before_mir_provider"}"#.to_owned(),
+        ),
+        input_contract_sha256: "b".repeat(64),
+        output_contract_sha256: None,
+        error_contract_sha256: Some("c".repeat(64)),
+        execution_state: "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
+            .to_owned(),
+        blocker_kind: Some("lang_items_query_failed_before_mir_provider".to_owned()),
+        result_kind: "error".to_owned(),
+    }
 }
 
 #[test]
@@ -290,6 +350,52 @@ fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
             && stage.required_component == "rustc_middle"
             && stage.status == ArtifactPipelineStageStatus::Blocked
     }));
+}
+
+#[test]
+fn proof_bundle_records_embedded_mir_payload_execution() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let execution = synthetic_embedded_mir_payload_execution();
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution.clone())
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    let proof_path = format!("{}/proofs/mir-handoff-payload.json", report.run_root);
+
+    assert_eq!(report.status, RunStatus::Failed);
+    assert!(manifest.proof_files.contains(&proof_path));
+    let proof_records: Vec<RustEmbeddedMirPayloadExecution> =
+        serde_json::from_slice(&storage.read(&proof_path).unwrap()).unwrap();
+    assert_eq!(proof_records, vec![execution.clone()]);
+
+    let mir_handoff_records: Vec<RustMirHandoffRecord> = serde_json::from_slice(
+        &storage
+            .read(&format!(
+                "{}/graph/rust-source-mir-handoff.json",
+                report.run_root
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    let embedded_execution = mir_handoff_records[0]
+        .embedded_payload_execution
+        .as_ref()
+        .unwrap();
+    assert_eq!(embedded_execution.execution_source, "embedded_registry");
+    assert!(embedded_execution.embedded);
+    assert!(embedded_execution.module_instantiated);
+    assert!(embedded_execution.abi_v1_exports_verified);
+    assert!(embedded_execution.execute_called);
+    assert!(embedded_execution.error_bytes_read);
+    assert!(!embedded_execution.opened_external_file);
+    assert_eq!(embedded_execution.result_kind, "error");
+    assert_eq!(
+        embedded_execution.execution_state,
+        "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items"
+    );
 }
 
 #[test]

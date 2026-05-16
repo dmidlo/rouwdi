@@ -447,6 +447,50 @@ pub enum RustMirHandoffStatus {
 #[serde(rename_all = "snake_case")]
 pub enum RustMirHandoffBlockerCategory {
     UpstreamCompilerPayloadNotEmbedded,
+    EmbeddedCompilerPayloadExecutionBlocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustEmbeddedMirPayloadExecution {
+    pub payload_identity: String,
+    pub registry_identity: String,
+    pub execution_source: String,
+    pub external: bool,
+    pub opened_external_file: bool,
+    pub embedded: bool,
+    pub expected_sha256: String,
+    pub actual_sha256: String,
+    pub hash_verified: bool,
+    pub expected_size_bytes: u64,
+    pub actual_size_bytes: u64,
+    pub size_verified: bool,
+    pub wasm_magic_verified: bool,
+    pub module_instantiated: bool,
+    pub abi_v1_exports_verified: bool,
+    pub exports: Vec<String>,
+    pub imports: Vec<String>,
+    pub abi_version_called: bool,
+    pub abi_version: u32,
+    pub stage_called: bool,
+    pub stage: u32,
+    pub descriptor_called: bool,
+    pub descriptor_json: String,
+    pub valid_input_called: bool,
+    pub valid_input_json: String,
+    pub execute_called: bool,
+    pub execute_status: i32,
+    pub execute_trapped: bool,
+    pub execute_trap: Option<String>,
+    pub output_bytes_read: bool,
+    pub output_json: Option<String>,
+    pub error_bytes_read: bool,
+    pub error_json: Option<String>,
+    pub input_contract_sha256: String,
+    pub output_contract_sha256: Option<String>,
+    pub error_contract_sha256: Option<String>,
+    pub execution_state: String,
+    pub blocker_kind: Option<String>,
+    pub result_kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,6 +566,7 @@ pub struct RustMirHandoffRecord {
     pub payload_next_artifact_command: Option<String>,
     pub payload_next_artifact_command_exit_code: Option<i32>,
     pub payload_next_artifact_command_evidence: Option<String>,
+    pub embedded_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
     pub blocker_import_status: Option<String>,
     pub blocker_probe_command: Option<String>,
     pub shared_blocker_component: Option<String>,
@@ -956,6 +1001,14 @@ pub fn run_rust_compiler_pipeline_record(
     request: &RustCompileRequest,
     source: &str,
 ) -> RustCompilerPipelineRecord {
+    run_rust_compiler_pipeline_record_with_embedded_mir_payload(request, source, None)
+}
+
+pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
+    request: &RustCompileRequest,
+    source: &str,
+    embedded_mir_payload_execution: Option<&RustEmbeddedMirPayloadExecution>,
+) -> RustCompilerPipelineRecord {
     let parse_stage = parse_rust_source_for_compile_unit(request, source);
     if parse_stage.status == RustParseStageStatus::Failed {
         return RustCompilerPipelineRecord {
@@ -1095,6 +1148,7 @@ pub fn run_rust_compiler_pipeline_record(
         &name_resolution_stage,
         &type_check_stage,
         &borrow_check_stage,
+        embedded_mir_payload_execution,
     );
     if !mir_handoff.upstream_mir_adapter_available {
         return RustCompilerPipelineRecord {
@@ -1175,6 +1229,7 @@ pub fn handoff_rust_mir_for_compile_unit(
     name_resolution_stage: &RustNameResolutionStageRecord,
     type_check_stage: &RustTypeCheckStageRecord,
     borrow_check_stage: &RustBorrowCheckStageRecord,
+    embedded_mir_payload_execution: Option<&RustEmbeddedMirPayloadExecution>,
 ) -> RustMirHandoffRecord {
     let component = rouwdi_rustc_upstream::import_component("rustc_middle")
         .expect("upstream rustc import ledger includes rustc_middle");
@@ -1189,25 +1244,57 @@ pub fn handoff_rust_mir_for_compile_unit(
     let shared_root = resolved_blocker
         .as_ref()
         .and_then(|resolved| resolved.shared_root.as_ref());
-    let available =
-        payload_adapter.adapter_available && component.is_imported() && mir_build.is_imported();
+    let embedded_execution = embedded_mir_payload_execution.cloned();
+    let embedded_execution_executed = embedded_execution.as_ref().is_some_and(|execution| {
+        execution.execution_source == "embedded_registry"
+            && execution.embedded
+            && !execution.external
+            && !execution.opened_external_file
+            && execution.hash_verified
+            && execution.size_verified
+            && execution.module_instantiated
+            && execution.abi_v1_exports_verified
+            && execution.execute_called
+    });
+    let embedded_payload_mir_emitted = embedded_execution.as_ref().is_some_and(|execution| {
+        execution.execution_state == "embedded_payload_mir_body_identity_emitted"
+            || execution.execution_state == "embedded_payload_mir_body_hash_emitted"
+            || execution.execution_state == "mir_body_identity_emitted"
+            || execution.execution_state == "mir_body_hash_emitted"
+    });
+    let available = embedded_payload_mir_emitted
+        || (payload_adapter.adapter_available
+            && component.is_imported()
+            && mir_build.is_imported());
     let required_upstream_crates = payload_adapter.required_upstream_crates.clone();
     let required_upstream_modules = boundary.required_upstream_modules.clone();
     let payload_carrier = payload_adapter.payload_carrier.clone();
-    let payload_carrier_state = payload_carrier
+    let payload_carrier_state = embedded_execution
         .as_ref()
-        .map(|carrier| carrier.state.as_str().to_owned());
-    let payload_loader_inspection = payload_carrier
+        .filter(|_| embedded_execution_executed)
+        .map(|_| "embedded_payload_executed".to_owned())
+        .or_else(|| {
+            payload_carrier
+                .as_ref()
+                .map(|carrier| carrier.state.as_str().to_owned())
+        });
+    let payload_milestone_state = embedded_execution
         .as_ref()
-        .and_then(|carrier| carrier.loader_inspection.clone());
-    let payload_milestone_state = payload_loader_inspection
-        .as_ref()
-        .and_then(|inspection| inspection.milestone_state.clone())
+        .filter(|_| embedded_execution_executed)
+        .map(|execution| execution.execution_state.clone())
         .or_else(|| {
             payload_carrier
                 .as_ref()
                 .and_then(|carrier| carrier.milestone_state.clone())
         });
+    let payload_loader_inspection = payload_carrier
+        .as_ref()
+        .and_then(|carrier| carrier.loader_inspection.clone());
+    let payload_milestone_state = payload_milestone_state.or_else(|| {
+        payload_loader_inspection
+            .as_ref()
+            .and_then(|inspection| inspection.milestone_state.clone())
+    });
     let payload_bundle_inspected = payload_loader_inspection
         .as_ref()
         .is_some_and(|inspection| inspection.payload_bundle_inspected);
@@ -1321,21 +1408,45 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_next_artifact_command_evidence = payload_carrier
         .as_ref()
         .and_then(|carrier| carrier.next_artifact_command_evidence.clone());
-    let blocker_component_name = ledger_blocker
-        .map(|blocker| blocker.name.clone())
-        .or_else(|| payload_adapter.blocker_component.clone());
-    let blocker_import_status = ledger_blocker
-        .map(|blocker| blocker.import_status.clone())
-        .or_else(|| payload_adapter.blocker_import_status.clone());
+    let blocker_component_name = embedded_execution
+        .as_ref()
+        .filter(|_| embedded_execution_executed && !available)
+        .map(|execution| execution.payload_identity.clone())
+        .or_else(|| {
+            ledger_blocker
+                .map(|blocker| blocker.name.clone())
+                .or_else(|| payload_adapter.blocker_component.clone())
+        });
+    let blocker_import_status = embedded_execution
+        .as_ref()
+        .filter(|_| embedded_execution_executed)
+        .map(|execution| execution.execution_state.clone())
+        .or_else(|| {
+            ledger_blocker
+                .map(|blocker| blocker.import_status.clone())
+                .or_else(|| payload_adapter.blocker_import_status.clone())
+        });
     let blocker_probe_command = ledger_blocker
         .map(|blocker| blocker.probe_command.clone())
         .or_else(|| payload_adapter.blocker_probe_command.clone());
-    let blocker_component_role = ledger_blocker
-        .map(|blocker| blocker.desired_role.clone())
-        .or_else(|| Some("bootstrap-checked MIR payload adapter integration".to_owned()));
-    let blocker_component_path = ledger_blocker
-        .map(|blocker| blocker.source_path.clone())
-        .or_else(|| payload_adapter.bootstrap_adapter_source_path.clone());
+    let blocker_component_role = embedded_execution
+        .as_ref()
+        .filter(|_| embedded_execution_executed && !available)
+        .map(|_| "embedded MIR handoff payload execution".to_owned())
+        .or_else(|| {
+            ledger_blocker
+                .map(|blocker| blocker.desired_role.clone())
+                .or_else(|| Some("bootstrap-checked MIR payload adapter integration".to_owned()))
+        });
+    let blocker_component_path = embedded_execution
+        .as_ref()
+        .filter(|_| embedded_execution_executed && !available)
+        .map(|execution| format!("embedded_registry:{}", execution.registry_identity))
+        .or_else(|| {
+            ledger_blocker
+                .map(|blocker| blocker.source_path.clone())
+                .or_else(|| payload_adapter.bootstrap_adapter_source_path.clone())
+        });
     let payload_loader_note = payload_loader_inspection
         .as_ref()
         .map(|inspection| {
@@ -1386,6 +1497,34 @@ pub fn handoff_rust_mir_for_compile_unit(
         .unwrap_or_else(|| "compiler-payload ABI route is not recorded".to_owned());
     let blocker_reason = if available {
         None
+    } else if let Some(execution) = embedded_execution
+        .as_ref()
+        .filter(|_| embedded_execution_executed)
+    {
+        Some(format!(
+            "embedded MIR payload {} executed from {}; registry identity {}; instantiated {}; ABI v1 verified {}; execute called {}; execution state {}; result kind {}; blocker {}; output hash {}; error hash {}; external payload file opened {}; descriptor/input bytes were read inside the rouwdi-owned payload loader",
+            execution.payload_identity,
+            execution.execution_source,
+            execution.registry_identity,
+            execution.module_instantiated,
+            execution.abi_v1_exports_verified,
+            execution.execute_called,
+            execution.execution_state,
+            execution.result_kind,
+            execution
+                .blocker_kind
+                .as_deref()
+                .unwrap_or("none"),
+            execution
+                .output_contract_sha256
+                .as_deref()
+                .unwrap_or("none"),
+            execution
+                .error_contract_sha256
+                .as_deref()
+                .unwrap_or("none"),
+            execution.opened_external_file
+        ))
     } else if let Some(resolved) = resolved_blocker.as_ref() {
         let blocker = &resolved.blocked_component;
         let mut reason = format!(
@@ -1528,12 +1667,14 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_loader_blocker_kind,
         payload_loader_blocker_reason,
         payload_next_required_artifact_format,
-        payload_loaded_into_rouwdi_facade: payload_adapter.payload_loaded_into_rouwdi_facade,
+        payload_loaded_into_rouwdi_facade: embedded_execution_executed
+            || payload_adapter.payload_loaded_into_rouwdi_facade,
         payload_load_blocker_kind,
         payload_load_blocker_reason,
         payload_next_artifact_command,
         payload_next_artifact_command_exit_code,
         payload_next_artifact_command_evidence,
+        embedded_payload_execution: embedded_execution,
         blocker_import_status,
         blocker_probe_command,
         shared_blocker_component: shared_root.map(|root| root.id.clone()),
@@ -1549,8 +1690,11 @@ pub fn handoff_rust_mir_for_compile_unit(
         missing_adapter_symbols: boundary.missing_adapter_symbols,
         required_context_objects: boundary.required_context_objects,
         upstream_mir_adapter_available: available,
-        blocker_category: (!available)
-            .then_some(RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded),
+        blocker_category: (!available).then_some(if embedded_execution_executed {
+            RustMirHandoffBlockerCategory::EmbeddedCompilerPayloadExecutionBlocked
+        } else {
+            RustMirHandoffBlockerCategory::UpstreamCompilerPayloadNotEmbedded
+        }),
         blocker_component: blocker_component_name,
         blocker_component_role,
         blocker_component_path,

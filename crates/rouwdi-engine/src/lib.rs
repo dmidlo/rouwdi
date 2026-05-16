@@ -12,10 +12,11 @@ use rouwdi_proof::{
     ProofBundle, ProofError, ProofStatus, RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
-    lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record,
+    lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record_with_embedded_mir_payload,
     RustBorrowCheckStageStatus, RustCompileRequest, RustCompilerPipelineRecord, RustCompilerStage,
-    RustExpansionStageStatus, RustExternCrate, RustNameResolutionStageStatus, RustParseStageStatus,
-    RustSourceLexProof, RustTypeCheckStageStatus,
+    RustEmbeddedMirPayloadExecution, RustExpansionStageStatus, RustExternCrate,
+    RustNameResolutionStageStatus, RustParseStageStatus, RustSourceLexProof,
+    RustTypeCheckStageStatus,
 };
 use rouwdi_source::{
     materialize_source_cache_with_options, snapshot_source, source_relative_path, SourceCacheKind,
@@ -77,11 +78,23 @@ pub struct VerifyReport {
 #[derive(Debug, Clone)]
 pub struct RouwdiEngine {
     target_registry: TargetPackRegistry,
+    embedded_mir_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
 }
 
 impl RouwdiEngine {
     pub fn new(target_registry: TargetPackRegistry) -> Self {
-        Self { target_registry }
+        Self {
+            target_registry,
+            embedded_mir_payload_execution: None,
+        }
+    }
+
+    pub fn with_embedded_mir_payload_execution(
+        mut self,
+        execution: RustEmbeddedMirPayloadExecution,
+    ) -> Self {
+        self.embedded_mir_payload_execution = Some(execution);
+        self
     }
 
     pub fn build(
@@ -157,7 +170,11 @@ impl RouwdiEngine {
         )?;
         let compile_time_plan = plan_compile_time(&build_plan);
         let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
-        let compiler_pipeline = run_compiler_pipeline(storage, &build_plan)?;
+        let compiler_pipeline = run_compiler_pipeline(
+            storage,
+            &build_plan,
+            self.embedded_mir_payload_execution.as_ref(),
+        )?;
         let rust_source_parse = compiler_pipeline
             .iter()
             .filter_map(|record| record.parse_stage.clone())
@@ -580,6 +597,7 @@ fn lex_build_plan_sources(
 fn run_compiler_pipeline(
     storage: &dyn Storage,
     build_plan: &rouwdi_cargo::CargoBuildPlan,
+    embedded_mir_payload_execution: Option<&RustEmbeddedMirPayloadExecution>,
 ) -> Result<Vec<RustCompilerPipelineRecord>, EngineError> {
     let mut records = Vec::new();
     for unit in build_plan
@@ -602,7 +620,11 @@ fn run_compiler_pipeline(
             profile: unit.profile.clone(),
             extern_prelude: extern_prelude_for_unit(build_plan, &unit.id),
         };
-        records.push(run_rust_compiler_pipeline_record(&request, &source));
+        records.push(run_rust_compiler_pipeline_record_with_embedded_mir_payload(
+            &request,
+            &source,
+            embedded_mir_payload_execution,
+        ));
     }
     Ok(records)
 }

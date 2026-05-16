@@ -38,12 +38,17 @@ pub extern "C" fn rouwdi_mir_payload_embedded_hash_verified() -> u32 {
 }
 
 pub fn build_with_storage(storage: &mut dyn Storage, contract_path: &str) -> i32 {
-    match RouwdiEngine::default().build(
-        storage,
-        BuildRequest {
-            contract_path: contract_path.to_owned(),
-        },
-    ) {
+    let Some(execution) = payloads::mir_payload_execution_for_engine() else {
+        return 1;
+    };
+    match RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(execution)
+        .build(
+            storage,
+            BuildRequest {
+                contract_path: contract_path.to_owned(),
+            },
+        ) {
         Ok(report) => match report.status {
             RunStatus::Succeeded => 0,
             RunStatus::Unsupported => 2,
@@ -61,7 +66,14 @@ pub fn cli_main() -> i32 {
             let contract_path = args.next().unwrap_or_else(|| "rouwdi.toml".to_owned());
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let mut storage = HostStorage::new(cwd);
-            match RouwdiEngine::default().build(&mut storage, BuildRequest { contract_path }) {
+            let Some(execution) = payloads::mir_payload_execution_for_engine() else {
+                eprintln!("embedded MIR payload execution failed");
+                return 1;
+            };
+            match RouwdiEngine::default()
+                .with_embedded_mir_payload_execution(execution)
+                .build(&mut storage, BuildRequest { contract_path })
+            {
                 Ok(report) => {
                     println!(
                         "{}",
@@ -103,21 +115,30 @@ pub fn cli_main() -> i32 {
             println!("{}", rouwdi_abi_version());
             0
         }
-        "payloads" => {
-            let reports = payloads::embedded_compiler_payload_reports();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&reports).unwrap_or_default()
-            );
-            if reports
-                .iter()
-                .any(|report| report.hash_verified && report.size_verified)
-            {
-                0
-            } else {
+        "payloads" => match payloads::load_mir_handoff_payload() {
+            Ok(report) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_default()
+                );
+                if report.hash_verified
+                    && report.size_verified
+                    && report.module_instantiated
+                    && report.abi_v1_exports_verified
+                    && report.execute_called
+                    && report.execution_source == "embedded_registry"
+                    && !report.external
+                {
+                    0
+                } else {
+                    1
+                }
+            }
+            Err(err) => {
+                println!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
                 1
             }
-        }
+        },
         _ => {
             eprintln!("unknown rouwdi command: {command}");
             64

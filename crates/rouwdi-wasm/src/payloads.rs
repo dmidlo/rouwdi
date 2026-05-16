@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, TypedResumableCall};
 
 #[cfg(feature = "embedded-mir-payload")]
 #[path = "generated/embedded_payloads.rs"]
@@ -49,6 +50,123 @@ pub struct EmbeddedCompilerPayloadReport {
     pub size_verified: bool,
     pub loader_available: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EmbeddedCompilerPayloadLoadReport {
+    pub name: String,
+    pub kind: String,
+    pub stage: String,
+    pub abi_name: String,
+    pub abi_version: u32,
+    pub registry_identity: String,
+    pub execution_source: String,
+    pub external: bool,
+    pub opened_external_file: bool,
+    pub build_source_path: String,
+    pub load_strategy: String,
+    pub embedding_method: String,
+    pub expected_sha256: String,
+    pub actual_sha256: String,
+    pub hash_verified: bool,
+    pub expected_size_bytes: u64,
+    pub actual_size_bytes: u64,
+    pub size_verified: bool,
+    pub wasm_magic_verified: bool,
+    pub module_instantiated: bool,
+    pub imports: Vec<String>,
+    pub exports: Vec<String>,
+    pub abi_v1_exports_verified: bool,
+    pub version_called: bool,
+    pub version: u32,
+    pub stage_called: bool,
+    pub stage_code: u32,
+    pub descriptor_ptr: u32,
+    pub descriptor_len: u32,
+    pub descriptor_bytes_read: bool,
+    pub descriptor_json: String,
+    pub valid_input_ptr: u32,
+    pub valid_input_len: u32,
+    pub valid_input_bytes_read: bool,
+    pub valid_input_json: String,
+    pub execute_called: bool,
+    pub execute_status: i32,
+    pub execute_trapped: bool,
+    pub execute_trap: Option<String>,
+    pub output_ptr: u32,
+    pub output_len: u32,
+    pub error_ptr: u32,
+    pub error_len: u32,
+    pub output_bytes_read: bool,
+    pub output_json: Option<String>,
+    pub error_bytes_read: bool,
+    pub error_json: Option<String>,
+    pub input_contract_sha256: String,
+    pub output_contract_sha256: Option<String>,
+    pub error_contract_sha256: Option<String>,
+    pub execution_state: String,
+    pub blocker_kind: Option<String>,
+    pub result_kind: String,
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EmbeddedCompilerPayloadLoadError {
+    pub name: String,
+    pub execution_source: String,
+    pub external: bool,
+    pub opened_external_file: bool,
+    pub error: String,
+}
+
+#[derive(Debug)]
+struct PayloadWasiState {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    proc_exit_code: Option<i32>,
+    random_counter: u8,
+}
+
+const WASI: &str = "wasi_snapshot_preview1";
+const ABI_VERSION_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_version";
+const ABI_STAGE_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_stage";
+const ABI_DESCRIPTOR_PTR_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_descriptor_ptr";
+const ABI_DESCRIPTOR_LEN_SYMBOL: &str = "rouwdi_compiler_payload_abi_v1_descriptor_len";
+const MIR_VALID_INPUT_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_valid_input_ptr";
+const MIR_VALID_INPUT_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_valid_input_len";
+const MIR_RESULT_AREA_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_result_area_ptr";
+const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
+const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
+const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
+const PAYLOAD_FUEL_CHUNK: u64 = 10_000_000;
+const PAYLOAD_MAX_FUEL_RESUMES: usize = 50_000;
+const WASI_ERRNO_SUCCESS: i32 = 0;
+const WASI_ERRNO_BADF: i32 = 8;
+const WASI_ERRNO_INVAL: i32 = 28;
+const WASI_ERRNO_NOENT: i32 = 44;
+const WASI_ERRNO_NOSYS: i32 = 52;
+const WASI_FILETYPE_CHARACTER_DEVICE: u8 = 2;
+const WASI_FILETYPE_DIRECTORY: u8 = 3;
+const WASI_PREOPEN_FD: i32 = 3;
+const WASI_PREOPEN_PATH: &str = "/workspace";
+const VIRTUAL_SYSROOT: &str = "third_party/rust/build/x86_64-pc-windows-msvc/stage1";
+const VIRTUAL_RUSTLIB: &str =
+    "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib";
+const PAYLOAD_ARG0: &str = "rouwdi_mir_adapter_probe.wasm";
+
+const REQUIRED_ABI_EXPORTS: &[&str] = &[
+    "memory",
+    ABI_VERSION_SYMBOL,
+    ABI_STAGE_SYMBOL,
+    ABI_DESCRIPTOR_PTR_SYMBOL,
+    ABI_DESCRIPTOR_LEN_SYMBOL,
+    MIR_VALID_INPUT_PTR_SYMBOL,
+    MIR_VALID_INPUT_LEN_SYMBOL,
+    MIR_RESULT_AREA_PTR_SYMBOL,
+    MIR_EXECUTE_SYMBOL,
+    MIR_LAST_ERROR_PTR_SYMBOL,
+    MIR_LAST_ERROR_LEN_SYMBOL,
+];
 
 #[cfg(feature = "embedded-mir-payload")]
 static EMBEDDED_COMPILER_PAYLOADS: &[EmbeddedCompilerPayload] = &[EmbeddedCompilerPayload {
@@ -122,6 +240,990 @@ pub fn mir_payload_report() -> Option<EmbeddedCompilerPayloadReport> {
         .find(|payload| payload.name == "rouwdi-mir-handoff-payload")
 }
 
+pub fn load_embedded_compiler_payload(
+    name: &str,
+) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let name = name.to_owned();
+        let thread_name = name.clone();
+        return std::thread::Builder::new()
+            .name("rouwdi-embedded-payload-loader".to_owned())
+            .stack_size(512 * 1024 * 1024)
+            .spawn(move || load_embedded_compiler_payload_inline(&thread_name))
+            .map_err(|error| EmbeddedCompilerPayloadLoadError {
+                name: name.clone(),
+                execution_source: "embedded_registry".to_owned(),
+                external: false,
+                opened_external_file: false,
+                error: format!("failed to spawn embedded payload loader thread: {error}"),
+            })?
+            .join()
+            .map_err(|_| EmbeddedCompilerPayloadLoadError {
+                name,
+                execution_source: "embedded_registry".to_owned(),
+                external: false,
+                opened_external_file: false,
+                error: "embedded payload loader thread panicked".to_owned(),
+            })?;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        load_embedded_compiler_payload_inline(name)
+    }
+}
+
+fn load_embedded_compiler_payload_inline(
+    name: &str,
+) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
+    let Some(payload) = embedded_compiler_payloads()
+        .iter()
+        .find(|payload| payload.name == name)
+    else {
+        return Err(EmbeddedCompilerPayloadLoadError {
+            name: name.to_owned(),
+            execution_source: "embedded_registry".to_owned(),
+            external: false,
+            opened_external_file: false,
+            error: "embedded compiler payload was not found in registry".to_owned(),
+        });
+    };
+
+    execute_embedded_payload(payload).map_err(|error| EmbeddedCompilerPayloadLoadError {
+        name: payload.name.to_owned(),
+        execution_source: "embedded_registry".to_owned(),
+        external: false,
+        opened_external_file: false,
+        error,
+    })
+}
+
+pub fn load_mir_handoff_payload(
+) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
+    load_embedded_compiler_payload("rouwdi-mir-handoff-payload")
+}
+
+pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMirPayloadExecution> {
+    let report = load_mir_handoff_payload().ok()?;
+    Some(rouwdi_rustc::RustEmbeddedMirPayloadExecution {
+        payload_identity: report.name,
+        registry_identity: report.registry_identity,
+        execution_source: report.execution_source,
+        external: report.external,
+        opened_external_file: report.opened_external_file,
+        embedded: true,
+        expected_sha256: report.expected_sha256,
+        actual_sha256: report.actual_sha256,
+        hash_verified: report.hash_verified,
+        expected_size_bytes: report.expected_size_bytes,
+        actual_size_bytes: report.actual_size_bytes,
+        size_verified: report.size_verified,
+        wasm_magic_verified: report.wasm_magic_verified,
+        module_instantiated: report.module_instantiated,
+        abi_v1_exports_verified: report.abi_v1_exports_verified,
+        exports: report.exports,
+        imports: report.imports,
+        abi_version_called: report.version_called,
+        abi_version: report.version,
+        stage_called: report.stage_called,
+        stage: report.stage_code,
+        descriptor_called: report.descriptor_bytes_read,
+        descriptor_json: report.descriptor_json,
+        valid_input_called: report.valid_input_bytes_read,
+        valid_input_json: report.valid_input_json,
+        execute_called: report.execute_called,
+        execute_status: report.execute_status,
+        execute_trapped: report.execute_trapped,
+        execute_trap: report.execute_trap,
+        output_bytes_read: report.output_bytes_read,
+        output_json: report.output_json,
+        error_bytes_read: report.error_bytes_read,
+        error_json: report.error_json,
+        input_contract_sha256: report.input_contract_sha256,
+        output_contract_sha256: report.output_contract_sha256,
+        error_contract_sha256: report.error_contract_sha256,
+        execution_state: report.execution_state,
+        blocker_kind: report.blocker_kind,
+        result_kind: report.result_kind,
+    })
+}
+
+fn execute_embedded_payload(
+    payload: &EmbeddedCompilerPayload,
+) -> Result<EmbeddedCompilerPayloadLoadReport, String> {
+    let actual_sha256 = sha256_hex(payload.bytes);
+    let actual_size_bytes = payload.bytes.len() as u64;
+    let hash_verified = actual_sha256 == payload.expected_sha256;
+    let size_verified = actual_size_bytes == payload.expected_size_bytes;
+    let wasm_magic_verified = payload.bytes.starts_with(b"\0asm");
+    if !hash_verified || !size_verified || !wasm_magic_verified {
+        return Err(format!(
+            "embedded payload identity verification failed: hash_verified={hash_verified} size_verified={size_verified} wasm_magic_verified={wasm_magic_verified}"
+        ));
+    }
+
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    config.set_max_recursion_depth(64);
+    config.ignore_custom_sections(true);
+    let engine = Engine::new(&config);
+    let module = Module::new(&engine, payload.bytes)
+        .map_err(|error| format!("failed to compile embedded Wasm payload: {error}"))?;
+    trace_payload_loader("module compiled");
+    let imports = module
+        .imports()
+        .map(|import| format!("{}::{}", import.module(), import.name()))
+        .collect::<Vec<_>>();
+    let exports = module
+        .exports()
+        .map(|export| export.name().to_owned())
+        .collect::<Vec<_>>();
+    let abi_v1_exports_verified = REQUIRED_ABI_EXPORTS
+        .iter()
+        .all(|required| exports.iter().any(|export| export == required));
+    if !abi_v1_exports_verified {
+        return Err(format!(
+            "embedded payload missing ABI v1 exports; found [{}]",
+            exports.join(", ")
+        ));
+    }
+
+    let mut store = Store::new(
+        &engine,
+        PayloadWasiState {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            proc_exit_code: None,
+            random_counter: 0,
+        },
+    );
+    store
+        .set_fuel(PAYLOAD_FUEL_CHUNK)
+        .map_err(|error| error.to_string())?;
+    let mut linker = Linker::<PayloadWasiState>::new(&engine);
+    define_wasi_imports(&mut linker)?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|error| format!("failed to instantiate embedded Wasm payload: {error}"))?;
+    trace_payload_loader("module instantiated");
+    let memory = instance
+        .get_export(&store, "memory")
+        .and_then(Extern::into_memory)
+        .ok_or_else(|| "embedded payload did not export memory".to_owned())?;
+
+    let version = call_u32_export(&instance, &mut store, ABI_VERSION_SYMBOL)?;
+    let stage_code = call_u32_export(&instance, &mut store, ABI_STAGE_SYMBOL)?;
+    let descriptor_ptr = call_u32_export(&instance, &mut store, ABI_DESCRIPTOR_PTR_SYMBOL)?;
+    let descriptor_len = call_u32_export(&instance, &mut store, ABI_DESCRIPTOR_LEN_SYMBOL)?;
+    let descriptor_json = read_guest_string(
+        &memory,
+        &store,
+        descriptor_ptr,
+        descriptor_len,
+        "descriptor",
+    )?;
+    trace_payload_loader("descriptor read");
+    let valid_input_ptr = call_u32_export(&instance, &mut store, MIR_VALID_INPUT_PTR_SYMBOL)?;
+    let valid_input_len = call_u32_export(&instance, &mut store, MIR_VALID_INPUT_LEN_SYMBOL)?;
+    let valid_input_json = read_guest_string(
+        &memory,
+        &store,
+        valid_input_ptr,
+        valid_input_len,
+        "valid input",
+    )?;
+    trace_payload_loader("valid input read");
+    let result_area_ptr = call_u32_export(&instance, &mut store, MIR_RESULT_AREA_PTR_SYMBOL)?;
+    let output_ptr_slot = result_area_ptr;
+    let output_len_slot = result_area_ptr
+        .checked_add(4)
+        .ok_or_else(|| "result area output len slot overflowed".to_owned())?;
+    let error_ptr_slot = result_area_ptr
+        .checked_add(8)
+        .ok_or_else(|| "result area error ptr slot overflowed".to_owned())?;
+    let error_len_slot = result_area_ptr
+        .checked_add(12)
+        .ok_or_else(|| "result area error len slot overflowed".to_owned())?;
+    let execute = instance
+        .get_typed_func::<(i32, i32, i32, i32, i32, i32), i32>(&store, MIR_EXECUTE_SYMBOL)
+        .map_err(|error| format!("missing/corrupt execute export: {error}"))?;
+    let execute_outcome = call_execute_with_resumable_fuel(
+        &execute,
+        &mut store,
+        (
+            valid_input_ptr as i32,
+            valid_input_len as i32,
+            output_ptr_slot as i32,
+            output_len_slot as i32,
+            error_ptr_slot as i32,
+            error_len_slot as i32,
+        ),
+    )?;
+    let execute_status = execute_outcome.status;
+    trace_payload_loader("execute returned");
+
+    let output_ptr = read_guest_u32(&memory, &store, output_ptr_slot, "output ptr slot")?;
+    let output_len = read_guest_u32(&memory, &store, output_len_slot, "output len slot")?;
+    let error_ptr = read_guest_u32(&memory, &store, error_ptr_slot, "error ptr slot")?;
+    let error_len = read_guest_u32(&memory, &store, error_len_slot, "error len slot")?;
+    let output_json = if output_len > 0 {
+        Some(read_guest_string(
+            &memory,
+            &store,
+            output_ptr,
+            output_len,
+            "execute output",
+        )?)
+    } else {
+        None
+    };
+    let error_json = if error_len > 0 {
+        Some(read_guest_string(
+            &memory,
+            &store,
+            error_ptr,
+            error_len,
+            "execute error",
+        )?)
+    } else {
+        let last_error_ptr = call_u32_export(&instance, &mut store, MIR_LAST_ERROR_PTR_SYMBOL)?;
+        let last_error_len = call_u32_export(&instance, &mut store, MIR_LAST_ERROR_LEN_SYMBOL)?;
+        (last_error_len > 0)
+            .then(|| {
+                read_guest_string(
+                    &memory,
+                    &store,
+                    last_error_ptr,
+                    last_error_len,
+                    "last error",
+                )
+            })
+            .transpose()?
+    }
+    .or_else(|| {
+        execute_outcome.trap.as_ref().map(|trap| {
+            format!(
+                "{{\"code\":\"embedded_payload_execute_trapped\",\"kind\":\"wasm_trap\",\"message\":\"embedded payload execute trapped inside rouwdi-owned wasmi runtime\",\"blocker_kind\":\"embedded_payload_execute_trapped\",\"blocker_component\":\"{MIR_EXECUTE_SYMBOL}\",\"context_state\":\"embedded_payload_execute_trapped\",\"execute_trap\":{}}}",
+                json_string(trap)
+            )
+        })
+    });
+    let evidence_json = error_json
+        .as_deref()
+        .or(output_json.as_deref())
+        .unwrap_or("");
+    let evidence_value = serde_json::from_str::<serde_json::Value>(evidence_json).ok();
+    let descriptor_value = serde_json::from_str::<serde_json::Value>(&descriptor_json).ok();
+    let raw_state = json_str(&evidence_value, "context_state")
+        .or_else(|| json_str(&evidence_value, "code"))
+        .or_else(|| json_str(&descriptor_value, "bridge_state"))
+        .unwrap_or("unknown_payload_execution_result");
+    let blocker_kind = json_str(&evidence_value, "blocker_kind").map(str::to_owned);
+    let execution_state = canonical_execution_state(raw_state, blocker_kind.as_deref());
+    let result_kind = if output_json.is_some() {
+        "output"
+    } else if error_json.is_some() {
+        "error"
+    } else {
+        "empty"
+    }
+    .to_owned();
+    let stdout_bytes = store.data().stdout.len();
+    let stderr_bytes = store.data().stderr.len();
+
+    Ok(EmbeddedCompilerPayloadLoadReport {
+        name: payload.name.to_owned(),
+        kind: payload.kind.to_owned(),
+        stage: payload.stage.to_owned(),
+        abi_name: payload.abi_name.to_owned(),
+        abi_version: payload.abi_version,
+        registry_identity: payload.name.to_owned(),
+        execution_source: "embedded_registry".to_owned(),
+        external: false,
+        opened_external_file: false,
+        build_source_path: payload.build_source_path.to_owned(),
+        load_strategy: payload.load_strategy.to_owned(),
+        embedding_method: payload.embedding_method.to_owned(),
+        expected_sha256: payload.expected_sha256.to_owned(),
+        actual_sha256,
+        hash_verified,
+        expected_size_bytes: payload.expected_size_bytes,
+        actual_size_bytes,
+        size_verified,
+        wasm_magic_verified,
+        module_instantiated: true,
+        imports,
+        exports,
+        abi_v1_exports_verified,
+        version_called: true,
+        version,
+        stage_called: true,
+        stage_code,
+        descriptor_ptr,
+        descriptor_len,
+        descriptor_bytes_read: true,
+        descriptor_json,
+        valid_input_ptr,
+        valid_input_len,
+        valid_input_bytes_read: true,
+        valid_input_json: valid_input_json.clone(),
+        execute_called: true,
+        execute_status,
+        execute_trapped: execute_outcome.trap.is_some(),
+        execute_trap: execute_outcome.trap,
+        output_ptr,
+        output_len,
+        error_ptr,
+        error_len,
+        output_bytes_read: output_json.is_some(),
+        output_contract_sha256: output_json
+            .as_deref()
+            .map(|json| sha256_hex(json.as_bytes())),
+        output_json,
+        error_bytes_read: error_json.is_some(),
+        error_contract_sha256: error_json
+            .as_deref()
+            .map(|json| sha256_hex(json.as_bytes())),
+        error_json,
+        input_contract_sha256: sha256_hex(valid_input_json.as_bytes()),
+        execution_state,
+        blocker_kind,
+        result_kind,
+        stdout_bytes,
+        stderr_bytes,
+    })
+}
+
+fn define_wasi_imports(linker: &mut Linker<PayloadWasiState>) -> Result<(), String> {
+    linker
+        .func_wrap(WASI, "args_sizes_get", wasi_args_sizes_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "args_get", wasi_args_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "environ_sizes_get", wasi_environ_sizes_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "environ_get", wasi_environ_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "clock_time_get", wasi_clock_time_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "random_get", wasi_random_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_write", wasi_fd_write)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_read", wasi_fd_read)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_close", wasi_fd_close)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_fdstat_get", wasi_fd_fdstat_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_fdstat_set_flags", wasi_fd_fdstat_set_flags)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_filestat_get", wasi_fd_filestat_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_prestat_get", wasi_fd_prestat_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_prestat_dir_name", wasi_fd_prestat_dir_name)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_readdir", wasi_fd_readdir)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "fd_seek", wasi_fd_seek)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_create_directory", wasi_path_create_directory)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_filestat_get", wasi_path_filestat_get)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_link", wasi_path_link)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_open", wasi_path_open)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_readlink", wasi_path_readlink)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_remove_directory", wasi_path_remove_directory)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_rename", wasi_path_rename)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "path_unlink_file", wasi_path_unlink_file)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "proc_exit", wasi_proc_exit)
+        .map_err(to_string)?;
+    linker
+        .func_wrap(WASI, "sched_yield", wasi_sched_yield)
+        .map_err(to_string)?;
+    Ok(())
+}
+
+fn wasi_args_sizes_get(
+    mut caller: Caller<'_, PayloadWasiState>,
+    argc_ptr: i32,
+    argv_buf_size_ptr: i32,
+) -> i32 {
+    let status = write_u32(&mut caller, argc_ptr, 1);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    write_u32(
+        &mut caller,
+        argv_buf_size_ptr,
+        PAYLOAD_ARG0.len().saturating_add(1) as u32,
+    )
+}
+
+fn wasi_args_get(
+    mut caller: Caller<'_, PayloadWasiState>,
+    argv_ptr: i32,
+    argv_buf_ptr: i32,
+) -> i32 {
+    let bytes = PAYLOAD_ARG0.as_bytes();
+    let status = write_u32(&mut caller, argv_ptr, argv_buf_ptr as u32);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    let status = write_bytes(&mut caller, argv_buf_ptr, bytes);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    write_bytes(&mut caller, argv_buf_ptr + bytes.len() as i32, &[0])
+}
+
+fn wasi_environ_sizes_get(
+    mut caller: Caller<'_, PayloadWasiState>,
+    count_ptr: i32,
+    size_ptr: i32,
+) -> i32 {
+    let status = write_u32(&mut caller, count_ptr, 0);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    write_u32(&mut caller, size_ptr, 0)
+}
+
+fn wasi_environ_get(
+    _caller: Caller<'_, PayloadWasiState>,
+    _env_ptr: i32,
+    _env_buf_ptr: i32,
+) -> i32 {
+    WASI_ERRNO_SUCCESS
+}
+
+fn wasi_clock_time_get(
+    mut caller: Caller<'_, PayloadWasiState>,
+    _clock_id: i32,
+    _precision: i64,
+    time_ptr: i32,
+) -> i32 {
+    write_u64(&mut caller, time_ptr, 0)
+}
+
+fn wasi_random_get(mut caller: Caller<'_, PayloadWasiState>, ptr: i32, len: i32) -> i32 {
+    if ptr < 0 || len < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let mut bytes = vec![0_u8; len as usize];
+    for byte in &mut bytes {
+        let next = caller.data().random_counter.wrapping_add(1);
+        caller.data_mut().random_counter = next;
+        *byte = next;
+    }
+    write_bytes(&mut caller, ptr, &bytes)
+}
+
+fn wasi_fd_write(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    nwritten_ptr: i32,
+) -> i32 {
+    if iovs_ptr < 0 || iovs_len < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut written = 0_u32;
+    let mut chunks = Vec::new();
+    for index in 0..iovs_len {
+        let base = iovs_ptr as usize + (index as usize * 8);
+        let Ok(ptr) = read_memory_u32(&memory, &caller, base) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let Ok(len) = read_memory_u32(&memory, &caller, base + 4) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let mut bytes = vec![0_u8; len as usize];
+        if memory.read(&caller, ptr as usize, &mut bytes).is_err() {
+            return WASI_ERRNO_INVAL;
+        }
+        written = written.saturating_add(len);
+        chunks.extend_from_slice(&bytes);
+    }
+    match fd {
+        1 => caller.data_mut().stdout.extend_from_slice(&chunks),
+        2 => caller.data_mut().stderr.extend_from_slice(&chunks),
+        _ => return WASI_ERRNO_BADF,
+    }
+    write_u32(&mut caller, nwritten_ptr, written)
+}
+
+fn wasi_fd_read(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    _iovs_ptr: i32,
+    _iovs_len: i32,
+    nread_ptr: i32,
+) -> i32 {
+    if !matches!(fd, 0 | WASI_PREOPEN_FD) {
+        return WASI_ERRNO_BADF;
+    }
+    write_u32(&mut caller, nread_ptr, 0)
+}
+
+fn wasi_fd_close(_caller: Caller<'_, PayloadWasiState>, fd: i32) -> i32 {
+    if fd >= WASI_PREOPEN_FD {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_fd_fdstat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_ptr: i32) -> i32 {
+    let filetype = match fd {
+        0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
+        WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
+        _ => return WASI_ERRNO_BADF,
+    };
+    let mut stat = [0_u8; 24];
+    stat[0] = filetype;
+    write_bytes(&mut caller, stat_ptr, &stat)
+}
+
+fn wasi_fd_fdstat_set_flags(_caller: Caller<'_, PayloadWasiState>, fd: i32, _flags: i32) -> i32 {
+    if matches!(fd, 0..=2 | WASI_PREOPEN_FD) {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_fd_filestat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_ptr: i32) -> i32 {
+    let filetype = match fd {
+        0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
+        WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
+        _ => return WASI_ERRNO_BADF,
+    };
+    write_filestat(&mut caller, stat_ptr, filetype, 0)
+}
+
+fn wasi_fd_prestat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, prestat_ptr: i32) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let mut prestat = [0_u8; 8];
+    prestat[4..8].copy_from_slice(&(WASI_PREOPEN_PATH.len() as u32).to_le_bytes());
+    write_bytes(&mut caller, prestat_ptr, &prestat)
+}
+
+fn wasi_fd_prestat_dir_name(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD || path_len < 0 {
+        return WASI_ERRNO_BADF;
+    }
+    let bytes = WASI_PREOPEN_PATH.as_bytes();
+    if path_len as usize > bytes.len() {
+        return WASI_ERRNO_INVAL;
+    }
+    write_bytes(&mut caller, path_ptr, &bytes[..path_len as usize])
+}
+
+fn wasi_fd_readdir(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    _buf: i32,
+    _buf_len: i32,
+    _cookie: i64,
+    bufused_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    write_u32(&mut caller, bufused_ptr, 0)
+}
+
+fn wasi_fd_seek(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    _offset: i64,
+    _whence: i32,
+    newoffset_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    write_u64(&mut caller, newoffset_ptr, 0)
+}
+
+fn wasi_path_create_directory(
+    _caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_filestat_get(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    _flags: i32,
+    path_ptr: i32,
+    path_len: i32,
+    stat_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let Some(path) = read_path(&caller, path_ptr, path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    if virtual_dir_exists(&path) {
+        write_filestat(&mut caller, stat_ptr, WASI_FILETYPE_DIRECTORY, 0)
+    } else {
+        WASI_ERRNO_NOENT
+    }
+}
+
+fn wasi_path_link(
+    _caller: Caller<'_, PayloadWasiState>,
+    _old_fd: i32,
+    _old_flags: i32,
+    _old_path_ptr: i32,
+    _old_path_len: i32,
+    _new_fd: i32,
+    _new_path_ptr: i32,
+    _new_path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_open(
+    mut caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _dirflags: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _oflags: i32,
+    _rights_base: i64,
+    _rights_inheriting: i64,
+    _fdflags: i32,
+    opened_fd_ptr: i32,
+) -> i32 {
+    let _ = write_u32(&mut caller, opened_fd_ptr, 0);
+    WASI_ERRNO_NOENT
+}
+
+fn wasi_path_readlink(
+    mut caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _buf: i32,
+    _buf_len: i32,
+    bufused_ptr: i32,
+) -> i32 {
+    let _ = write_u32(&mut caller, bufused_ptr, 0);
+    WASI_ERRNO_NOENT
+}
+
+fn wasi_path_remove_directory(
+    _caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_rename(
+    _caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _new_fd: i32,
+    _new_path_ptr: i32,
+    _new_path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_unlink_file(
+    _caller: Caller<'_, PayloadWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_proc_exit(mut caller: Caller<'_, PayloadWasiState>, code: i32) {
+    caller.data_mut().proc_exit_code = Some(code);
+}
+
+fn wasi_sched_yield() -> i32 {
+    WASI_ERRNO_SUCCESS
+}
+
+fn call_u32_export(
+    instance: &wasmi::Instance,
+    store: &mut Store<PayloadWasiState>,
+    name: &str,
+) -> Result<u32, String> {
+    let func = instance
+        .get_typed_func::<(), i32>(&*store, name)
+        .map_err(|error| format!("missing/corrupt {name} export: {error}"))?;
+    let raw = func
+        .call(store, ())
+        .map_err(|error| format!("{name} export trapped: {error}"))?;
+    if raw < 0 {
+        Err(format!("{name} returned negative pointer/value {raw}"))
+    } else {
+        Ok(raw as u32)
+    }
+}
+
+struct PayloadExecuteOutcome {
+    status: i32,
+    trap: Option<String>,
+}
+
+fn call_execute_with_resumable_fuel(
+    execute: &wasmi::TypedFunc<(i32, i32, i32, i32, i32, i32), i32>,
+    store: &mut Store<PayloadWasiState>,
+    params: (i32, i32, i32, i32, i32, i32),
+) -> Result<PayloadExecuteOutcome, String> {
+    store
+        .set_fuel(PAYLOAD_FUEL_CHUNK)
+        .map_err(|error| error.to_string())?;
+    let mut call = execute
+        .call_resumable(&mut *store, params)
+        .map_err(|error| format!("execute export trapped before resumable call: {error}"))?;
+    let mut resumes = 0_usize;
+    loop {
+        match call {
+            TypedResumableCall::Finished(status) => {
+                return Ok(PayloadExecuteOutcome { status, trap: None });
+            }
+            TypedResumableCall::HostTrap(trap) => {
+                return Ok(PayloadExecuteOutcome {
+                    status: -1902,
+                    trap: Some(format!("host import trap: {trap:?}")),
+                });
+            }
+            TypedResumableCall::OutOfFuel(out_of_fuel) => {
+                resumes = resumes.saturating_add(1);
+                if resumes > PAYLOAD_MAX_FUEL_RESUMES {
+                    return Err(format!(
+                        "execute export exceeded rouwdi-owned fuel budget after {resumes} resumptions"
+                    ));
+                }
+                let next_fuel = PAYLOAD_FUEL_CHUNK.max(out_of_fuel.required_fuel());
+                store
+                    .set_fuel(next_fuel)
+                    .map_err(|error| error.to_string())?;
+                if resumes == 1 || resumes % 1000 == 0 {
+                    trace_payload_loader(&format!(
+                        "execute resumed after out-of-fuel ({resumes} chunks)"
+                    ));
+                }
+                call = match out_of_fuel.resume(&mut *store) {
+                    Ok(call) => call,
+                    Err(error) => {
+                        return Ok(PayloadExecuteOutcome {
+                            status: -1901,
+                            trap: Some(error.to_string()),
+                        });
+                    }
+                };
+            }
+        }
+    }
+}
+
+fn read_guest_string(
+    memory: &Memory,
+    store: &Store<PayloadWasiState>,
+    ptr: u32,
+    len: u32,
+    label: &str,
+) -> Result<String, String> {
+    let bytes = read_guest_bytes(memory, store, ptr, len, label)?;
+    String::from_utf8(bytes).map_err(|error| format!("{label} bytes were not UTF-8: {error}"))
+}
+
+fn read_guest_u32(
+    memory: &Memory,
+    store: &Store<PayloadWasiState>,
+    ptr: u32,
+    label: &str,
+) -> Result<u32, String> {
+    let bytes = read_guest_bytes(memory, store, ptr, 4, label)?;
+    let raw: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| format!("{label} did not contain 4 bytes"))?;
+    Ok(u32::from_le_bytes(raw))
+}
+
+fn read_guest_bytes(
+    memory: &Memory,
+    store: &Store<PayloadWasiState>,
+    ptr: u32,
+    len: u32,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0_u8; len as usize];
+    memory
+        .read(store, ptr as usize, &mut bytes)
+        .map_err(|error| format!("failed to read {label} at {ptr:#x}+{len}: {error}"))?;
+    Ok(bytes)
+}
+
+fn caller_memory(caller: &Caller<'_, PayloadWasiState>) -> Option<Memory> {
+    caller.get_export("memory").and_then(Extern::into_memory)
+}
+
+fn write_u32(caller: &mut Caller<'_, PayloadWasiState>, ptr: i32, value: u32) -> i32 {
+    write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
+fn write_u64(caller: &mut Caller<'_, PayloadWasiState>, ptr: i32, value: u64) -> i32 {
+    write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
+fn write_bytes(caller: &mut Caller<'_, PayloadWasiState>, ptr: i32, bytes: &[u8]) -> i32 {
+    if ptr < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let Some(memory) = caller_memory(caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    memory
+        .write(caller, ptr as usize, bytes)
+        .map(|_| WASI_ERRNO_SUCCESS)
+        .unwrap_or(WASI_ERRNO_INVAL)
+}
+
+fn write_filestat(
+    caller: &mut Caller<'_, PayloadWasiState>,
+    stat_ptr: i32,
+    filetype: u8,
+    size: u64,
+) -> i32 {
+    let mut stat = [0_u8; 64];
+    stat[16] = filetype;
+    stat[32..40].copy_from_slice(&size.to_le_bytes());
+    write_bytes(caller, stat_ptr, &stat)
+}
+
+fn read_memory_u32(
+    memory: &Memory,
+    caller: &Caller<'_, PayloadWasiState>,
+    ptr: usize,
+) -> Result<u32, ()> {
+    let mut raw = [0_u8; 4];
+    memory.read(caller, ptr, &mut raw).map_err(|_| ())?;
+    Ok(u32::from_le_bytes(raw))
+}
+
+fn read_path(caller: &Caller<'_, PayloadWasiState>, ptr: i32, len: i32) -> Option<String> {
+    if ptr < 0 || len < 0 {
+        return None;
+    }
+    let memory = caller_memory(caller)?;
+    let mut bytes = vec![0_u8; len as usize];
+    memory.read(caller, ptr as usize, &mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+fn virtual_dir_exists(path: &str) -> bool {
+    let normalized = path.trim_start_matches('/').trim_end_matches('/');
+    normalized.is_empty()
+        || normalized == "third_party"
+        || normalized == "third_party/rust"
+        || normalized == "third_party/rust/build"
+        || normalized == "third_party/rust/build/x86_64-pc-windows-msvc"
+        || normalized == VIRTUAL_SYSROOT
+        || normalized == "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib"
+        || normalized == "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib"
+        || normalized
+            == "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1"
+        || normalized == VIRTUAL_RUSTLIB
+}
+
+fn canonical_execution_state(raw_state: &str, blocker_kind: Option<&str>) -> String {
+    if raw_state == "mir_body_identity_emitted" {
+        return "embedded_payload_mir_body_identity_emitted".to_owned();
+    }
+    if raw_state == "mir_body_hash_emitted" {
+        return "embedded_payload_mir_body_hash_emitted".to_owned();
+    }
+    if blocker_kind.is_some_and(|kind| kind.starts_with("missing_core_lang_item"))
+        || raw_state.contains("lang_item")
+    {
+        return "embedded_payload_executed_blocked_at_mir_provider_requires_lang_items".to_owned();
+    }
+    format!("embedded_payload_executed_{raw_state}")
+}
+
+fn json_str<'a>(value: &'a Option<serde_json::Value>, key: &str) -> Option<&'a str> {
+    value
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn to_string(error: impl ToString) -> String {
+    error.to_string()
+}
+
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"<json-string-encoding-failed>\"".to_owned())
+}
+
+fn trace_payload_loader(_message: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::var_os("ROUWDI_PAYLOAD_TRACE").is_some() {
+        eprintln!("rouwdi embedded payload loader: {_message}");
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);
@@ -161,5 +1263,57 @@ mod tests {
         assert!(report.size_verified);
         assert!(report.loader_available);
         assert_eq!(report.actual_sha256, mir.expected_sha256);
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-mir-payload")]
+    fn embedded_loader_instantiates_and_executes_mir_payload_from_registry_bytes() {
+        let report = load_embedded_compiler_payload("rouwdi-mir-handoff-payload")
+            .expect("embedded MIR payload must instantiate and execute from registry bytes");
+
+        assert_eq!(report.execution_source, "embedded_registry");
+        assert!(!report.external);
+        assert!(!report.opened_external_file);
+        assert!(report.hash_verified);
+        assert!(report.size_verified);
+        assert!(report.wasm_magic_verified);
+        assert!(report.module_instantiated);
+        assert!(report.abi_v1_exports_verified);
+        assert!(report.version_called);
+        assert_eq!(report.version, 1);
+        assert!(report.stage_called);
+        assert_eq!(report.stage_code, 1);
+        assert!(report.descriptor_bytes_read);
+        assert!(report.descriptor_json.contains("mir-handoff"));
+        assert!(report.valid_input_bytes_read);
+        assert!(report.valid_input_json.contains("compile_unit_id"));
+        assert!(report.execute_called);
+        assert!(report.output_bytes_read || report.error_bytes_read);
+        assert!(report
+            .exports
+            .iter()
+            .any(|export| export == "rouwdi_mir_handoff_payload_v1_execute"));
+        assert!(report
+            .imports
+            .iter()
+            .all(|import| !import.contains("wasmtime")));
+        assert!(
+            report
+                .execution_state
+                .starts_with("embedded_payload_executed")
+                || report.execution_state == "embedded_payload_mir_body_identity_emitted"
+                || report.execution_state == "embedded_payload_mir_body_hash_emitted"
+        );
+        assert_eq!(report.input_contract_sha256.len(), 64);
+        assert!(
+            report
+                .output_contract_sha256
+                .as_deref()
+                .is_some_and(|hash| hash.len() == 64)
+                || report
+                    .error_contract_sha256
+                    .as_deref()
+                    .is_some_and(|hash| hash.len() == 64)
+        );
     }
 }
