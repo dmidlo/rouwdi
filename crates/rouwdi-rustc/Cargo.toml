@@ -11,3 +11,4 @@ ra_parser.workspace = true
 rouwdi-rustc-upstream = { path = "../rouwdi-rustc-upstream" }
 rustc_lexer.workspace = true
 serde.workspace = true
+serde_json.workspace = true

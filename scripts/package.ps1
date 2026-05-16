@@ -404,6 +404,39 @@ try {
     if ($payloadExecution.output_bytes_read -ne $true -and $payloadExecution.error_bytes_read -ne $true) {
         throw "Canonical MIR payload execution did not read output or error bytes"
     }
+    $payloadOutput = $null
+    if ($payloadExecution.output_bytes_read -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$payloadExecution.output_json)) {
+        $payloadOutput = $payloadExecution.output_json | ConvertFrom-Json
+    }
+    $payloadError = $null
+    if ($payloadExecution.error_bytes_read -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$payloadExecution.error_json)) {
+        $payloadError = $payloadExecution.error_json | ConvertFrom-Json
+    }
+    $mirBodyIdentity = if ($null -ne $payloadOutput) { [string]$payloadOutput.mir_body_identity } else { $null }
+    $mirBodyHash = if ($null -ne $payloadOutput) { [string]$payloadOutput.mir_body_hash } else { $null }
+    $mirBodyIdentityEmitted = -not [string]::IsNullOrWhiteSpace($mirBodyIdentity)
+    $mirBodyHashEmitted = -not [string]::IsNullOrWhiteSpace($mirBodyHash)
+    $mirProviderInvoked = ($null -ne $payloadOutput -and $payloadOutput.mir_provider_invoked -eq $true) -or ($null -ne $payloadError -and $payloadError.mir_provider_invoked -eq $true)
+    $coreMetadataLoaded = ($null -ne $payloadOutput -and $payloadOutput.core_metadata_loaded -eq $true) -or ($null -ne $payloadError -and $payloadError.core_metadata_loaded -eq $true)
+    $langItemsResolved = $mirProviderInvoked -or $mirBodyIdentityEmitted
+    if ($mirBodyIdentityEmitted) {
+        foreach ($fabricatedFlag in @("fabricated_ast", "fabricated_hir", "fabricated_tyctx", "fabricated_providers", "fabricated_body", "fabricated_mir")) {
+            if ($payloadOutput.$fabricatedFlag -eq $true) {
+                throw "Canonical MIR payload output cannot claim MIR success with $fabricatedFlag=true"
+            }
+        }
+        if ($payloadOutput.provider_query -ne "rustc_middle::ty::TyCtxt::optimized_mir") {
+            throw "Canonical MIR payload output used unexpected provider query: $($payloadOutput.provider_query)"
+        }
+        if ($payloadOutput.real_mir_body_observed -ne $true) {
+            throw "Canonical MIR payload output did not record a real MIR body"
+        }
+    }
+    if ($payloadExecution.execution_state -match "mir_body" -and -not $mirBodyIdentityEmitted) {
+        throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
+    }
+    $nextFrontier = if ($mirBodyIdentityEmitted) { "monomorphization" } else { "mir_provider" }
+    $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
         name = "rouwdi-mir-handoff-payload"
@@ -441,6 +474,15 @@ try {
         input_contract_sha256 = [string]$payloadExecution.input_contract_sha256
         output_contract_sha256 = $payloadExecution.output_contract_sha256
         error_contract_sha256 = $payloadExecution.error_contract_sha256
+        core_metadata_loaded = $coreMetadataLoaded
+        lang_items_resolved = $langItemsResolved
+        mir_provider_invoked = $mirProviderInvoked
+        mir_body_identity_emitted = $mirBodyIdentityEmitted
+        mir_body_hash_emitted = $mirBodyHashEmitted
+        mir_body_identity = $mirBodyIdentity
+        mir_body_hash = $mirBodyHash
+        next_frontier = $nextFrontier
+        exact_blocker = $exactBlocker
     }
 
     $manifest = [ordered]@{
@@ -504,6 +546,15 @@ try {
             input_contract_sha256 = [string]$payloadExecution.input_contract_sha256
             output_contract_sha256 = $payloadExecution.output_contract_sha256
             error_contract_sha256 = $payloadExecution.error_contract_sha256
+            core_metadata_loaded = $coreMetadataLoaded
+            lang_items_resolved = $langItemsResolved
+            mir_provider_invoked = $mirProviderInvoked
+            mir_body_identity_emitted = $mirBodyIdentityEmitted
+            mir_body_hash_emitted = $mirBodyHashEmitted
+            mir_body_identity = $mirBodyIdentity
+            mir_body_hash = $mirBodyHash
+            next_frontier = $nextFrontier
+            exact_blocker = $exactBlocker
             exists = $true
             single_file_product = $true
             not_product_complete = $false

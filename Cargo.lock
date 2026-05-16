@@ -1965,6 +1965,7 @@ dependencies = [
  "rouwdi-rustc-upstream",
  "rustc_lexer",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

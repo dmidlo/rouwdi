@@ -494,6 +494,178 @@ pub struct RustEmbeddedMirPayloadExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustMirBodyProof {
+    pub compile_unit_id: String,
+    pub source_hash: String,
+    pub target_triple: String,
+    pub crate_identity: Option<String>,
+    pub local_def_id: String,
+    pub def_id: String,
+    pub provider_query: String,
+    pub mir_body_identity: String,
+    pub mir_body_hash: Option<String>,
+    pub payload_artifact_hash: String,
+    pub input_contract_sha256: String,
+    pub output_contract_sha256: String,
+    pub upstream_crates: Vec<String>,
+    pub core_metadata_loaded: bool,
+    pub alloc_metadata_loaded: bool,
+    pub std_metadata_loaded: bool,
+    pub lang_items_resolved: bool,
+    pub mir_provider_invoked: bool,
+    pub real_mir_body_observed: bool,
+    pub fabricated_ast: bool,
+    pub fabricated_hir: bool,
+    pub fabricated_tyctx: bool,
+    pub fabricated_providers: bool,
+    pub fabricated_body: bool,
+    pub fabricated_mir: bool,
+    pub execution_state: String,
+    pub payload_identity: String,
+    pub registry_identity: String,
+    pub execution_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustMonomorphizationHandoffRecord {
+    pub mir_body_identity: String,
+    pub mono_item_collection_status: String,
+    pub required_upstream_component: String,
+    pub blocker_kind: String,
+    pub blocker_component: String,
+    pub blocker_reason: String,
+    pub proof_path: String,
+}
+
+impl RustEmbeddedMirPayloadExecution {
+    pub fn embedded_execution_verified(&self) -> bool {
+        self.execution_source == "embedded_registry"
+            && self.embedded
+            && !self.external
+            && !self.opened_external_file
+            && self.hash_verified
+            && self.size_verified
+            && self.wasm_magic_verified
+            && self.module_instantiated
+            && self.abi_v1_exports_verified
+            && self.abi_version_called
+            && self.abi_version == 1
+            && self.stage_called
+            && self.stage == 1
+            && self.descriptor_called
+            && self.valid_input_called
+            && self.execute_called
+    }
+
+    pub fn mir_body_proof(&self) -> Option<RustMirBodyProof> {
+        if !self.embedded_execution_verified()
+            || self.result_kind != "output"
+            || !self.output_bytes_read
+            || self.execute_trapped
+        {
+            return None;
+        }
+        let output_json = self.output_json.as_ref()?;
+        let output_contract_sha256 = self.output_contract_sha256.as_ref()?;
+        if output_contract_sha256.len() != 64 {
+            return None;
+        }
+        let value = serde_json::from_str::<serde_json::Value>(output_json).ok()?;
+        let context_state = json_value_str(&value, "context_state")
+            .or_else(|| json_value_str(&value, "code"))
+            .unwrap_or_default();
+        let success_state = matches!(
+            self.execution_state.as_str(),
+            "embedded_payload_mir_body_identity_emitted"
+                | "embedded_payload_mir_body_hash_emitted"
+                | "mir_body_identity_emitted"
+                | "mir_body_hash_emitted"
+        ) || matches!(
+            context_state,
+            "mir_body_identity_emitted" | "mir_body_hash_emitted"
+        );
+        if !success_state {
+            return None;
+        }
+        let provider_query = json_value_str(&value, "provider_query")?;
+        if provider_query != "rustc_middle::ty::TyCtxt::optimized_mir" {
+            return None;
+        }
+        let mir_provider_invoked = json_value_bool(&value, "mir_provider_invoked")?;
+        let real_mir_body_observed = json_value_bool(&value, "real_mir_body_observed")?;
+        if !mir_provider_invoked || !real_mir_body_observed {
+            return None;
+        }
+        let fabricated_ast = json_value_bool_default_false(&value, "fabricated_ast");
+        let fabricated_hir = json_value_bool_default_false(&value, "fabricated_hir");
+        let fabricated_tyctx = json_value_bool_default_false(&value, "fabricated_tyctx");
+        let fabricated_providers = json_value_bool_default_false(&value, "fabricated_providers");
+        let fabricated_body = json_value_bool_default_false(&value, "fabricated_body");
+        let fabricated_mir = json_value_bool_default_false(&value, "fabricated_mir");
+        if fabricated_ast
+            || fabricated_hir
+            || fabricated_tyctx
+            || fabricated_providers
+            || fabricated_body
+            || fabricated_mir
+        {
+            return None;
+        }
+        let blocker_kind = json_value_str(&value, "blocker_kind").unwrap_or_default();
+        if blocker_kind != "none" {
+            return None;
+        }
+        let mir_body_identity = json_value_str(&value, "mir_body_identity")?;
+        if mir_body_identity.trim().is_empty() {
+            return None;
+        }
+        let upstream_crates = value
+            .get("upstream_crates")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Some(RustMirBodyProof {
+            compile_unit_id: json_value_str(&value, "compile_unit_id")?.to_owned(),
+            source_hash: json_value_str(&value, "source_hash")?.to_owned(),
+            target_triple: json_value_str(&value, "target_triple")?.to_owned(),
+            crate_identity: json_value_str(&value, "crate_hash").map(str::to_owned),
+            local_def_id: json_value_str(&value, "local_def_id")?.to_owned(),
+            def_id: json_value_str(&value, "def_id")?.to_owned(),
+            provider_query: provider_query.to_owned(),
+            mir_body_identity: mir_body_identity.to_owned(),
+            mir_body_hash: json_value_str(&value, "mir_body_hash").map(str::to_owned),
+            payload_artifact_hash: self.actual_sha256.clone(),
+            input_contract_sha256: self.input_contract_sha256.clone(),
+            output_contract_sha256: output_contract_sha256.clone(),
+            upstream_crates,
+            core_metadata_loaded: json_value_bool_default_false(&value, "core_metadata_loaded"),
+            alloc_metadata_loaded: json_value_bool_default_false(&value, "alloc_metadata_loaded"),
+            std_metadata_loaded: json_value_bool_default_false(&value, "std_metadata_loaded"),
+            lang_items_resolved: true,
+            mir_provider_invoked,
+            real_mir_body_observed,
+            fabricated_ast,
+            fabricated_hir,
+            fabricated_tyctx,
+            fabricated_providers,
+            fabricated_body,
+            fabricated_mir,
+            execution_state: self.execution_state.clone(),
+            payload_identity: self.payload_identity.clone(),
+            registry_identity: self.registry_identity.clone(),
+            execution_source: self.execution_source.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustMirHandoffRecord {
     pub compile_unit: RustCompileUnitIdentity,
     pub source_path: String,
@@ -567,6 +739,8 @@ pub struct RustMirHandoffRecord {
     pub payload_next_artifact_command_exit_code: Option<i32>,
     pub payload_next_artifact_command_evidence: Option<String>,
     pub embedded_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
+    pub mir_body_proof: Option<RustMirBodyProof>,
+    pub monomorphization_handoff: Option<RustMonomorphizationHandoffRecord>,
     pub blocker_import_status: Option<String>,
     pub blocker_probe_command: Option<String>,
     pub shared_blocker_component: Option<String>,
@@ -1171,7 +1345,7 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         };
     }
 
-    if let Some(missing) = first_missing_compiler_stage(request) {
+    if let Some(missing) = first_missing_compiler_stage_after_mir(request) {
         return RustCompilerPipelineRecord {
             unit_id: request.unit_id.clone(),
             package: request.package.clone(),
@@ -1245,23 +1419,13 @@ pub fn handoff_rust_mir_for_compile_unit(
         .as_ref()
         .and_then(|resolved| resolved.shared_root.as_ref());
     let embedded_execution = embedded_mir_payload_execution.cloned();
-    let embedded_execution_executed = embedded_execution.as_ref().is_some_and(|execution| {
-        execution.execution_source == "embedded_registry"
-            && execution.embedded
-            && !execution.external
-            && !execution.opened_external_file
-            && execution.hash_verified
-            && execution.size_verified
-            && execution.module_instantiated
-            && execution.abi_v1_exports_verified
-            && execution.execute_called
-    });
-    let embedded_payload_mir_emitted = embedded_execution.as_ref().is_some_and(|execution| {
-        execution.execution_state == "embedded_payload_mir_body_identity_emitted"
-            || execution.execution_state == "embedded_payload_mir_body_hash_emitted"
-            || execution.execution_state == "mir_body_identity_emitted"
-            || execution.execution_state == "mir_body_hash_emitted"
-    });
+    let embedded_execution_executed = embedded_execution
+        .as_ref()
+        .is_some_and(RustEmbeddedMirPayloadExecution::embedded_execution_verified);
+    let mir_body_proof = embedded_execution
+        .as_ref()
+        .and_then(RustEmbeddedMirPayloadExecution::mir_body_proof);
+    let embedded_payload_mir_emitted = mir_body_proof.is_some();
     let available = embedded_payload_mir_emitted
         || (payload_adapter.adapter_available
             && component.is_imported()
@@ -1408,6 +1572,18 @@ pub fn handoff_rust_mir_for_compile_unit(
     let payload_next_artifact_command_evidence = payload_carrier
         .as_ref()
         .and_then(|carrier| carrier.next_artifact_command_evidence.clone());
+    let monomorphization_handoff =
+        mir_body_proof
+            .as_ref()
+            .map(|proof| RustMonomorphizationHandoffRecord {
+                mir_body_identity: proof.mir_body_identity.clone(),
+                mono_item_collection_status: "blocked".to_owned(),
+                required_upstream_component: "rustc_monomorphize".to_owned(),
+                blocker_kind: "rustc_monomorphize_not_embedded".to_owned(),
+                blocker_component: "rustc_monomorphize".to_owned(),
+                blocker_reason: "real embedded MIR body identity is available, but mono item collection has not been embedded/executed in rouwdi.wasm".to_owned(),
+                proof_path: "proofs/mir-body.json".to_owned(),
+            });
     let blocker_component_name = embedded_execution
         .as_ref()
         .filter(|_| embedded_execution_executed && !available)
@@ -1675,6 +1851,8 @@ pub fn handoff_rust_mir_for_compile_unit(
         payload_next_artifact_command_exit_code,
         payload_next_artifact_command_evidence,
         embedded_payload_execution: embedded_execution,
+        mir_body_proof,
+        monomorphization_handoff,
         blocker_import_status,
         blocker_probe_command,
         shared_blocker_component: shared_root.map(|root| root.id.clone()),
@@ -3885,9 +4063,33 @@ fn builtin_names() -> BTreeSet<&'static str> {
     .collect()
 }
 
-fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingRustCompilerStage> {
+fn json_value_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn json_value_bool(value: &serde_json::Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(serde_json::Value::as_bool)
+}
+
+fn json_value_bool_default_false(value: &serde_json::Value, key: &str) -> bool {
+    json_value_bool(value, key).unwrap_or(false)
+}
+
+fn first_missing_compiler_stage_after_mir(
+    request: &RustCompileRequest,
+) -> Option<MissingRustCompilerStage> {
+    first_missing_compiler_stage_from(request, RustCompilerStage::Monomorphization)
+}
+
+fn first_missing_compiler_stage_from(
+    request: &RustCompileRequest,
+    first_stage: RustCompilerStage,
+) -> Option<MissingRustCompilerStage> {
     let inventory = rustc_component_inventory();
     for (stage, component_name) in compiler_stage_components() {
+        if compiler_stage_order(stage) < compiler_stage_order(first_stage) {
+            continue;
+        }
         let component = inventory
             .iter()
             .find(|component| component.name == component_name)
@@ -3910,6 +4112,21 @@ fn first_missing_compiler_stage(request: &RustCompileRequest) -> Option<MissingR
         }
     }
     None
+}
+
+fn compiler_stage_order(stage: RustCompilerStage) -> u8 {
+    match stage {
+        RustCompilerStage::Parse => 0,
+        RustCompilerStage::MacroExpansion => 1,
+        RustCompilerStage::NameResolution => 2,
+        RustCompilerStage::TypeChecking => 3,
+        RustCompilerStage::BorrowChecking => 4,
+        RustCompilerStage::Mir => 5,
+        RustCompilerStage::Monomorphization => 6,
+        RustCompilerStage::Codegen => 7,
+        RustCompilerStage::Linking => 8,
+        RustCompilerStage::ArtifactEmission => 9,
+    }
 }
 
 fn compiler_stage_components() -> [(RustCompilerStage, &'static str); 4] {
@@ -4090,13 +4307,10 @@ mod tests {
                 .artifact_format,
             "rmeta"
         );
-        assert_eq!(
-            payload_carrier.load_blocker_kind.as_deref(),
-            Some("missing_core_lang_item_copy")
-        );
+        assert_eq!(payload_carrier.load_blocker_kind.as_deref(), Some("none"));
         assert_eq!(
             payload_carrier.milestone_state.as_deref(),
-            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
+            Some("bridge_wasm_mir_body_identity_emitted")
         );
         let target_pack = handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -4156,19 +4370,17 @@ mod tests {
         );
         assert_eq!(
             handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("missing_core_lang_item_copy")
+            Some("none")
         );
         assert_eq!(
             handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
+            Some("bridge_wasm_mir_body_identity_emitted")
         );
         let bridge_attempt = handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
-        assert_eq!(bridge_attempt.blocker_kind, "missing_core_lang_item_copy");
+        assert_eq!(bridge_attempt.blocker_kind, "none");
         assert_eq!(bridge_attempt.command_exit_code, Some(0));
-        assert!(bridge_attempt
-            .exact_blocker
-            .contains("missing_core_lang_item_copy"));
+        assert!(bridge_attempt.exact_blocker.contains("none"));
         assert!(bridge_attempt.output_artifact_identity.is_some());
         assert_eq!(
             handoff.payload_loader_exported_artifact_class,
@@ -4193,7 +4405,7 @@ mod tests {
         assert_eq!(handoff.payload_loader_loadable_by_rouwdi_wasm, Some(true));
         assert_eq!(
             handoff.payload_next_required_artifact_format.as_deref(),
-            Some("payload_owned_core_extern_prelude_lang_items")
+            Some("monomorphization_handoff")
         );
         assert_eq!(payload_carrier.next_artifact_command_exit_code, Some(0));
         assert_eq!(handoff.payload_adapter_probe_kind, "bootstrap_xpy_stage1");
@@ -4212,7 +4424,7 @@ mod tests {
         assert_eq!(handoff.payload_adapter_normal_workspace_probe_exit_code, 1);
         assert_eq!(
             handoff.payload_adapter_blocker_kind.as_deref(),
-            Some("missing_core_lang_item_copy")
+            Some("none")
         );
         assert_eq!(
             handoff.blocker_import_status.as_deref(),

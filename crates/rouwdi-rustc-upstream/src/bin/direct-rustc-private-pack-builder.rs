@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const BRIDGE_BINARY_TARGET: &str = "rouwdi_mir_adapter_probe";
-const BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION: &str =
-    "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy";
+const BRIDGE_HIR_LOWERING_ATTEMPTED_CLASSIFICATION: &str = "bridge_wasm_mir_body_identity_emitted";
 const BRIDGE_REQUIRED_EXPORTS: &[&str] = &[
     "memory",
     "rouwdi_compiler_payload_abi_v1_version",
@@ -287,6 +286,7 @@ fn run_crate_attempt(
     let cfg_release = env_value(&command_model.cfg_release_env);
     let cfg_release_channel = env_value(&command_model.cfg_release_channel_env);
     let cfg_release_num = env_value(&command_model.cfg_release_num_env);
+    let cfg_version = env_value(&command_model.cfg_version_env);
     let cfg_compiler_host_triple = env_value(&command_model.cfg_compiler_host_triple_env);
     let rustc_install_bindir = env_value(&command_model.rustc_install_bindir_env);
     let rustc_stage = env_value(&command_model.rustc_stage_env);
@@ -321,6 +321,7 @@ fn run_crate_attempt(
         .env("CFG_RELEASE", cfg_release)
         .env("CFG_RELEASE_CHANNEL", cfg_release_channel)
         .env("CFG_RELEASE_NUM", cfg_release_num)
+        .env("CFG_VERSION", cfg_version)
         .env("CFG_COMPILER_HOST_TRIPLE", cfg_compiler_host_triple)
         .env("RUSTC_INSTALL_BINDIR", rustc_install_bindir)
         .env("RUSTC_STAGE", rustc_stage)
@@ -529,11 +530,12 @@ fn run_bridge_retry(
     let cfg_release = env_value(&command_model.cfg_release_env);
     let cfg_release_channel = env_value(&command_model.cfg_release_channel_env);
     let cfg_release_num = env_value(&command_model.cfg_release_num_env);
+    let cfg_version = env_value(&command_model.cfg_version_env);
     let cfg_compiler_host_triple = env_value(&command_model.cfg_compiler_host_triple_env);
     let rustc_install_bindir = env_value(&command_model.rustc_install_bindir_env);
     let rustc_stage = env_value(&command_model.rustc_stage_env);
     let command_text = format!(
-        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --bin {} --target {} --release --message-format short",
+        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' --bin {} --target {} --release --message-format short",
         command_model.host_rustc_path,
         command_model.rustc_bootstrap,
         command_model.cargo_target_dir,
@@ -549,6 +551,7 @@ fn run_bridge_retry(
         command_model.cfg_release_env,
         command_model.cfg_release_channel_env,
         command_model.cfg_release_num_env,
+        command_model.cfg_version_env,
         command_model.cfg_compiler_host_triple_env,
         command_model.rustc_install_bindir_env,
         command_model.rustc_stage_env,
@@ -586,6 +589,7 @@ fn run_bridge_retry(
         .env("CFG_RELEASE", cfg_release)
         .env("CFG_RELEASE_CHANNEL", cfg_release_channel)
         .env("CFG_RELEASE_NUM", cfg_release_num)
+        .env("CFG_VERSION", cfg_version)
         .env("CFG_COMPILER_HOST_TRIPLE", cfg_compiler_host_triple)
         .env("RUSTC_INSTALL_BINDIR", rustc_install_bindir)
         .env("RUSTC_STAGE", rustc_stage)
@@ -866,7 +870,7 @@ fn render_cargo_command(
     target_triple: &str,
 ) -> String {
     format!(
-        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' -p {} --target {} --release --message-format short",
+        "$env:RUSTC='{}'; $env:RUSTC_BOOTSTRAP='{}'; $env:CARGO_TARGET_DIR='{}'; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; $env:{}; Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue; '{}' build --manifest-path '{}' -p {} --target {} --release --message-format short",
         command_model.host_rustc_path,
         command_model.rustc_bootstrap,
         command_model.cargo_target_dir,
@@ -882,6 +886,7 @@ fn render_cargo_command(
         command_model.cfg_release_env,
         command_model.cfg_release_channel_env,
         command_model.cfg_release_num_env,
+        command_model.cfg_version_env,
         command_model.cfg_compiler_host_triple_env,
         command_model.rustc_install_bindir_env,
         command_model.rustc_stage_env,

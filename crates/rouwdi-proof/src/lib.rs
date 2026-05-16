@@ -5,9 +5,9 @@ use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::{ArtifactKind, NormalizedContract};
 use rouwdi_rustc::{
     RustBorrowCheckStageRecord, RustCompilerPipelineRecord, RustCompilerStage,
-    RustExpansionStageRecord, RustMirHandoffBlockerCategory, RustMirHandoffRecord,
-    RustMirHandoffStatus, RustNameResolutionStageRecord, RustParseStageRecord, RustSourceLexProof,
-    RustTypeCheckStageRecord,
+    RustExpansionStageRecord, RustMirBodyProof, RustMirHandoffBlockerCategory,
+    RustMirHandoffRecord, RustMirHandoffStatus, RustNameResolutionStageRecord,
+    RustParseStageRecord, RustSourceLexProof, RustTypeCheckStageRecord,
 };
 use rouwdi_source::{SourceCacheProof, SourceSnapshot};
 use rouwdi_targets::{CompilerEngineIdentity, TargetPack};
@@ -88,6 +88,9 @@ pub struct ArtifactPipelineCompileUnit {
     pub frontend_borrow_check_status: Option<String>,
     pub mir_handoff_status: Option<RustMirHandoffStatus>,
     pub mir_handoff_blocker_component: Option<String>,
+    pub mir_body_identity: Option<String>,
+    pub mir_body_hash: Option<String>,
+    pub monomorphization_handoff_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +107,7 @@ pub struct ArtifactPipelineStageRecord {
 pub enum ArtifactPipelineStageStatus {
     Blocked,
     WaitingOnUpstreamMir,
+    Completed,
     Planned,
 }
 
@@ -341,6 +345,20 @@ impl ProofBundle {
                 &path,
                 &serde_json::to_vec_pretty(&embedded_mir_payload_executions)?,
             )?;
+            written.push(path);
+        }
+        let mir_body_proofs = self
+            .rust_source_mir_handoff
+            .iter()
+            .filter_map(|handoff| handoff.mir_body_proof.as_ref())
+            .collect::<Vec<&RustMirBodyProof>>();
+        if !mir_body_proofs.is_empty() {
+            let path = if run_root.is_empty() {
+                "proofs/mir-body.json".to_owned()
+            } else {
+                format!("{run_root}/proofs/mir-body.json")
+            };
+            storage.write(&path, &serde_json::to_vec_pretty(&mir_body_proofs)?)?;
             written.push(path);
         }
         for proof in &self.interface_proofs {

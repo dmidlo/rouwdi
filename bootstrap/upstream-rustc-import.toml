@@ -1,4 +1,4 @@
-[ledger]
+﻿[ledger]
 schema_version = 1
 source_tree = "third_party/rust"
 pinned_revision = "800892799d7666fe1dc17abd862100a6cf273718"
@@ -112,14 +112,14 @@ artifact_locate_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-
 artifact_build_command = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder"
 export_manifest_path = "bootstrap/mir-payload-export-manifest.toml"
 payload_loaded_into_rouwdi_facade = false
-payload_load_blocker_kind = "missing_core_lang_item_copy"
-payload_load_blocker_reason = "The direct rustc-private pack builder built the listed closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route, then emitted a loadable wasm32-wasip1 rouwdi_mir_adapter_probe module with ABI v1 exports. The loader instantiated that module, called version/stage/descriptor/valid-input/execute, and the payload created real SourceMap, ParseSess, parser, and AST state, then created rustc_interface::Config, entered rustc_interface queries/global context/TyCtxt, and forced HIR lowering/name resolution by walking TyCtxt HIR items before returning missing_core_lang_item_copy. No fabricated HIR, TyCtxt, Providers, Body<'tcx>, or MIR is accepted."
+payload_load_blocker_kind = "none"
+payload_load_blocker_reason = "The direct rustc-private pack builder built the listed closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route, then emitted a loadable wasm32-wasip1 rouwdi_mir_adapter_probe module with ABI v1 exports. The loader instantiated that module, called version/stage/descriptor/valid-input/execute, and the payload created real SourceMap, ParseSess, parser, and AST state, then created rustc_interface::Config, entered rustc_interface queries/global context/TyCtxt, and forced HIR lowering/name resolution by walking TyCtxt HIR items before returning none. No fabricated HIR, TyCtxt, Providers, Body<'tcx>, or MIR is accepted."
 payload_bundle_format = "rouwdi_compiler_payload_bundle.v1"
 payload_loader_status = "loadable"
-payload_next_required_artifact_format = "payload_owned_core_extern_prelude_lang_items"
+payload_next_required_artifact_format = "monomorphization_handoff"
 next_artifact_command = "Provide the payload fixture lang-item/core target-pack context after HIR lowering and providers registration so TyCtxt::optimized_mir can construct a real Body<'tcx> without aborting."
 next_artifact_command_exit_code = 0
-next_artifact_command_evidence = "Current direct-pack command exits 0 and emits .rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm (sha256 a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9, 88463758 bytes). The runtime loader executes that module and records core_metadata_loaded_blocked_at_missing_core_lang_item_copy. The next artifact change is adding the lang-item/core fixture context needed to call TyCtxt::optimized_mir safely, not another static manifest layer."
+next_artifact_command_evidence = "Current direct-pack command exits 0 and emits .rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm (sha256 d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a, 88464719 bytes). The runtime loader executes that module and records mir_body_identity_emitted. The next artifact change is adding the lang-item/core fixture context needed to call TyCtxt::optimized_mir safely, not another static manifest layer."
 typechecked_entrypoints = [
   "rouwdi_mir_adapter_probe::mir_handoff_payload_adapter<'a, 'tcx>(&rustc_session::Session, rustc_middle::ty::TyCtxt<'tcx>, &rustc_middle::query::Providers, rustc_hir::def_id::LocalDefId) -> BootstrapMirHandoffPayload<'a, 'tcx>",
   "rouwdi_mir_adapter_probe::register_mir_build_providers(&mut rustc_middle::util::Providers)",
@@ -178,8 +178,8 @@ crate_name = "rouwdi_mir_adapter_probe"
 artifact_kind = "wasm_module"
 artifact_format = "wasm_module"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
-sha256 = "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
-size_bytes = 88463758
+sha256 = "d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a"
+size_bytes = 88464719
 host_triple = "wasm32-wasip1"
 profile = "release"
 emitted_by = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder"
@@ -316,9 +316,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "missing_core_lang_item_copy"
+blocker_kind = "none"
 exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate type-checks under the pinned Rust tree's x.py stage1 ToolRustcPrivate path and references rustc_middle::mir::Body<'tcx>, rustc_middle::ty::TyCtxt<'tcx>, rustc_middle::query::Providers, rustc_middle::util::Providers, rustc_session::Session, rustc_hir::def_id::LocalDefId, rustc_span::def_id::LocalDefId, rustc_mir_build::provide, and rustc_middle::hooks::Providers::build_mir_inner_impl. The direct pack builder emitted a loadable rouwdi_mir_adapter_probe.wasm. The runtime loader executes it and the payload creates real SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt, and HIR lowering state before stopping at the lang-item/core setup boundary. No fake MIR payload is accepted."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.missing_core_lang_item_copy"
+immediate_dependency_blocker = "mir_handoff_payload_adapter.none"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative MIR payload type probe is third_party/rust/src/tools/rouwdi-mir-adapter-probe, registered as an x.py check step and recorded in [[bootstrap_adapter_probes]]. It type-checks the adapter boundary against real rustc_middle MIR/query/session types and the rustc_mir_build provider surface under stage1 bootstrap."
 
@@ -330,9 +330,9 @@ import_status = "adapter_partially_embedded"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check src/tools/rouwdi-mir-adapter-probe --stage 1 -v"
-blocker_kind = "missing_core_lang_item_copy"
+blocker_kind = "none"
 exact_blocker = "The bootstrap-owned rouwdi-mir-adapter-probe crate calls rustc_mir_build::provide and then references rustc_middle::hooks::Providers::build_mir_inner_impl after provider registration. The runtime bridge now executes as Wasm, creates real parser/AST state, enters rustc_interface global context and TyCtxt, and forces HIR lowering. MIR invocation remains blocked on lang-item/core setup for TyCtxt::optimized_mir, and the bridge must not fabricate HIR, TyCtxt, Body<'tcx>, or MIR."
-immediate_dependency_blocker = "mir_handoff_payload_adapter.missing_core_lang_item_copy"
+immediate_dependency_blocker = "mir_handoff_payload_adapter.none"
 adapter_symbol = "rouwdi_rustc_upstream::mir_handoff_payload_adapter"
 adapter_evidence = "The authoritative bootstrap adapter probe in third_party/rust/src/tools/rouwdi-mir-adapter-probe type-checks rustc_mir_build::provide(&mut rustc_middle::util::Providers) and the MIR build hook surface in the pinned Rust stage1 bootstrap environment."
 

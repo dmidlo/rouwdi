@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, TypedResumableCall};
 
 #[cfg(feature = "embedded-mir-payload")]
@@ -108,6 +109,8 @@ pub struct EmbeddedCompilerPayloadLoadReport {
     pub result_kind: String,
     pub stdout_bytes: usize,
     pub stderr_bytes: usize,
+    pub stdout_text: String,
+    pub stderr_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,6 +128,25 @@ struct PayloadWasiState {
     stderr: Vec<u8>,
     proc_exit_code: Option<i32>,
     random_counter: u8,
+    next_fd: i32,
+    fds: BTreeMap<i32, VirtualFd>,
+}
+
+#[derive(Debug)]
+enum VirtualFd {
+    File { bytes: &'static [u8], position: u64 },
+    Directory { entries: Vec<VirtualDirEntry> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VirtualDirEntry {
+    name: String,
+    filetype: u8,
+}
+
+struct VirtualFile {
+    path: &'static str,
+    bytes: &'static [u8],
 }
 
 const WASI: &str = "wasi_snapshot_preview1";
@@ -138,7 +160,7 @@ const MIR_RESULT_AREA_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_result_a
 const MIR_EXECUTE_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_execute";
 const MIR_LAST_ERROR_PTR_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_ptr";
 const MIR_LAST_ERROR_LEN_SYMBOL: &str = "rouwdi_mir_handoff_payload_v1_last_error_len";
-const PAYLOAD_FUEL_CHUNK: u64 = 10_000_000;
+const PAYLOAD_FUEL_CHUNK: u64 = 1_000_000_000;
 const PAYLOAD_MAX_FUEL_RESUMES: usize = 50_000;
 const WASI_ERRNO_SUCCESS: i32 = 0;
 const WASI_ERRNO_BADF: i32 = 8;
@@ -147,12 +169,83 @@ const WASI_ERRNO_NOENT: i32 = 44;
 const WASI_ERRNO_NOSYS: i32 = 52;
 const WASI_FILETYPE_CHARACTER_DEVICE: u8 = 2;
 const WASI_FILETYPE_DIRECTORY: u8 = 3;
+const WASI_FILETYPE_REGULAR_FILE: u8 = 4;
 const WASI_PREOPEN_FD: i32 = 3;
 const WASI_PREOPEN_PATH: &str = "/workspace";
 const VIRTUAL_SYSROOT: &str = "third_party/rust/build/x86_64-pc-windows-msvc/stage1";
 const VIRTUAL_RUSTLIB: &str =
     "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib";
 const PAYLOAD_ARG0: &str = "rouwdi_mir_adapter_probe.wasm";
+
+macro_rules! virtual_file {
+    ($path:literal) => {
+        VirtualFile {
+            path: $path,
+            bytes: include_bytes!(concat!("../../../", $path)),
+        }
+    };
+}
+
+static VIRTUAL_FILES: &[VirtualFile] = &[
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libaddr2line-e53ee625818e66de.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libaddr2line-e53ee625818e66de.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libadler2-6c6ce22a3d784b53.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libadler2-6c6ce22a3d784b53.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/liballoc-aa5de9cb44693937.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/liballoc-aa5de9cb44693937.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcfg_if-f330595bed847612.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcfg_if-f330595bed847612.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcompiler_builtins-242fe6d76c147fd1.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcompiler_builtins-242fe6d76c147fd1.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcore-fc7b12ec85c54ac0.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libcore-fc7b12ec85c54ac0.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libgetopts-4973914a20a2bcab.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libgetopts-4973914a20a2bcab.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libgimli-99ea63bed8e623b8.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libgimli-99ea63bed8e623b8.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libhashbrown-82db15a0bc02cc07.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libhashbrown-82db15a0bc02cc07.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/liblibc-d076481cb93820f2.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/liblibc-d076481cb93820f2.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libmemchr-1c439cd9baea8fa9.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libmemchr-1c439cd9baea8fa9.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libminiz_oxide-b1bb72b0c937980d.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libminiz_oxide-b1bb72b0c937980d.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libobject-689541b9682e059d.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libobject-689541b9682e059d.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libpanic_abort-771e1103f866bdb4.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libpanic_abort-771e1103f866bdb4.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libpanic_unwind-b86d45a3567913a4.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libpanic_unwind-b86d45a3567913a4.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libproc_macro-0f637836edc73bd6.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libproc_macro-0f637836edc73bd6.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_demangle-3e5dfd60db0f61c6.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_demangle-3e5dfd60db0f61c6.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_literal_escaper-c68215798b1e662f.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_literal_escaper-c68215798b1e662f.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_alloc-4243392e063083ab.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_alloc-4243392e063083ab.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_core-40703e9aafc1d450.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_core-40703e9aafc1d450.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_std-b88f9aa124f30ca4.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/librustc_std_workspace_std-b88f9aa124f30ca4.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libstd_detect-992133543cee23b6.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libstd_detect-992133543cee23b6.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libstd-b594a2ae141e7c9c.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libstd-b594a2ae141e7c9c.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libsysroot-aa7459ddf5b8c47e.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libsysroot-aa7459ddf5b8c47e.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libtest-3dd6218e18a7bd6e.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libtest-3dd6218e18a7bd6e.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libunwind-801234150e5ffd1c.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libunwind-801234150e5ffd1c.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libwasip1-bdf89526125af68e.rlib"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/libwasip1-bdf89526125af68e.rmeta"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/self-contained/crt1-command.o"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/self-contained/crt1-reactor.o"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/self-contained/libc.a"),
+    virtual_file!("third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/self-contained/libunwind.a"),
+];
 
 const REQUIRED_ABI_EXPORTS: &[&str] = &[
     "memory",
@@ -365,7 +458,7 @@ fn execute_embedded_payload(
 
     let mut config = Config::default();
     config.consume_fuel(true);
-    config.set_max_recursion_depth(64);
+    config.set_max_recursion_depth(4096);
     config.ignore_custom_sections(true);
     let engine = Engine::new(&config);
     let module = Module::new(&engine, payload.bytes)
@@ -396,6 +489,8 @@ fn execute_embedded_payload(
             stderr: Vec::new(),
             proc_exit_code: None,
             random_counter: 0,
+            next_fd: WASI_PREOPEN_FD + 1,
+            fds: BTreeMap::new(),
         },
     );
     store
@@ -486,6 +581,8 @@ fn execute_embedded_payload(
             error_len,
             "execute error",
         )?)
+    } else if output_json.is_some() {
+        None
     } else {
         let last_error_ptr = call_u32_export(&instance, &mut store, MIR_LAST_ERROR_PTR_SYMBOL)?;
         let last_error_len = call_u32_export(&instance, &mut store, MIR_LAST_ERROR_LEN_SYMBOL)?;
@@ -509,9 +606,9 @@ fn execute_embedded_payload(
             )
         })
     });
-    let evidence_json = error_json
+    let evidence_json = output_json
         .as_deref()
-        .or(output_json.as_deref())
+        .or(error_json.as_deref())
         .unwrap_or("");
     let evidence_value = serde_json::from_str::<serde_json::Value>(evidence_json).ok();
     let descriptor_value = serde_json::from_str::<serde_json::Value>(&descriptor_json).ok();
@@ -531,6 +628,8 @@ fn execute_embedded_payload(
     .to_owned();
     let stdout_bytes = store.data().stdout.len();
     let stderr_bytes = store.data().stderr.len();
+    let stdout_text = String::from_utf8_lossy(&store.data().stdout).into_owned();
+    let stderr_text = String::from_utf8_lossy(&store.data().stderr).into_owned();
 
     Ok(EmbeddedCompilerPayloadLoadReport {
         name: payload.name.to_owned(),
@@ -592,6 +691,8 @@ fn execute_embedded_payload(
         result_kind,
         stdout_bytes,
         stderr_bytes,
+        stdout_text,
+        stderr_text,
     })
 }
 
@@ -793,21 +894,69 @@ fn wasi_fd_write(
 fn wasi_fd_read(
     mut caller: Caller<'_, PayloadWasiState>,
     fd: i32,
-    _iovs_ptr: i32,
-    _iovs_len: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
     nread_ptr: i32,
 ) -> i32 {
-    if !matches!(fd, 0 | WASI_PREOPEN_FD) {
-        return WASI_ERRNO_BADF;
+    if iovs_ptr < 0 || iovs_len < 0 {
+        return WASI_ERRNO_INVAL;
     }
-    write_u32(&mut caller, nread_ptr, 0)
+    if fd == 0 || fd == WASI_PREOPEN_FD {
+        return write_u32(&mut caller, nread_ptr, 0);
+    }
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut iovs = Vec::new();
+    for index in 0..iovs_len {
+        let base = iovs_ptr as usize + (index as usize * 8);
+        let Ok(ptr) = read_memory_u32(&memory, &caller, base) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let Ok(len) = read_memory_u32(&memory, &caller, base + 4) else {
+            return WASI_ERRNO_INVAL;
+        };
+        iovs.push((ptr, len));
+    }
+
+    let mut writes = Vec::<(u32, Vec<u8>)>::new();
+    let mut total_read = 0_u32;
+    {
+        let Some(VirtualFd::File {
+            bytes, position, ..
+        }) = caller.data_mut().fds.get_mut(&fd)
+        else {
+            return WASI_ERRNO_BADF;
+        };
+        for (ptr, len) in iovs {
+            let start = (*position as usize).min(bytes.len());
+            let requested_end = start.saturating_add(len as usize).min(bytes.len());
+            let chunk = bytes[start..requested_end].to_vec();
+            *position = requested_end as u64;
+            total_read = total_read.saturating_add(chunk.len() as u32);
+            writes.push((ptr, chunk));
+            if total_read == 0 || requested_end == bytes.len() {
+                break;
+            }
+        }
+    }
+
+    for (ptr, bytes) in writes {
+        if memory.write(&mut caller, ptr as usize, &bytes).is_err() {
+            return WASI_ERRNO_INVAL;
+        }
+    }
+    write_u32(&mut caller, nread_ptr, total_read)
 }
 
-fn wasi_fd_close(_caller: Caller<'_, PayloadWasiState>, fd: i32) -> i32 {
-    if fd >= WASI_PREOPEN_FD {
+fn wasi_fd_close(mut caller: Caller<'_, PayloadWasiState>, fd: i32) -> i32 {
+    if fd == WASI_PREOPEN_FD {
+        return WASI_ERRNO_SUCCESS;
+    }
+    if fd >= WASI_PREOPEN_FD && caller.data_mut().fds.remove(&fd).is_some() {
         WASI_ERRNO_SUCCESS
     } else {
-        WASI_ERRNO_BADF
+        return WASI_ERRNO_BADF;
     }
 }
 
@@ -815,7 +964,11 @@ fn wasi_fd_fdstat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_pt
     let filetype = match fd {
         0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
         WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
-        _ => return WASI_ERRNO_BADF,
+        _ => match caller.data().fds.get(&fd) {
+            Some(VirtualFd::File { .. }) => WASI_FILETYPE_REGULAR_FILE,
+            Some(VirtualFd::Directory { .. }) => WASI_FILETYPE_DIRECTORY,
+            None => return WASI_ERRNO_BADF,
+        },
     };
     let mut stat = [0_u8; 24];
     stat[0] = filetype;
@@ -831,12 +984,16 @@ fn wasi_fd_fdstat_set_flags(_caller: Caller<'_, PayloadWasiState>, fd: i32, _fla
 }
 
 fn wasi_fd_filestat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_ptr: i32) -> i32 {
-    let filetype = match fd {
-        0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
-        WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
-        _ => return WASI_ERRNO_BADF,
+    let (filetype, size) = match fd {
+        0..=2 => (WASI_FILETYPE_CHARACTER_DEVICE, 0),
+        WASI_PREOPEN_FD => (WASI_FILETYPE_DIRECTORY, 0),
+        _ => match caller.data().fds.get(&fd) {
+            Some(VirtualFd::File { bytes, .. }) => (WASI_FILETYPE_REGULAR_FILE, bytes.len() as u64),
+            Some(VirtualFd::Directory { .. }) => (WASI_FILETYPE_DIRECTORY, 0),
+            None => return WASI_ERRNO_BADF,
+        },
     };
-    write_filestat(&mut caller, stat_ptr, filetype, 0)
+    write_filestat(&mut caller, stat_ptr, filetype, size)
 }
 
 fn wasi_fd_prestat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, prestat_ptr: i32) -> i32 {
@@ -867,28 +1024,83 @@ fn wasi_fd_prestat_dir_name(
 fn wasi_fd_readdir(
     mut caller: Caller<'_, PayloadWasiState>,
     fd: i32,
-    _buf: i32,
-    _buf_len: i32,
-    _cookie: i64,
+    buf: i32,
+    buf_len: i32,
+    cookie: i64,
     bufused_ptr: i32,
 ) -> i32 {
-    if fd != WASI_PREOPEN_FD {
-        return WASI_ERRNO_BADF;
+    if buf < 0 || buf_len < 0 || cookie < 0 {
+        return WASI_ERRNO_INVAL;
     }
-    write_u32(&mut caller, bufused_ptr, 0)
+    let entries = if fd == WASI_PREOPEN_FD {
+        virtual_dir_entries("")
+    } else {
+        let Some(VirtualFd::Directory { entries, .. }) = caller.data().fds.get(&fd) else {
+            return WASI_ERRNO_BADF;
+        };
+        entries.clone()
+    };
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut cursor = buf as usize;
+    let limit = (buf as usize).saturating_add(buf_len as usize);
+    let mut used = 0_u32;
+    for (index, entry) in entries.into_iter().enumerate().skip(cookie as usize) {
+        let name_bytes = entry.name.as_bytes();
+        let record_len = 24_usize.saturating_add(name_bytes.len());
+        if cursor.saturating_add(record_len) > limit {
+            break;
+        }
+        let mut dirent = [0_u8; 24];
+        dirent[0..8].copy_from_slice(&((index + 1) as u64).to_le_bytes());
+        dirent[8..16].copy_from_slice(&((index + 1) as u64).to_le_bytes());
+        dirent[16..20].copy_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+        dirent[20] = entry.filetype;
+        if memory.write(&mut caller, cursor, &dirent).is_err()
+            || memory
+                .write(&mut caller, cursor + dirent.len(), name_bytes)
+                .is_err()
+        {
+            return WASI_ERRNO_INVAL;
+        }
+        cursor += record_len;
+        used = used.saturating_add(record_len as u32);
+    }
+    write_u32(&mut caller, bufused_ptr, used)
 }
 
 fn wasi_fd_seek(
     mut caller: Caller<'_, PayloadWasiState>,
     fd: i32,
-    _offset: i64,
-    _whence: i32,
+    offset: i64,
+    whence: i32,
     newoffset_ptr: i32,
 ) -> i32 {
-    if fd != WASI_PREOPEN_FD {
-        return WASI_ERRNO_BADF;
+    if fd == WASI_PREOPEN_FD {
+        return write_u64(&mut caller, newoffset_ptr, 0);
     }
-    write_u64(&mut caller, newoffset_ptr, 0)
+    let new_position = {
+        let Some(VirtualFd::File {
+            bytes, position, ..
+        }) = caller.data_mut().fds.get_mut(&fd)
+        else {
+            return WASI_ERRNO_BADF;
+        };
+        let base = match whence {
+            0 => 0_i128,
+            1 => *position as i128,
+            2 => bytes.len() as i128,
+            _ => return WASI_ERRNO_INVAL,
+        };
+        let next = base + offset as i128;
+        if next < 0 {
+            return WASI_ERRNO_INVAL;
+        }
+        *position = next as u64;
+        *position
+    };
+    write_u64(&mut caller, newoffset_ptr, new_position)
 }
 
 fn wasi_path_create_directory(
@@ -914,8 +1126,16 @@ fn wasi_path_filestat_get(
     let Some(path) = read_path(&caller, path_ptr, path_len) else {
         return WASI_ERRNO_INVAL;
     };
-    if virtual_dir_exists(&path) {
+    let normalized = normalize_virtual_path(&path);
+    if virtual_dir_exists(&normalized) {
         write_filestat(&mut caller, stat_ptr, WASI_FILETYPE_DIRECTORY, 0)
+    } else if let Some(file) = virtual_file(&normalized) {
+        write_filestat(
+            &mut caller,
+            stat_ptr,
+            WASI_FILETYPE_REGULAR_FILE,
+            file.bytes.len() as u64,
+        )
     } else {
         WASI_ERRNO_NOENT
     }
@@ -936,16 +1156,45 @@ fn wasi_path_link(
 
 fn wasi_path_open(
     mut caller: Caller<'_, PayloadWasiState>,
-    _fd: i32,
+    fd: i32,
     _dirflags: i32,
-    _path_ptr: i32,
-    _path_len: i32,
+    path_ptr: i32,
+    path_len: i32,
     _oflags: i32,
     _rights_base: i64,
     _rights_inheriting: i64,
     _fdflags: i32,
     opened_fd_ptr: i32,
 ) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let Some(path) = read_path(&caller, path_ptr, path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let normalized = normalize_virtual_path(&path);
+    let next_fd = caller.data().next_fd;
+    if let Some(file) = virtual_file(&normalized) {
+        caller.data_mut().next_fd = next_fd.saturating_add(1);
+        caller.data_mut().fds.insert(
+            next_fd,
+            VirtualFd::File {
+                bytes: file.bytes,
+                position: 0,
+            },
+        );
+        return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
+    }
+    if virtual_dir_exists(&normalized) {
+        caller.data_mut().next_fd = next_fd.saturating_add(1);
+        caller.data_mut().fds.insert(
+            next_fd,
+            VirtualFd::Directory {
+                entries: virtual_dir_entries(&normalized),
+            },
+        );
+        return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
+    }
     let _ = write_u32(&mut caller, opened_fd_ptr, 0);
     WASI_ERRNO_NOENT
 }
@@ -1173,7 +1422,7 @@ fn read_path(caller: &Caller<'_, PayloadWasiState>, ptr: i32, len: i32) -> Optio
 }
 
 fn virtual_dir_exists(path: &str) -> bool {
-    let normalized = path.trim_start_matches('/').trim_end_matches('/');
+    let normalized = normalize_virtual_path(path);
     normalized.is_empty()
         || normalized == "third_party"
         || normalized == "third_party/rust"
@@ -1185,6 +1434,79 @@ fn virtual_dir_exists(path: &str) -> bool {
         || normalized
             == "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1"
         || normalized == VIRTUAL_RUSTLIB
+        || normalized
+            == "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib/self-contained"
+        || VIRTUAL_FILES
+            .iter()
+            .any(|file| parent_virtual_path(file.path) == normalized)
+}
+
+fn virtual_file(path: &str) -> Option<&'static VirtualFile> {
+    let normalized = normalize_virtual_path(path);
+    VIRTUAL_FILES
+        .iter()
+        .find(|file| file.path == normalized.as_str())
+}
+
+fn virtual_dir_entries(path: &str) -> Vec<VirtualDirEntry> {
+    let normalized = normalize_virtual_path(path);
+    let mut entries = Vec::new();
+    for dir in virtual_child_dirs(&normalized) {
+        entries.push(VirtualDirEntry {
+            name: (*dir).to_owned(),
+            filetype: WASI_FILETYPE_DIRECTORY,
+        });
+    }
+    for file in VIRTUAL_FILES
+        .iter()
+        .filter(|file| parent_virtual_path(file.path) == normalized)
+    {
+        if let Some(name) = file.path.rsplit('/').next() {
+            entries.push(VirtualDirEntry {
+                name: name.to_owned(),
+                filetype: WASI_FILETYPE_REGULAR_FILE,
+            });
+        }
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.dedup_by(|left, right| left.name == right.name);
+    entries
+}
+
+fn virtual_child_dirs(path: &str) -> &'static [&'static str] {
+    match path {
+        "" => &["third_party"],
+        "third_party" => &["rust"],
+        "third_party/rust" => &["build"],
+        "third_party/rust/build" => &["x86_64-pc-windows-msvc"],
+        "third_party/rust/build/x86_64-pc-windows-msvc" => &["stage1"],
+        VIRTUAL_SYSROOT => &["lib"],
+        "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib" => &["rustlib"],
+        "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib" => &["wasm32-wasip1"],
+        "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1" => {
+            &["lib"]
+        }
+        VIRTUAL_RUSTLIB => &["self-contained"],
+        _ => &[],
+    }
+}
+
+fn normalize_virtual_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .trim_start_matches("./");
+    trimmed
+        .strip_prefix("workspace/")
+        .unwrap_or(trimmed)
+        .to_owned()
+}
+
+fn parent_virtual_path(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(parent, _)| parent.to_owned())
+        .unwrap_or_default()
 }
 
 fn canonical_execution_state(raw_state: &str, blocker_kind: Option<&str>) -> String {

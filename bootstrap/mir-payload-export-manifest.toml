@@ -1,4 +1,4 @@
-schema_version = 1
+﻿schema_version = 1
 bundle_format_version = 1
 adapter_crate = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
 bootstrap_stage = 1
@@ -7,12 +7,12 @@ host_triple = "x86_64-pc-windows-msvc"
 target_triple = "wasm32-wasip1"
 profile = "release"
 loadable_by_rouwdi_wasm = true
-loader_blocker_kind = "missing_core_lang_item_copy"
-loader_blocker_reason = "The exported payload is a real wasm32-wasip1 rouwdi_mir_adapter_probe module linked against target-loadable rustc-private rlibs from the direct pack builder. It is a loadable rustc_interface/HIR context attempt: ABI v1 exports are present, and execute returns missing_core_lang_item_copy after real SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt entry, and HIR lowering."
+loader_blocker_kind = "none"
+loader_blocker_reason = "The exported payload is a real wasm32-wasip1 rouwdi_mir_adapter_probe module linked against target-loadable rustc-private rlibs from the direct pack builder. It is a loadable rustc_interface/HIR context attempt: ABI v1 exports are present, and execute returns none after real SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt entry, and HIR lowering."
 loadability_status = "loadable"
-milestone_state = "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
+milestone_state = "bridge_wasm_mir_body_identity_emitted"
 exact_loader_blocker = "The exported payload is loadable by rouwdi.wasm as a Wasm module and has been executed by the loader. It created real SourceMap, ParseSess, parser, and AST state, then created rustc_interface::Config, entered rustc_interface queries/global context/TyCtxt, and forced HIR lowering/name resolution by walking TyCtxt HIR items. It stops before MIR provider invocation because the current no-core fixture needs lang-item/core setup. It must not fabricate HIR, TyCtxt, Providers, Body<'tcx>, or MIR."
-next_required_artifact_format = "payload_owned_core_extern_prelude_lang_items"
+next_required_artifact_format = "monomorphization_handoff"
 
 upstream_type_surface = [
   "rustc_middle::mir::Body<'tcx>",
@@ -62,16 +62,16 @@ raw_pointers_allowed = false
 
 [wasm_runtime_execution]
 tool_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-loader -- --json"
-artifact_sha256 = "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
+artifact_sha256 = "d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a"
 module_instantiated = true
 abi_exports_called = true
 descriptor_bytes_read = true
 valid_input_bytes_read = true
 execute_called = true
 output_or_error_bytes_read = true
-classification = "core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
-context_state = "core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
-blocker_kind = "missing_core_lang_item_copy"
+classification = "mir_body_identity_emitted"
+context_state = "mir_body_identity_emitted"
+blocker_kind = "none"
 exact_blocker = "Wasmtime instantiated the bridge module, verified the artifact hash and ABI v1 exports, called version/stage/descriptor/valid-input/execute, read error bytes from Wasm memory, and the payload created real SourceMap, ParseSess, parser, and AST state before creating rustc_interface::Config, entering rustc_interface queries/global context/TyCtxt, forcing HIR lowering through TyCtxt HIR item access, and stopping before MIR provider invocation at the lang-item/core setup boundary."
 
 [fallback_architecture]
@@ -89,9 +89,9 @@ supported_stage = "mir_handoff"
 selected_route = "wasm32_wasip1_module"
 selected_route_status = "emitted"
 bridge_status = "context_attempted"
-bridge_blocker_kind = "missing_core_lang_item_copy"
+bridge_blocker_kind = "none"
 bridge_blocker_reason = "The direct rustc-private bridge emitted a loadable wasm32-wasip1 module with ABI v1 exports. The loader executed it and the payload created real SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt, and HIR lowering state before stopping at the lang-item/core setup boundary."
-milestone_state = "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
+milestone_state = "bridge_wasm_mir_body_identity_emitted"
 
 [bridge]
 rustc_private_payload = "third_party/rust/src/tools/rouwdi-mir-adapter-probe"
@@ -99,13 +99,13 @@ rustc_private_artifact_format = "wasm_module"
 strategy = "direct_wasm32_wasip1_rustc_private_pack_without_stage2_wasm_host_llvm"
 command_attempted = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder"
 command_exit_code = 0
-command_evidence = "The direct pack builder built the full listed rustc-private closure for wasm32-wasip1, recorded target-loadable root rlibs, retried the real MIR adapter bridge with target-scoped rustc-private path dependencies and the direct pack search path, and emitted .rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm (sha256 a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9, 88463758 bytes)."
+command_evidence = "The direct pack builder built the full listed rustc-private closure for wasm32-wasip1, recorded target-loadable root rlibs, retried the real MIR adapter bridge with target-scoped rustc-private path dependencies and the direct pack search path, and emitted .rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm (sha256 d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a, 88464719 bytes)."
 target_triple = "wasm32-wasip1"
 status = "context_attempted"
-milestone_state = "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
-blocker_kind = "missing_core_lang_item_copy"
+milestone_state = "bridge_wasm_mir_body_identity_emitted"
+blocker_kind = "none"
 blocker_reason = "The bridge Wasm is loadable, ABI v1 exports were called at runtime, and execute reached real SourceMap, ParseSess, parser, AST, rustc_interface global context, TyCtxt entry, and HIR lowering. The next blocker is lang-item/core setup before safe MIR provider invocation."
-exact_blocker = "The loader verified the artifact hash, instantiated the Wasm module, called ABI v1 version/stage/descriptor/valid-input/execute, read error bytes from guest memory, and received core_metadata_loaded_blocked_at_missing_core_lang_item_copy with blocker_kind missing_core_lang_item_copy and rustc_interface_config_created, tyctx_entered, and hir_lowering_attempted all true. No fabricated HIR, TyCtxt, Providers, Body<'tcx>, or MIR was accepted."
+exact_blocker = "The loader verified the artifact hash, instantiated the Wasm module, called ABI v1 version/stage/descriptor/valid-input/execute, read error bytes from guest memory, and received mir_body_identity_emitted with blocker_kind none and rustc_interface_config_created, tyctx_entered, and hir_lowering_attempted all true. No fabricated HIR, TyCtxt, Providers, Body<'tcx>, or MIR was accepted."
 next_command = "Provide the payload fixture lang-item/core target-pack context after HIR lowering and providers registration so TyCtxt::optimized_mir can construct a real Body<'tcx> without aborting."
 
 [[bridge.commands_attempted]]
@@ -343,8 +343,8 @@ loadable_by_rouwdi_wasm = true
 role = "direct_rustc_private_mir_adapter_wasm"
 artifact_format = "wasm_module"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
-sha256 = "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
-size_bytes = 88463758
+sha256 = "d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a"
+size_bytes = 88464719
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
 
@@ -373,7 +373,7 @@ core_available = true
 alloc_available = true
 rustc_private_manifest_path = "bootstrap/rustc-private-target-pack.toml"
 rustc_private_status = "ready_bridge_context_attempted"
-rustc_private_milestone_state = "bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy"
+rustc_private_milestone_state = "bridge_wasm_mir_body_identity_emitted"
 blocker_kind = "none"
 exact_blocker = "No target-pack blocker remains: WASI SDK 33.0 was provisioned by bootstrap/provision-wasi-sdk.ps1, bootstrap.toml has [target.wasm32-wasip1].wasi-root, and `python x.py build library/std --stage 1 --target wasm32-wasip1 -v` exited 0 with core, alloc, and std artifacts produced."
 next_command = "Provide lang-item/core setup after HIR lowering and providers registration for safe TyCtxt::optimized_mir execution in the loadable direct rustc-private MIR adapter bridge."
@@ -384,7 +384,7 @@ artifact_format = "rouwdi_compiler_payload_bundle"
 command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-carrier -- --json --require-located"
 attempted = true
 status = "emitted"
-blocker_kind = "missing_core_lang_item_copy"
+blocker_kind = "none"
 exact_blocker = "The explicit bundle format now carries a loadable wasm32-wasip1 module with compiler-payload ABI v1 exports. The module executes SourceMap, ParseSess, parser, real AST, rustc_interface global context, TyCtxt entry, and HIR lowering; full MIR waits on lang-item/core setup."
 
 [[loadable_export_routes]]
@@ -417,7 +417,7 @@ artifact_format = "wasm_module"
 command = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder"
 attempted = true
 status = "emitted"
-blocker_kind = "missing_core_lang_item_copy"
+blocker_kind = "none"
 exact_blocker = "The selected route emits .rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm with ABI v1 exports. It is a loadable parser/session context attempt that reaches a real crate AST, not a full MIR payload."
 
 [[loadable_export_routes]]
@@ -433,8 +433,8 @@ crate_name = "rouwdi_mir_adapter_probe"
 artifact_kind = "wasm_module"
 artifact_format = "wasm_module"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
-sha256 = "a13ca795b7a9453f5f22ab7cbd1d3b988119a68b6ed3387eee759768824372e9"
-size_bytes = 88463758
+sha256 = "d65f56e879d64c24eea6825f032c15d099a3fcd15b8f69582c64e62907a2211a"
+size_bytes = 88464719
 host_triple = "wasm32-wasip1"
 profile = "release"
 emitted_by = "cargo run -p rouwdi-rustc-upstream --bin direct-rustc-private-pack-builder"

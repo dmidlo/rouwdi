@@ -208,6 +208,26 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
         payload["output_bytes_read"] == Value::Bool(true)
             || payload["error_bytes_read"] == Value::Bool(true)
     );
+    if payload["mir_body_identity_emitted"] == Value::Bool(true) {
+        assert_eq!(payload["result_kind"], Value::String("output".to_owned()));
+        assert_eq!(payload["mir_provider_invoked"], Value::Bool(true));
+        assert_eq!(
+            payload["next_frontier"],
+            Value::String("monomorphization".to_owned())
+        );
+        assert!(
+            payload["mir_body_identity"]
+                .as_str()
+                .is_some_and(|identity| identity.contains("def_id=")),
+            "manifest must carry the real MIR body identity when emitted"
+        );
+        assert!(
+            payload["mir_body_hash"]
+                .as_str()
+                .is_some_and(|hash| !hash.is_empty()),
+            "manifest must carry MIR body hash when emitted"
+        );
+    }
     assert_eq!(
         payload["input_contract_sha256"].as_str().map(str::len),
         Some(64)

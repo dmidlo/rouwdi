@@ -649,11 +649,21 @@ fn plan_artifact_pipeline(
                 .iter()
                 .filter_map(|record| record.mir_handoff.as_ref())
                 .find(|handoff| !handoff.upstream_mir_adapter_available);
+            let missing_stage = if mir_blocker.is_none() {
+                compile_records
+                    .iter()
+                    .find_map(|record| record.missing_stage.as_ref())
+            } else {
+                None
+            };
             let compile_units = compile_records
                 .iter()
                 .map(|record| artifact_compile_unit_from_record(record))
                 .collect::<Vec<_>>();
-            let remaining_stages = artifact_pipeline_stage_records(mir_blocker.is_some());
+            let blocked_at_stage = mir_blocker
+                .map(|handoff| handoff.stage)
+                .or_else(|| missing_stage.map(|missing| missing.stage));
+            let remaining_stages = artifact_pipeline_stage_records(blocked_at_stage);
             let expected_output_path =
                 expected_artifact_path(run_root, selected_target, &target.triple, target.artifact);
 
@@ -668,11 +678,14 @@ fn plan_artifact_pipeline(
                 artifact_emitted: false,
                 compile_units,
                 remaining_stages,
-                blocked_at_stage: mir_blocker.map(|handoff| handoff.stage),
+                blocked_at_stage,
                 blocker_category: mir_blocker.and_then(|handoff| handoff.blocker_category),
                 blocker_component: mir_blocker
-                    .and_then(|handoff| handoff.blocker_component.clone()),
-                blocker_reason: mir_blocker.and_then(|handoff| handoff.blocker_reason.clone()),
+                    .and_then(|handoff| handoff.blocker_component.clone())
+                    .or_else(|| missing_stage.map(|missing| missing.required_component.clone())),
+                blocker_reason: mir_blocker
+                    .and_then(|handoff| handoff.blocker_reason.clone())
+                    .or_else(|| missing_stage.map(|missing| missing.reason.clone())),
             }
         })
         .collect()
@@ -713,10 +726,27 @@ fn artifact_compile_unit_from_record(
             .mir_handoff
             .as_ref()
             .and_then(|handoff| handoff.blocker_component.clone()),
+        mir_body_identity: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.mir_body_proof.as_ref())
+            .map(|proof| proof.mir_body_identity.clone()),
+        mir_body_hash: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.mir_body_proof.as_ref())
+            .and_then(|proof| proof.mir_body_hash.clone()),
+        monomorphization_handoff_status: record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.monomorphization_handoff.as_ref())
+            .map(|handoff| handoff.mono_item_collection_status.clone()),
     }
 }
 
-fn artifact_pipeline_stage_records(mir_blocked: bool) -> Vec<ArtifactPipelineStageRecord> {
+fn artifact_pipeline_stage_records(
+    blocked_at_stage: Option<RustCompilerStage>,
+) -> Vec<ArtifactPipelineStageRecord> {
     [
         (
             RustCompilerStage::Mir,
@@ -746,22 +776,51 @@ fn artifact_pipeline_stage_records(mir_blocked: bool) -> Vec<ArtifactPipelineSta
     ]
     .into_iter()
     .map(|(stage, required_component, component_role)| {
-        let status = if mir_blocked && stage == RustCompilerStage::Mir {
-            ArtifactPipelineStageStatus::Blocked
-        } else if mir_blocked {
-            ArtifactPipelineStageStatus::WaitingOnUpstreamMir
-        } else {
-            ArtifactPipelineStageStatus::Planned
-        };
+        let status = artifact_stage_status(stage, blocked_at_stage);
         ArtifactPipelineStageRecord {
             stage,
             required_component: required_component.to_owned(),
             component_role: component_role.to_owned(),
-            adapter_available: false,
+            adapter_available: status == ArtifactPipelineStageStatus::Completed,
             status,
         }
     })
     .collect()
+}
+
+fn artifact_stage_status(
+    stage: RustCompilerStage,
+    blocked_at_stage: Option<RustCompilerStage>,
+) -> ArtifactPipelineStageStatus {
+    let Some(blocked_at_stage) = blocked_at_stage else {
+        return ArtifactPipelineStageStatus::Planned;
+    };
+    if stage == blocked_at_stage {
+        return ArtifactPipelineStageStatus::Blocked;
+    }
+    if compiler_stage_order(stage) < compiler_stage_order(blocked_at_stage) {
+        return ArtifactPipelineStageStatus::Completed;
+    }
+    if blocked_at_stage == RustCompilerStage::Mir {
+        ArtifactPipelineStageStatus::WaitingOnUpstreamMir
+    } else {
+        ArtifactPipelineStageStatus::Planned
+    }
+}
+
+fn compiler_stage_order(stage: RustCompilerStage) -> u8 {
+    match stage {
+        RustCompilerStage::Parse => 0,
+        RustCompilerStage::MacroExpansion => 1,
+        RustCompilerStage::NameResolution => 2,
+        RustCompilerStage::TypeChecking => 3,
+        RustCompilerStage::BorrowChecking => 4,
+        RustCompilerStage::Mir => 5,
+        RustCompilerStage::Monomorphization => 6,
+        RustCompilerStage::Codegen => 7,
+        RustCompilerStage::Linking => 8,
+        RustCompilerStage::ArtifactEmission => 9,
+    }
 }
 
 fn expected_artifact_path(
@@ -966,11 +1025,11 @@ version = "0.1.0"
         );
         assert_eq!(
             manifest_handoff.payload_abi_bridge_blocker_kind.as_deref(),
-            Some("missing_core_lang_item_copy")
+            Some("none")
         );
         assert_eq!(
             manifest_handoff.payload_milestone_state.as_deref(),
-            Some("bridge_wasm_core_metadata_loaded_blocked_at_missing_core_lang_item_copy")
+            Some("bridge_wasm_mir_body_identity_emitted")
         );
         let target_pack = manifest_handoff.payload_target_pack.as_ref().unwrap();
         assert_eq!(target_pack.target_triple, "wasm32-wasip1");
@@ -983,7 +1042,7 @@ version = "0.1.0"
         assert!(target_pack.alloc_available);
         let bridge_attempt = manifest_handoff.payload_bridge_attempt.as_ref().unwrap();
         assert_eq!(bridge_attempt.status, "context_attempted");
-        assert_eq!(bridge_attempt.blocker_kind, "missing_core_lang_item_copy");
+        assert_eq!(bridge_attempt.blocker_kind, "none");
         assert_eq!(
             manifest.compiler_pipeline[0]
                 .mir_handoff
