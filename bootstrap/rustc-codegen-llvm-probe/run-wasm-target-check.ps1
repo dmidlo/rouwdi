@@ -71,8 +71,11 @@ function Invoke-CapturedNative {
 
 $env:RUSTC = $stage1Rustc
 $env:RUSTC_BOOTSTRAP = "1"
+$env:CFG_RELEASE = "1.97.0-dev"
+$env:CFG_RELEASE_CHANNEL = "dev"
+$env:CFG_VERSION = "1.97.0-dev"
 $env:CARGO_TARGET_DIR = $targetDir
-$env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS = "-Zunstable-options --cfg=bootstrap -C relocation-model=pic --sysroot $repo\third_party\rust\build\x86_64-pc-windows-msvc\stage1$wrapperSearchFlag"
+$env:CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS = "-Zunstable-options --cfg=bootstrap -C relocation-model=pic -C link-self-contained=no --sysroot $repo\third_party\rust\build\x86_64-pc-windows-msvc\stage1$wrapperSearchFlag"
 $env:CARGO_TARGET_WASM32_WASIP1_LINKER = $wasiClang
 $env:CC_wasm32_wasip1 = $wasiClang
 $env:CXX_wasm32_wasip1 = $wasiClangxx
@@ -98,7 +101,7 @@ $checkResult.lines | ForEach-Object { Write-Host $_ }
 $payloadBuildResult = $null
 if ($checkResult.exit_code -eq 0) {
     $payloadBuildResult = Invoke-CapturedNative -LogPath $payloadBuildLogPath -Command {
-        & $stage0Cargo build --manifest-path $probeManifest --target wasm32-wasip1 --release --message-format short
+        & $stage0Cargo build --manifest-path $probeManifest --target wasm32-wasip1 --release
     }
     $payloadBuildResult.lines | ForEach-Object { Write-Host $_ }
 }
@@ -106,12 +109,27 @@ if ($checkResult.exit_code -eq 0) {
 $payloadBuildExitCode = if ($null -ne $payloadBuildResult) { $payloadBuildResult.exit_code } else { $null }
 $payloadBuildText = if ($null -ne $payloadBuildResult) { $payloadBuildResult.text } else { "" }
 $enzymeBlocked = (($checkResult.text + "`n" + $payloadBuildText).ToLowerInvariant()).Contains("enzyme") -and (($checkResult.text + "`n" + $payloadBuildText).ToLowerInvariant()).Contains("libloading")
+$undefinedSymbolMatches = [regex]::Matches($payloadBuildText, 'undefined symbol:\s*([A-Za-z_][A-Za-z0-9_]*)')
+$payloadUndefinedSymbols = @(
+    $undefinedSymbolMatches |
+        ForEach-Object { $_.Groups[1].Value } |
+        Select-Object -Unique
+)
+$payloadLlvmUndefinedSymbols = @($payloadUndefinedSymbols | Where-Object { $_.StartsWith("LLVM") })
+$payloadFirstUndefinedSymbol = if ($payloadUndefinedSymbols.Count -gt 0) { [string]$payloadUndefinedSymbols[0] } else { $null }
+$payloadLinkerInvoked = $payloadBuildText.Contains("linking with") -or $payloadBuildText.Contains("wasm-ld:")
+$payloadLinkerPathMatch = [regex]::Match($payloadBuildText, 'linking with `([^`]+)` failed')
+$payloadLinkerPath = if ($payloadLinkerPathMatch.Success) { $payloadLinkerPathMatch.Groups[1].Value } else { $null }
 $payloadBlockerKind = if ($payloadBuildExitCode -eq 0) {
     "none"
-} elseif ($wrapperReport.wrapper_archive_emitted -eq $true -and $wrapperReport.target_llvm_library_closure_available -ne $true) {
-    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+} elseif ($payloadBuildText.Contains("self-contained linker was requested") -and $payloadBuildText.Contains("wasn't found")) {
+    "wasm_codegen_payload_blocked_at_missing_self_contained_linker"
 } elseif ($payloadBuildText.Contains("could not find native static library") -and $payloadBuildText.Contains("llvm-wrapper")) {
     "wasm32_llvm_wrapper_static_library_missing"
+} elseif ($payloadLlvmUndefinedSymbols.Count -gt 0) {
+    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+} elseif ($wrapperReport.wrapper_archive_emitted -eq $true -and $wrapperReport.target_llvm_library_closure_available -ne $true) {
+    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
 } elseif ($payloadBuildExitCode -ne $null) {
     "wasm_backend_payload_build_failed"
 } else {
@@ -121,6 +139,8 @@ $payloadStatus = if ($payloadBuildExitCode -eq 0) {
     "rustc_codegen_llvm_backend_constructed_in_payload"
 } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_target_llvm_library_closure") {
     "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+} elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_missing_self_contained_linker") {
+    "rustc_codegen_llvm_backend_payload_blocked_at_missing_self_contained_linker"
 } elseif ($payloadBlockerKind -eq "wasm32_llvm_wrapper_static_library_missing") {
     "rustc_codegen_llvm_backend_payload_blocked_at_wasm32_llvm_wrapper_static_library_missing"
 } else {
@@ -136,6 +156,13 @@ $report = [ordered]@{
     backend_payload_build_attempted = ($null -ne $payloadBuildResult)
     backend_payload_build_command = "cargo build --manifest-path bootstrap/rustc-codegen-llvm-probe/Cargo.toml --target wasm32-wasip1 --release"
     backend_payload_build_exit_code = $payloadBuildExitCode
+    executable_backend_payload_linked = ($payloadBuildExitCode -eq 0)
+    embedded_backend_payload_executed = $false
+    backend_payload_final_link_invoked = $payloadLinkerInvoked
+    backend_payload_linker = $payloadLinkerPath
+    backend_payload_undefined_symbols = @($payloadUndefinedSymbols)
+    backend_payload_llvm_undefined_symbols = @($payloadLlvmUndefinedSymbols)
+    backend_payload_first_undefined_symbol = $payloadFirstUndefinedSymbol
     backend_execution_status = $payloadStatus
     backend_constructed_in_payload = ($payloadBuildExitCode -eq 0)
     llvm_module_setup_invoked_in_payload = $false
@@ -144,7 +171,9 @@ $report = [ordered]@{
     blocker_reason = if ($payloadBlockerKind -eq "wasm32_llvm_wrapper_static_library_missing") {
         "The wasm32-wasip1 check-only route still exits 0 after the Enzyme/libloading blocker was isolated, but producing an executable codegen backend payload now reaches the exact next target-loadable blocker: rustc_codegen_llvm still requires a wasm32-wasip1 target-loadable llvm-wrapper static library at final link."
     } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_target_llvm_library_closure") {
-        "The wasm32-wasip1 llvm-wrapper archive is emitted as target object code, but executable rustc_codegen_llvm payload linkage is still blocked because no wasm32-wasip1 target-compatible LLVM library closure exists. Native CI LLVM libraries are recorded as host evidence only."
+        "The wasm32-wasip1 llvm-wrapper archive is emitted as target object code and the executable backend payload reaches WASI clang/wasm-ld final link, but rustc_codegen_llvm still has unresolved LLVM C API symbols such as $payloadFirstUndefinedSymbol. The missing component is a wasm32-wasip1 target-compatible LLVM library closure; native CI LLVM libraries are host evidence only."
+    } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_missing_self_contained_linker") {
+        "The executable wasm32-wasip1 backend payload build reached final link but rustc requested a self-contained linker that is absent from the stage1 wasm32-wasip1 sysroot. The route must pass -C link-self-contained=no with the target WASI clang linker, or provision a target-loadable linker in the sysroot."
     } elseif ($payloadBuildExitCode -eq 0) {
         "none"
     } else {

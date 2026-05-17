@@ -169,6 +169,12 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub target_loadable_check_only_status: String,
     pub backend_payload_build_attempted: bool,
     pub backend_payload_build_exit_code: i32,
+    pub executable_backend_payload_linked: bool,
+    pub embedded_backend_payload_executed: bool,
+    pub backend_payload_final_link_invoked: bool,
+    pub backend_payload_linker: String,
+    pub backend_payload_first_undefined_symbol: String,
+    pub backend_payload_llvm_undefined_symbols: Vec<String>,
     pub backend_payload_execution_status: String,
     pub backend_payload_blocker_kind: String,
     pub llvm_wrapper_target: String,
@@ -2670,6 +2676,27 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             .to_owned(),
         backend_payload_build_attempted: true,
         backend_payload_build_exit_code: 101,
+        executable_backend_payload_linked: false,
+        embedded_backend_payload_executed: false,
+        backend_payload_final_link_invoked: true,
+        backend_payload_linker:
+            ".rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
+                .to_owned(),
+        backend_payload_first_undefined_symbol: "LLVMPointerTypeInContext".to_owned(),
+        backend_payload_llvm_undefined_symbols: vec![
+            "LLVMPointerTypeInContext".to_owned(),
+            "LLVMConstInt".to_owned(),
+            "LLVMInt8TypeInContext".to_owned(),
+            "LLVMBuildGEPWithNoWrapFlags".to_owned(),
+            "LLVMBuildLoad2".to_owned(),
+            "LLVMSetAlignment".to_owned(),
+            "LLVMMDNodeInContext2".to_owned(),
+            "LLVMMetadataAsValue".to_owned(),
+            "LLVMSetMetadata".to_owned(),
+            "LLVMMDStringInContext2".to_owned(),
+            "LLVMInt32TypeInContext".to_owned(),
+            "LLVMBuildExtractValue".to_owned(),
+        ],
         backend_payload_execution_status: "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure".to_owned(),
         backend_payload_blocker_kind: "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
@@ -2698,10 +2725,10 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive is emitted, and executable payload linkage is now blocked at the missing wasm32-wasip1 LLVM library closure".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive is emitted, executable payload final-link is invoked through WASI clang/wasm-ld, and executable payload linkage is blocked at missing wasm32-wasip1 LLVM C API symbols".to_owned(),
         blocker_kind: "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned(),
         blocker_component: "rustc_codegen_llvm target LLVM library closure".to_owned(),
-        blocker_reason: "The repo-owned host probe still proves backend construction, LLVM context/module creation, WebAssembly target initialization, and target-machine creation as host evidence. The product route now has a wasm32-wasip1 llvm-wrapper archive built from Rust's rustc_llvm wrapper sources, but executable wasm32-wasip1 rustc_codegen_llvm payload linkage cannot proceed until LLVM itself is available as a target-compatible wasm32-wasip1 library closure. No LLVM IR, bitcode, object, or Wasm object bytes were emitted, and host module/target-machine success is not product execution.".to_owned(),
+        blocker_reason: "The repo-owned host probe still proves backend construction, LLVM context/module creation, WebAssembly target initialization, and target-machine creation as host evidence. The product route has a wasm32-wasip1 llvm-wrapper archive built from Rust's rustc_llvm wrapper sources and now reaches executable payload final-link through WASI clang/wasm-ld, where rustc_codegen_llvm has unresolved LLVM C API symbols starting with LLVMPointerTypeInContext. Executable wasm32-wasip1 rustc_codegen_llvm payload linkage cannot proceed until LLVM itself is available as a target-compatible wasm32-wasip1 library closure. No LLVM IR, bitcode, object, or Wasm object bytes were emitted, and host module/target-machine success is not product execution.".to_owned(),
         object_emission_attempted: false,
         object_bytes_emitted: false,
         llvm_ir_emitted: false,
@@ -4391,6 +4418,22 @@ mod tests {
         );
         assert!(probe.backend_payload_build_attempted);
         assert_eq!(probe.backend_payload_build_exit_code, 101);
+        assert!(!probe.executable_backend_payload_linked);
+        assert!(!probe.embedded_backend_payload_executed);
+        assert!(probe.backend_payload_final_link_invoked);
+        assert!(probe
+            .backend_payload_linker
+            .ends_with("wasm32-wasip1-clang.exe"));
+        assert_eq!(
+            probe.backend_payload_first_undefined_symbol,
+            "LLVMPointerTypeInContext"
+        );
+        assert!(probe
+            .backend_payload_llvm_undefined_symbols
+            .contains(&"LLVMConstInt".to_owned()));
+        assert!(probe
+            .backend_payload_llvm_undefined_symbols
+            .contains(&"LLVMBuildLoad2".to_owned()));
         assert_eq!(
             probe.backend_payload_blocker_kind,
             "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
@@ -4426,6 +4469,8 @@ mod tests {
             "rustc_codegen_llvm target LLVM library closure"
         );
         assert!(probe.blocker_reason.contains("host evidence"));
+        assert!(probe.blocker_reason.contains("final-link"));
+        assert!(probe.blocker_reason.contains("LLVMPointerTypeInContext"));
         assert!(probe.blocker_reason.contains("target-machine creation"));
         assert!(probe
             .blocker_reason

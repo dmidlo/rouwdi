@@ -328,6 +328,32 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned()
                 )
             );
+            assert_eq!(payload["check_only_target_loadable"], Value::Bool(true));
+            assert_eq!(
+                payload["executable_backend_payload_linked"],
+                Value::Bool(false)
+            );
+            assert_eq!(
+                payload["backend_payload_build_attempted"],
+                Value::Bool(true)
+            );
+            assert_eq!(payload["backend_payload_build_exit_code"], Value::from(101));
+            assert_eq!(
+                payload["backend_payload_final_link_invoked"],
+                Value::Bool(true)
+            );
+            assert!(payload["backend_payload_linker"]
+                .as_str()
+                .is_some_and(|linker| linker.ends_with("wasm32-wasip1-clang.exe")));
+            assert_eq!(
+                payload["backend_payload_first_undefined_symbol"],
+                Value::String("LLVMPointerTypeInContext".to_owned())
+            );
+            assert!(payload["backend_payload_llvm_undefined_symbols"]
+                .as_array()
+                .is_some_and(
+                    |symbols| symbols.contains(&Value::String("LLVMBuildLoad2".to_owned()))
+                ));
             assert_eq!(
                 payload["llvm_wrapper_target"],
                 Value::String("wasm32-wasip1".to_owned())
@@ -361,6 +387,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .is_some_and(|reason| {
                         reason.contains("Host LLVM proof remains evidence only")
                             && reason.contains("target-compatible LLVM library closure")
+                            && reason.contains("LLVMPointerTypeInContext")
                     }),
                 "codegen handoff must retain exact rustc_codegen_llvm blocker"
             );
@@ -408,6 +435,21 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["target_triple"] == Value::String("wasm32-wasip1".to_owned())
                 && entry["check_only_status"]
                     == Value::String("rustc_codegen_llvm_target_loadable_check_only".to_owned())
+                && entry["check_only_target_loadable"] == Value::Bool(true)
+                && entry["executable_backend_payload_linked"] == Value::Bool(false)
+                && entry["backend_payload_build_attempted"] == Value::Bool(true)
+                && entry["backend_payload_build_exit_code"] == Value::from(101)
+                && entry["backend_payload_final_link_invoked"] == Value::Bool(true)
+                && entry["backend_payload_linker"]
+                    .as_str()
+                    .is_some_and(|linker| linker.ends_with("wasm32-wasip1-clang.exe"))
+                && entry["backend_payload_first_undefined_symbol"]
+                    == Value::String("LLVMPointerTypeInContext".to_owned())
+                && entry["backend_payload_llvm_undefined_symbols"]
+                    .as_array()
+                    .is_some_and(|symbols| {
+                        symbols.contains(&Value::String("LLVMConstInt".to_owned()))
+                    })
                 && entry["host_probe_state"]
                     == Value::String("host_codegen_probe_backend_constructed".to_owned())
                 && entry["host_probe_codegen_contact_state"]

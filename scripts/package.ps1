@@ -293,7 +293,8 @@ try {
     $mirExportManifestPath = Join-Path $RepoRoot "bootstrap\mir-payload-export-manifest.toml"
     $abiManifestPath = Join-Path $RepoRoot "bootstrap\compiler-payload-abi.toml"
     $generatedPayloadSource = Join-Path $RepoRoot "crates\rouwdi-wasm\src\generated\embedded_payloads.rs"
-    $llvmWrapperBuildScript = Join-Path $RepoRoot "bootstrap\rustc-codegen-llvm-probe\build-target-llvm-wrapper.ps1"
+    $wasmTargetCheckScript = Join-Path $RepoRoot "bootstrap\rustc-codegen-llvm-probe\run-wasm-target-check.ps1"
+    $wasmTargetReportPath = Join-Path $RepoRoot ".rouwdi\codegen-llvm-probe\wasm-target-report.json"
     $llvmWrapperReportPath = Join-Path $RepoRoot ".rouwdi\codegen-llvm-probe\target-llvm-wrapper-report.json"
 
     $mirRootMetadata = Read-TomlTable -Path $mirExportManifestPath -TableName ""
@@ -502,12 +503,22 @@ try {
         throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
     }
     Invoke-CommandChecked `
-        -Description "building target llvm-wrapper archive for wasm32-wasip1 codegen payload route" `
-        -Command { & powershell -ExecutionPolicy Bypass -File $llvmWrapperBuildScript }
+        -Description "checking executable wasm32-wasip1 rustc_codegen_llvm backend payload route" `
+        -Command { & powershell -ExecutionPolicy Bypass -File $wasmTargetCheckScript }
+    if (-not (Test-Path -LiteralPath $wasmTargetReportPath -PathType Leaf)) {
+        throw "wasm target codegen backend route did not emit report: $wasmTargetReportPath"
+    }
     if (-not (Test-Path -LiteralPath $llvmWrapperReportPath -PathType Leaf)) {
         throw "target llvm-wrapper build did not emit report: $llvmWrapperReportPath"
     }
+    $wasmTargetReport = Get-Content -Raw -LiteralPath $wasmTargetReportPath | ConvertFrom-Json
     $llvmWrapperReport = Get-Content -Raw -LiteralPath $llvmWrapperReportPath | ConvertFrom-Json
+    if ($wasmTargetReport.check_only_exit_code -ne 0) {
+        throw "rustc_codegen_llvm wasm32-wasip1 check-only route failed with exit code $($wasmTargetReport.check_only_exit_code)"
+    }
+    if ($wasmTargetReport.backend_payload_build_attempted -ne $true) {
+        throw "executable wasm32-wasip1 backend payload build was not attempted"
+    }
     if ($llvmWrapperReport.llvm_wrapper_target -ne "wasm32-wasip1") {
         throw "target llvm-wrapper report used unexpected target: $($llvmWrapperReport.llvm_wrapper_target)"
     }
@@ -538,21 +549,15 @@ try {
         "mir_provider"
     }
     $backendPayloadExecutionStatus = if ($monoStatus -eq "mono_items_collected") {
-        if ($llvmWrapperReport.blocker_kind -eq "wasm_codegen_payload_blocked_at_target_llvm_library_closure") {
-            "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
-        } elseif ($llvmWrapperReport.target_loadable -eq $true) {
-            "rustc_codegen_llvm_backend_payload_ready_for_embedded_execution"
-        } else {
-            "rustc_codegen_llvm_backend_payload_blocked_at_$($llvmWrapperReport.blocker_kind)"
-        }
+        [string]$wasmTargetReport.backend_execution_status
     } else {
         $null
     }
-    $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.blocker_kind } else { $null }
+    $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.blocker_kind } else { $null }
     $codegenHandoffStatus = $backendPayloadExecutionStatus
     $codegenBlockerKind = $backendPayloadBlockerKind
     $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
-        "Host LLVM proof remains evidence only: the host probe reaches rustc_codegen_llvm backend construction, LLVM context/module setup, and target-machine creation. The product route emitted a wasm32-wasip1 llvm-wrapper archive at $($llvmWrapperReport.path), but executable embedded backend payload linkage is blocked at $($llvmWrapperReport.blocker_kind): $($llvmWrapperReport.blocker_reason) No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+        "Host LLVM proof remains evidence only: the host probe reaches rustc_codegen_llvm backend construction, LLVM context/module setup, and target-machine creation. The product route emitted a wasm32-wasip1 llvm-wrapper archive at $($llvmWrapperReport.path), attempted the executable wasm32-wasip1 backend payload build, reached final link through $($wasmTargetReport.backend_payload_linker), and is blocked at $($wasmTargetReport.blocker_kind): $($wasmTargetReport.blocker_reason) No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
     } else {
         $null
     }
@@ -655,6 +660,15 @@ try {
         backend_payload_executed = $false
         backend_payload_execution_status = $backendPayloadExecutionStatus
         backend_payload_blocker_kind = $backendPayloadBlockerKind
+        check_only_target_loadable = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.check_only_exit_code -eq 0 } else { $null }
+        executable_backend_payload_linked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.executable_backend_payload_linked } else { $null }
+        backend_payload_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_build_attempted } else { $null }
+        backend_payload_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.backend_payload_build_exit_code } else { $null }
+        backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
+        backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
+        backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
+        backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+        backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
         llvm_wrapper_target = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.llvm_wrapper_target } else { $null }
         llvm_wrapper_artifact_kind = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.artifact_kind } else { $null }
         llvm_wrapper_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.path } else { $null }
@@ -719,6 +733,15 @@ try {
                 execution_status = if ($monoStatus -eq "mono_items_collected") { $backendPayloadExecutionStatus } else { "not_reached" }
                 blocker_kind = if ($monoStatus -eq "mono_items_collected") { $backendPayloadBlockerKind } else { $null }
                 check_only_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_target_loadable_check_only" } else { $null }
+                check_only_target_loadable = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.check_only_exit_code -eq 0 } else { $null }
+                executable_backend_payload_linked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.executable_backend_payload_linked } else { $null }
+                backend_payload_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_build_attempted } else { $null }
+                backend_payload_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.backend_payload_build_exit_code } else { $null }
+                backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
+                backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
+                backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
+                backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+                backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
                 host_probe_state = if ($monoStatus -eq "mono_items_collected") { "host_codegen_probe_backend_constructed" } else { $null }
                 host_probe_codegen_contact_state = $hostCodegenContactState
                 host_probe_llvm_module_created = ($monoStatus -eq "mono_items_collected")
@@ -845,6 +868,15 @@ try {
             backend_payload_executed = $false
             backend_payload_execution_status = $backendPayloadExecutionStatus
             backend_payload_blocker_kind = $backendPayloadBlockerKind
+            check_only_target_loadable = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.check_only_exit_code -eq 0 } else { $null }
+            executable_backend_payload_linked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.executable_backend_payload_linked } else { $null }
+            backend_payload_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_build_attempted } else { $null }
+            backend_payload_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.backend_payload_build_exit_code } else { $null }
+            backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
+            backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
+            backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
+            backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+            backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
             llvm_wrapper_target = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.llvm_wrapper_target } else { $null }
             llvm_wrapper_artifact_kind = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.artifact_kind } else { $null }
             llvm_wrapper_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.path } else { $null }
