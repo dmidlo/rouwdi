@@ -276,7 +276,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert_eq!(
                 payload["codegen_handoff_status"],
                 Value::String(
-                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
                         .to_owned()
                 )
             );
@@ -292,13 +292,13 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert_eq!(
                 payload["codegen_blocker_kind"],
                 Value::String(
-                    "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned()
+                    "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned()
                 )
             );
             assert_eq!(
                 payload["codegen_contact_state"],
                 Value::String(
-                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
                         .to_owned()
                 )
             );
@@ -325,7 +325,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert_eq!(
                 payload["backend_payload_blocker_kind"],
                 Value::String(
-                    "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned()
+                    "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned()
                 )
             );
             assert_eq!(payload["check_only_target_loadable"], Value::Bool(true));
@@ -379,8 +379,29 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["target_llvm_library_closure_status"],
-                Value::String("missing_target_compatible_llvm_libraries".to_owned())
+                Value::String(
+                    "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned()
+                )
             );
+            assert_eq!(
+                payload["target_llvm_library_closure_build_attempted"],
+                Value::Bool(true)
+            );
+            assert_eq!(
+                payload["target_llvm_library_closure_build_exit_code"],
+                Value::from(1)
+            );
+            assert_eq!(
+                payload["target_llvm_library_closure_report_path"],
+                Value::String(
+                    ".rouwdi/codegen-llvm-probe/target-llvm-closure-report.json".to_owned()
+                )
+            );
+            assert!(payload["target_llvm_library_closure_first_error"]
+                .as_str()
+                .is_some_and(|error| {
+                    error.contains("CrashRecoveryContext.cpp") && error.contains("sigaction")
+                }));
             assert!(
                 payload["codegen_blocker_reason"]
                     .as_str()
@@ -388,6 +409,8 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                         reason.contains("Host LLVM proof remains evidence only")
                             && reason.contains("target-compatible LLVM library closure")
                             && reason.contains("LLVMPointerTypeInContext")
+                            && reason.contains("CrashRecoveryContext.cpp")
+                            && reason.contains("sigaction")
                     }),
                 "codegen handoff must retain exact rustc_codegen_llvm blocker"
             );
@@ -458,7 +481,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["host_probe_target_machine_created"] == Value::Bool(true)
                 && entry["codegen_contact_state"]
                     == Value::String(
-                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
                             .to_owned(),
                     )
                 && entry["mono_proof_consumed"] == Value::Bool(true)
@@ -472,6 +495,19 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .is_some_and(|hash| hash.len() == 64)
                 && entry["llvm_wrapper_target_loadable"] == Value::Bool(false)
                 && entry["target_llvm_library_closure_available"] == Value::Bool(false)
+                && entry["target_llvm_library_closure_status"]
+                    == Value::String(
+                        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
+                            .to_owned(),
+                    )
+                && entry["target_llvm_library_closure_build_attempted"] == Value::Bool(true)
+                && entry["target_llvm_library_closure_build_exit_code"] == Value::from(1)
+                && entry["target_llvm_library_closure_first_error"]
+                    .as_str()
+                    .is_some_and(|error| {
+                        error.contains("CrashRecoveryContext.cpp")
+                            && error.contains("sigaction")
+                    })
                 && entry["llvm_module_created"] == Value::Bool(false)
                 && entry["target_machine_created"] == Value::Bool(false)
                 && entry["object_bytes_emitted"] == Value::Bool(false)

@@ -6,6 +6,8 @@ $workDir = Join-Path $reportDir "target-llvm-wrapper"
 $objectDir = Join-Path $workDir "obj"
 $archiveDir = Join-Path $workDir "lib"
 $reportPath = Join-Path $reportDir "target-llvm-wrapper-report.json"
+$closureBuildScript = Join-Path $repo "bootstrap\rustc-codegen-llvm-probe\build-target-llvm-closure.ps1"
+$closureReportPath = Join-Path $reportDir "target-llvm-closure-report.json"
 $wrapperSourceDir = Join-Path $repo "third_party\rust\compiler\rustc_llvm\llvm-wrapper"
 $llvmConfig = Join-Path $repo "third_party\rust\build\x86_64-pc-windows-msvc\ci-llvm\bin\llvm-config.exe"
 $wasiSdk = Join-Path $repo ".rouwdi\tools\wasi-sdk\wasi-sdk-33.0-x86_64-windows"
@@ -105,12 +107,23 @@ function New-Manifest {
         [string]$BlockerKind,
         [string]$BlockerReason,
         [object]$LlvmNativeLibraries,
-        [object]$LlvmComponents
+        [object]$LlvmComponents,
+        [object]$ClosureReport
     )
 
     $archiveExists = $null -ne $ArchiveIdentity
-    $targetLlvmLibraryClosureAvailable = $false
+    $targetLlvmLibraryClosureAvailable = $null -ne $ClosureReport -and $ClosureReport.closure_available -eq $true
     $targetLoadable = $archiveExists -and $targetLlvmLibraryClosureAvailable
+    $closureStatus = if ($null -ne $ClosureReport) {
+        if ($targetLlvmLibraryClosureAvailable) { "available" } else { [string]$ClosureReport.blocker_kind }
+    } else {
+        "not_attempted"
+    }
+    $closureReason = if ($null -ne $ClosureReport) {
+        [string]$ClosureReport.blocker_reason
+    } else {
+        "The wasm32-wasip1 LLVM library closure build was not attempted."
+    }
 
     return [ordered]@{
         schema_version = 1
@@ -146,12 +159,24 @@ function New-Manifest {
         target_llvm_library_closure_available = $targetLlvmLibraryClosureAvailable
         target_llvm_library_closure = [ordered]@{
             required = $true
-            status = "missing_target_compatible_llvm_libraries"
+            status = $closureStatus
             target_triple = $targetTriple
+            report_path = if ($null -ne $ClosureReport) { ".rouwdi/codegen-llvm-probe/target-llvm-closure-report.json" } else { $null }
+            build_attempted = if ($null -ne $ClosureReport) { [bool]$ClosureReport.build_attempted } else { $false }
+            configure_exit_code = if ($null -ne $ClosureReport) { $ClosureReport.configure_exit_code } else { $null }
+            build_exit_code = if ($null -ne $ClosureReport) { $ClosureReport.build_exit_code } else { $null }
             host_ci_llvm_reused_as_target = $false
+            native_ci_llvm_libraries_usable_for_product = $false
             native_ci_llvm_libraries = @($LlvmNativeLibraries)
             components = @($LlvmComponents)
-            reason = "rustc_llvm's wrapper archive can be compiled as wasm32-wasip1 object code, but the executable backend payload still needs a wasm32-wasip1 LLVM library closure. The repo currently only has native MSVC CI LLVM libraries, which are host evidence and are not target-loadable into the Wasm backend payload."
+            required_components = if ($null -ne $ClosureReport) { @($ClosureReport.required_components) } else { @() }
+            built_components = if ($null -ne $ClosureReport) { @($ClosureReport.built_components) } else { @() }
+            target_compatible_archives = if ($null -ne $ClosureReport) { @($ClosureReport.target_compatible_archives) } else { @() }
+            first_build_target = if ($null -ne $ClosureReport) { [string]$ClosureReport.first_build_target } else { $null }
+            blocker_component = if ($null -ne $ClosureReport) { [string]$ClosureReport.blocker_component } else { $null }
+            first_error = if ($null -ne $ClosureReport) { $ClosureReport.first_error } else { $null }
+            log_path = if ($null -ne $ClosureReport) { [string]$ClosureReport.log_path } else { $null }
+            reason = $closureReason
         }
         blocker_kind = $BlockerKind
         blocker_reason = $BlockerReason
@@ -172,7 +197,8 @@ foreach ($requiredPath in @($wrapperSourceDir, $llvmConfig, $wasiClangxx, $wasiA
             -BlockerKind "target_llvm_wrapper_prerequisite_missing" `
             -BlockerReason "Required path is missing: $requiredPath" `
             -LlvmNativeLibraries @() `
-            -LlvmComponents @()
+            -LlvmComponents @() `
+            -ClosureReport $null
         $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8
         Write-Host "target llvm-wrapper report: $reportPath"
         exit 0
@@ -292,19 +318,33 @@ if (-not $compileFailed) {
 }
 
 $archiveIdentity = Get-ArtifactIdentity -Path $archivePath
+$closureReport = $null
+if (Test-Path -LiteralPath $closureBuildScript -PathType Leaf) {
+    & powershell -ExecutionPolicy Bypass -File $closureBuildScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "target LLVM library closure build attempt failed with exit code $LASTEXITCODE"
+    }
+    if (Test-Path -LiteralPath $closureReportPath -PathType Leaf) {
+        $closureReport = Get-Content -Raw -LiteralPath $closureReportPath | ConvertFrom-Json
+    }
+}
 $blockerKind = if ($compileFailed) {
     "wasm32_llvm_wrapper_compile_failed"
 } elseif ($null -eq $archiveIdentity) {
     "wasm32_llvm_wrapper_archive_not_emitted"
+} elseif ($null -ne $closureReport -and $closureReport.closure_available -ne $true) {
+    [string]$closureReport.blocker_kind
 } else {
-    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+    "none"
 }
 $blockerReason = if ($compileFailed) {
     "Compiling Rust's rustc_llvm wrapper sources with WASI clang++ failed; inspect the per-source compile logs under .rouwdi/codegen-llvm-probe/target-llvm-wrapper."
 } elseif ($null -eq $archiveIdentity) {
     "The wrapper C++ sources compiled, but llvm-ar did not emit libllvm-wrapper.a."
+} elseif ($null -ne $closureReport -and $closureReport.closure_available -ne $true) {
+    [string]$closureReport.blocker_reason
 } else {
-    "A wasm32-wasip1 llvm-wrapper archive was emitted, but it is not sufficient for executable rustc_codegen_llvm payload linkage because the repository does not yet contain a wasm32-wasip1 target-compatible LLVM library closure. Native MSVC CI LLVM libraries are host evidence only and are not marked target-loadable."
+    "none"
 }
 
 $manifest = New-Manifest `
@@ -315,7 +355,8 @@ $manifest = New-Manifest `
     -BlockerKind $blockerKind `
     -BlockerReason $blockerReason `
     -LlvmNativeLibraries @($nativeLlvmLibraries) `
-    -LlvmComponents @($llvmComponents)
+    -LlvmComponents @($llvmComponents) `
+    -ClosureReport $closureReport
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8
 
 Write-Host "target llvm-wrapper report: $reportPath"

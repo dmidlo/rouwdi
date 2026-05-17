@@ -556,6 +556,13 @@ try {
     $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.blocker_kind } else { $null }
     $codegenHandoffStatus = $backendPayloadExecutionStatus
     $codegenBlockerKind = $backendPayloadBlockerKind
+    $codegenBlockerComponent = if ($monoStatus -eq "mono_items_collected" -and $llvmWrapperReport.target_llvm_library_closure.blocker_component -ne $null) {
+        [string]$llvmWrapperReport.target_llvm_library_closure.blocker_component
+    } elseif ($monoStatus -eq "mono_items_collected") {
+        "rustc_codegen_llvm target LLVM library closure"
+    } else {
+        $null
+    }
     $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
         "Host LLVM proof remains evidence only: the host probe reaches rustc_codegen_llvm backend construction, LLVM context/module setup, and target-machine creation. The product route emitted a wasm32-wasip1 llvm-wrapper archive at $($llvmWrapperReport.path), attempted the executable wasm32-wasip1 backend payload build, reached final link through $($wasmTargetReport.backend_payload_linker), and is blocked at $($wasmTargetReport.blocker_kind): $($wasmTargetReport.blocker_reason) No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
     } else {
@@ -681,8 +688,13 @@ try {
         llvm_wrapper_blocker_reason = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.blocker_reason } else { $null }
         target_llvm_library_closure_available = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure_available } else { $null }
         target_llvm_library_closure_status = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.status } else { $null }
+        target_llvm_library_closure_report_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.report_path } else { $null }
+        target_llvm_library_closure_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure.build_attempted } else { $null }
+        target_llvm_library_closure_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.build_exit_code } else { $null }
+        target_llvm_library_closure_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.log_path } else { $null }
+        target_llvm_library_closure_first_error = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.first_error } else { $null }
         codegen_blocker_kind = $codegenBlockerKind
-        codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm target LLVM library closure" } else { $null }
+        codegen_blocker_component = $codegenBlockerComponent
         codegen_blocker_reason = $codegenBlockerReason
         codegen_object_emission_attempted = $false
         codegen_object_bytes_emitted = $false
@@ -760,6 +772,11 @@ try {
                 llvm_wrapper_target_loadable = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_loadable } else { $null }
                 target_llvm_library_closure_available = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure_available } else { $null }
                 target_llvm_library_closure_status = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.status } else { $null }
+                target_llvm_library_closure_report_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.report_path } else { $null }
+                target_llvm_library_closure_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure.build_attempted } else { $null }
+                target_llvm_library_closure_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.build_exit_code } else { $null }
+                target_llvm_library_closure_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.log_path } else { $null }
+                target_llvm_library_closure_first_error = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.first_error } else { $null }
                 llvm_module_created = $false
                 llvm_module_identity_hash = $llvmModuleIdentityHash
                 target_machine_created = $false
@@ -889,8 +906,13 @@ try {
             llvm_wrapper_blocker_reason = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.blocker_reason } else { $null }
             target_llvm_library_closure_available = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure_available } else { $null }
             target_llvm_library_closure_status = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.status } else { $null }
+            target_llvm_library_closure_report_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.report_path } else { $null }
+            target_llvm_library_closure_build_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$llvmWrapperReport.target_llvm_library_closure.build_attempted } else { $null }
+            target_llvm_library_closure_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.build_exit_code } else { $null }
+            target_llvm_library_closure_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.log_path } else { $null }
+            target_llvm_library_closure_first_error = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.first_error } else { $null }
             codegen_blocker_kind = $codegenBlockerKind
-            codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm target LLVM library closure" } else { $null }
+            codegen_blocker_component = $codegenBlockerComponent
             codegen_blocker_reason = $codegenBlockerReason
             codegen_object_emission_attempted = $false
             codegen_object_bytes_emitted = $false

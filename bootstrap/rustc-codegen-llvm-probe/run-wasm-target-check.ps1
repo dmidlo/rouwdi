@@ -120,6 +120,21 @@ $payloadFirstUndefinedSymbol = if ($payloadUndefinedSymbols.Count -gt 0) { [stri
 $payloadLinkerInvoked = $payloadBuildText.Contains("linking with") -or $payloadBuildText.Contains("wasm-ld:")
 $payloadLinkerPathMatch = [regex]::Match($payloadBuildText, 'linking with `([^`]+)` failed')
 $payloadLinkerPath = if ($payloadLinkerPathMatch.Success) { $payloadLinkerPathMatch.Groups[1].Value } else { $null }
+$closureReport = $wrapperReport.target_llvm_library_closure
+$closureBlockerKind = if ($null -ne $closureReport -and -not [string]::IsNullOrWhiteSpace([string]$closureReport.status) -and [string]$closureReport.status -ne "available") {
+    [string]$closureReport.status
+} elseif ($wrapperReport.target_llvm_library_closure_available -ne $true -and -not [string]::IsNullOrWhiteSpace([string]$wrapperReport.blocker_kind)) {
+    [string]$wrapperReport.blocker_kind
+} else {
+    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+}
+$closureBlockerReason = if ($null -ne $closureReport -and -not [string]::IsNullOrWhiteSpace([string]$closureReport.reason)) {
+    [string]$closureReport.reason
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$wrapperReport.blocker_reason)) {
+    [string]$wrapperReport.blocker_reason
+} else {
+    "The executable wasm32-wasip1 backend payload needs a target-compatible LLVM library closure."
+}
 $payloadBlockerKind = if ($payloadBuildExitCode -eq 0) {
     "none"
 } elseif ($payloadBuildText.Contains("self-contained linker was requested") -and $payloadBuildText.Contains("wasn't found")) {
@@ -127,9 +142,9 @@ $payloadBlockerKind = if ($payloadBuildExitCode -eq 0) {
 } elseif ($payloadBuildText.Contains("could not find native static library") -and $payloadBuildText.Contains("llvm-wrapper")) {
     "wasm32_llvm_wrapper_static_library_missing"
 } elseif ($payloadLlvmUndefinedSymbols.Count -gt 0) {
-    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+    $closureBlockerKind
 } elseif ($wrapperReport.wrapper_archive_emitted -eq $true -and $wrapperReport.target_llvm_library_closure_available -ne $true) {
-    "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+    $closureBlockerKind
 } elseif ($payloadBuildExitCode -ne $null) {
     "wasm_backend_payload_build_failed"
 } else {
@@ -137,8 +152,8 @@ $payloadBlockerKind = if ($payloadBuildExitCode -eq 0) {
 }
 $payloadStatus = if ($payloadBuildExitCode -eq 0) {
     "rustc_codegen_llvm_backend_constructed_in_payload"
-} elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_target_llvm_library_closure") {
-    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+} elseif ($payloadBlockerKind -eq $closureBlockerKind) {
+    "rustc_codegen_llvm_backend_payload_blocked_at_$closureBlockerKind"
 } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_missing_self_contained_linker") {
     "rustc_codegen_llvm_backend_payload_blocked_at_missing_self_contained_linker"
 } elseif ($payloadBlockerKind -eq "wasm32_llvm_wrapper_static_library_missing") {
@@ -170,8 +185,8 @@ $report = [ordered]@{
     blocker_kind = $payloadBlockerKind
     blocker_reason = if ($payloadBlockerKind -eq "wasm32_llvm_wrapper_static_library_missing") {
         "The wasm32-wasip1 check-only route still exits 0 after the Enzyme/libloading blocker was isolated, but producing an executable codegen backend payload now reaches the exact next target-loadable blocker: rustc_codegen_llvm still requires a wasm32-wasip1 target-loadable llvm-wrapper static library at final link."
-    } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_target_llvm_library_closure") {
-        "The wasm32-wasip1 llvm-wrapper archive is emitted as target object code and the executable backend payload reaches WASI clang/wasm-ld final link, but rustc_codegen_llvm still has unresolved LLVM C API symbols such as $payloadFirstUndefinedSymbol. The missing component is a wasm32-wasip1 target-compatible LLVM library closure; native CI LLVM libraries are host evidence only."
+    } elseif ($payloadBlockerKind -eq $closureBlockerKind) {
+        "The wasm32-wasip1 llvm-wrapper archive is emitted as target object code and the executable backend payload reaches WASI clang/wasm-ld final link, but rustc_codegen_llvm still has unresolved LLVM C API symbols such as $payloadFirstUndefinedSymbol. The missing component is a wasm32-wasip1 target-compatible LLVM library closure. The target LLVM closure build was attempted and is blocked at ${closureBlockerKind}: $closureBlockerReason Native CI LLVM libraries are host evidence only."
     } elseif ($payloadBlockerKind -eq "wasm_codegen_payload_blocked_at_missing_self_contained_linker") {
         "The executable wasm32-wasip1 backend payload build reached final link but rustc requested a self-contained linker that is absent from the stage1 wasm32-wasip1 sysroot. The route must pass -C link-self-contained=no with the target WASI clang linker, or provision a target-loadable linker in the sysroot."
     } elseif ($payloadBuildExitCode -eq 0) {
@@ -194,7 +209,12 @@ $report = [ordered]@{
     llvm_wrapper_blocker_reason = $wrapperReport.blocker_reason
     target_llvm_library_closure_available = $wrapperReport.target_llvm_library_closure_available
     target_llvm_library_closure_status = $wrapperReport.target_llvm_library_closure.status
-    target_llvm_library_closure_report_path = ".rouwdi/codegen-llvm-probe/target-llvm-wrapper-report.json"
+    target_llvm_library_closure_blocker_kind = $closureBlockerKind
+    target_llvm_library_closure_blocker_reason = $closureBlockerReason
+    target_llvm_library_closure_report_path = $wrapperReport.target_llvm_library_closure.report_path
+    target_llvm_library_closure_log_path = $wrapperReport.target_llvm_library_closure.log_path
+    target_llvm_library_closure_build_exit_code = $wrapperReport.target_llvm_library_closure.build_exit_code
+    target_llvm_library_closure_first_error = $wrapperReport.target_llvm_library_closure.first_error
 }
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
 Write-Host "wasm target report: $reportPath"

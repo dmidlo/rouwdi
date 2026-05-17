@@ -653,7 +653,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .any(|point| point.contains("LlvmCodegenBackend::new")));
     assert_eq!(
         codegen_handoff.codegen_contact_state,
-        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
     );
     assert_eq!(
         codegen_handoff.host_probe_codegen_contact_state,
@@ -679,25 +679,29 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     );
     assert_eq!(
         codegen_handoff.backend_payload_blocker_kind,
-        "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
     );
     assert!(!codegen_handoff.backend_payload_embedded_in_assembly);
     assert_eq!(
         codegen_handoff.current_status,
-        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
     );
     assert_eq!(
         codegen_handoff.blocker_kind,
-        "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
     );
     assert_eq!(
         codegen_handoff.blocker_component,
-        "rustc_codegen_llvm target LLVM library closure"
+        "LLVM Support CrashRecoveryContext wasm32-wasip1 signal support"
     );
     assert!(codegen_handoff.blocker_reason.contains("host evidence"));
     assert!(codegen_handoff
         .blocker_reason
         .contains("target-compatible LLVM library closure"));
+    assert!(codegen_handoff
+        .blocker_reason
+        .contains("CrashRecoveryContext.cpp"));
+    assert!(codegen_handoff.blocker_reason.contains("sigaction"));
     assert!(codegen_handoff
         .blocker_reason
         .contains("host evidence only"));
@@ -732,7 +736,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     );
     assert_eq!(
         manifest.artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_codegen_llvm target LLVM library closure")
+        Some("LLVM Support CrashRecoveryContext wasm32-wasip1 signal support")
     );
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
@@ -752,7 +756,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
                 && unit.codegen_handoff_status.as_deref()
                     == Some(
-                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure",
+                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction",
                     )
         }));
 }
@@ -952,7 +956,7 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
     );
     assert_eq!(
         component.blocker_kind,
-        "wasm_codegen_payload_blocked_at_target_llvm_library_closure"
+        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
     );
     assert!(component
         .probe_command
@@ -960,6 +964,8 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
     assert!(component
         .exact_blocker
         .contains("target-compatible LLVM library closure"));
+    assert!(component.exact_blocker.contains("CrashRecoveryContext.cpp"));
+    assert!(component.exact_blocker.contains("sigaction"));
     assert!(component.exact_blocker.contains("llvm-config.exe"));
     assert!(component.exact_blocker.contains("LLVM context/module"));
     assert!(component.exact_blocker.contains("target machine"));
