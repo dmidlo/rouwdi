@@ -31,8 +31,8 @@ pub(super) const CODEGEN_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasi_cli_mod
 pub(super) const CODEGEN_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
 pub(super) const CODEGEN_PAYLOAD_STATE: &str = "embedded_payload";
 pub(super) const CODEGEN_PAYLOAD_SHA256: &str =
-    "26a721627d8e3dfe1661bb1a643e50a64a8dba1023fb84079c3795232e5d7c06";
-pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 67708457;
+    "56fceb5dd2e53761ee6db032120be0a16b44feb6631bc165c833d5760749e63b";
+pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 67735005;
 pub(super) const CODEGEN_PAYLOAD_BYTES: &[u8] = include_bytes!(
     "../../../../.rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-4f33fb70e05141c4.wasm"
 );

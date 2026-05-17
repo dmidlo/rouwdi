@@ -440,7 +440,12 @@ mod tests {
             .rustc_components
             .iter()
             .any(|component| component.name == "rustc_codegen_llvm"
-                && !component.embedded_in_assembly));
+                && component.embedded_in_assembly));
+        assert!(registry
+            .compiler
+            .rustc_components
+            .iter()
+            .any(|component| component.name == "lld" && !component.embedded_in_assembly));
         assert!(!registry.compiler.is_complete());
     }
 

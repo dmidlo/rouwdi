@@ -193,14 +193,26 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub target_machine_code_model: Option<String>,
     pub target_machine_optimization_level: Option<String>,
     pub llvm_ir_emitted: bool,
+    pub llvm_ir_sha256: Option<String>,
+    pub llvm_ir_size_bytes: Option<u64>,
     pub bitcode_emitted: bool,
     pub object_emission_attempted: bool,
+    pub object_emission_api: Option<String>,
     pub object_bytes_emitted: bool,
     pub wasm_object_bytes_emitted: bool,
+    pub object_artifact_kind: Option<String>,
+    pub object_artifact_sha256: Option<String>,
+    pub object_artifact_size_bytes: Option<u64>,
+    pub object_artifact_location: Option<String>,
+    pub object_target_triple: Option<String>,
+    pub object_retrieval_method: Option<String>,
+    pub object_bytes_retrieved_by_rouwdi: bool,
+    pub object_sha256_verified: bool,
     pub codegen_artifact_kind: Option<String>,
     pub codegen_artifact_sha256: Option<String>,
     pub codegen_artifact_size_bytes: Option<u64>,
     pub codegen_artifact_location: Option<String>,
+    pub linker_required: bool,
     pub linker_handoff_created: bool,
     pub blocker_kind: Option<String>,
     pub blocker_reason: Option<String>,
@@ -209,17 +221,20 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
 #[derive(Debug)]
 struct PayloadWasiState {
     args: Vec<String>,
+    env: Vec<String>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     proc_exit_code: Option<i32>,
     random_counter: u8,
     next_fd: i32,
     fds: BTreeMap<i32, VirtualFd>,
+    written_files: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(Debug)]
 enum VirtualFd {
     File { bytes: &'static [u8], position: u64 },
+    WrittenFile { path: String, position: u64 },
     Directory { entries: Vec<VirtualDirEntry> },
 }
 
@@ -256,10 +271,14 @@ const WASI_FILETYPE_CHARACTER_DEVICE: u8 = 2;
 const WASI_FILETYPE_DIRECTORY: u8 = 3;
 const WASI_FILETYPE_REGULAR_FILE: u8 = 4;
 const WASI_PREOPEN_FD: i32 = 3;
-const WASI_PREOPEN_PATH: &str = "/workspace";
+const WASI_PREOPEN_PATH: &str = "/";
+const WASI_OFLAGS_CREAT: i32 = 1;
+const WASI_OFLAGS_DIRECTORY: i32 = 2;
+const WASI_OFLAGS_TRUNC: i32 = 8;
 const VIRTUAL_SYSROOT: &str = "third_party/rust/build/x86_64-pc-windows-msvc/stage1";
 const VIRTUAL_RUSTLIB: &str =
     "third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib";
+const CODEGEN_OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1.o";
 const PAYLOAD_ARG0: &str = "rouwdi_mir_adapter_probe.wasm";
 
 macro_rules! virtual_file {
@@ -640,12 +659,14 @@ fn execute_embedded_codegen_payload(
         &engine,
         PayloadWasiState {
             args: argv.clone(),
+            env: vec!["PWD=/".to_owned()],
             stdout: Vec::new(),
             stderr: Vec::new(),
             proc_exit_code: None,
             random_counter: 0,
             next_fd: WASI_PREOPEN_FD + 1,
             fds: BTreeMap::new(),
+            written_files: BTreeMap::new(),
         },
     );
     store
@@ -683,6 +704,60 @@ fn execute_embedded_codegen_payload(
     let codegen_artifact = output_json
         .as_ref()
         .and_then(|value| value.get("codegen_artifact"));
+    let object_artifact = output_json
+        .as_ref()
+        .and_then(|value| value.get("object_artifact"));
+    let object_output_path = output_json
+        .as_ref()
+        .and_then(|value| value.get("object_artifact_location"))
+        .and_then(serde_json::Value::as_str)
+        .map(normalize_reported_vfs_path)
+        .unwrap_or_else(|| CODEGEN_OBJECT_ARTIFACT_PATH.to_owned());
+    let retrieved_object_bytes = store.data().written_files.get(&object_output_path);
+    let retrieved_object_sha256 = retrieved_object_bytes.map(|bytes| sha256_hex(bytes));
+    let retrieved_object_size = retrieved_object_bytes.map(|bytes| bytes.len() as u64);
+    let reported_object_sha256 = json_string_field(output_json.as_ref(), "object_artifact_sha256")
+        .or_else(|| json_string_field(object_artifact, "sha256"));
+    let object_sha256_verified = retrieved_object_sha256.is_some()
+        && reported_object_sha256.as_deref() == retrieved_object_sha256.as_deref();
+    let object_bytes_retrieved_by_rouwdi = retrieved_object_bytes.is_some();
+    let object_artifact_kind = json_string_field(output_json.as_ref(), "object_artifact_kind")
+        .or_else(|| json_string_field(object_artifact, "artifact_kind"));
+    let object_artifact_location =
+        json_string_field(output_json.as_ref(), "object_artifact_location")
+            .or_else(|| json_string_field(object_artifact, "embedded_artifact_location"));
+    let object_target_triple = json_string_field(output_json.as_ref(), "object_target_triple")
+        .or_else(|| json_string_field(object_artifact, "target_triple"));
+    let object_retrieval_method =
+        json_string_field(output_json.as_ref(), "object_retrieval_method")
+            .or_else(|| json_string_field(object_artifact, "retrieval_method"));
+    let object_bytes_emitted =
+        json_bool(output_json.as_ref(), "object_bytes_emitted") && object_bytes_retrieved_by_rouwdi;
+    let wasm_object_bytes_emitted = json_bool(output_json.as_ref(), "wasm_object_bytes_emitted")
+        && object_bytes_emitted
+        && object_artifact_kind.as_deref() == Some("wasm_object");
+    let codegen_artifact_kind = if object_bytes_emitted {
+        object_artifact_kind.clone()
+    } else {
+        json_string_field(codegen_artifact, "artifact_kind")
+    };
+    let codegen_artifact_sha256 = if object_bytes_emitted {
+        retrieved_object_sha256.clone()
+    } else {
+        json_string_field(codegen_artifact, "sha256")
+    };
+    let codegen_artifact_size_bytes = if object_bytes_emitted {
+        retrieved_object_size
+    } else {
+        codegen_artifact
+            .and_then(|value| value.get("byte_length"))
+            .and_then(serde_json::Value::as_u64)
+    };
+    let codegen_artifact_location = if object_bytes_emitted {
+        object_artifact_location.clone()
+    } else {
+        json_string_field(codegen_artifact, "embedded_artifact_location")
+    };
 
     Ok(EmbeddedCodegenPayloadExecutionReport {
         name: payload.name.to_owned(),
@@ -744,26 +819,55 @@ fn execute_embedded_codegen_payload(
             "optimization_level",
         ),
         llvm_ir_emitted: json_bool(output_json.as_ref(), "llvm_ir_emitted"),
+        llvm_ir_sha256: json_string_field(output_json.as_ref(), "llvm_ir_sha256"),
+        llvm_ir_size_bytes: output_json
+            .as_ref()
+            .and_then(|value| value.get("llvm_ir_size_bytes"))
+            .and_then(serde_json::Value::as_u64),
         bitcode_emitted: json_bool(output_json.as_ref(), "bitcode_emitted"),
         object_emission_attempted: json_bool(output_json.as_ref(), "object_emission_attempted"),
-        object_bytes_emitted: json_bool(output_json.as_ref(), "object_bytes_emitted"),
-        wasm_object_bytes_emitted: json_bool(output_json.as_ref(), "wasm_object_bytes_emitted"),
-        codegen_artifact_kind: json_string_field(codegen_artifact, "artifact_kind"),
-        codegen_artifact_sha256: json_string_field(codegen_artifact, "sha256"),
-        codegen_artifact_size_bytes: codegen_artifact
-            .and_then(|value| value.get("byte_length"))
-            .and_then(serde_json::Value::as_u64),
-        codegen_artifact_location: json_string_field(
-            codegen_artifact,
-            "embedded_artifact_location",
-        ),
-        linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created"),
+        object_emission_api: json_string_field(output_json.as_ref(), "object_emission_api"),
+        object_bytes_emitted,
+        wasm_object_bytes_emitted,
+        object_artifact_kind,
+        object_artifact_sha256: retrieved_object_sha256.or(reported_object_sha256),
+        object_artifact_size_bytes: retrieved_object_size.or_else(|| {
+            output_json
+                .as_ref()
+                .and_then(|value| value.get("object_artifact_size_bytes"))
+                .and_then(serde_json::Value::as_u64)
+                .or_else(|| {
+                    object_artifact
+                        .and_then(|value| value.get("byte_length"))
+                        .and_then(serde_json::Value::as_u64)
+                })
+        }),
+        object_artifact_location,
+        object_target_triple,
+        object_retrieval_method,
+        object_bytes_retrieved_by_rouwdi,
+        object_sha256_verified,
+        codegen_artifact_kind,
+        codegen_artifact_sha256,
+        codegen_artifact_size_bytes,
+        codegen_artifact_location,
+        linker_required: json_bool(output_json.as_ref(), "linker_required"),
+        linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created")
+            && wasm_object_bytes_emitted,
         blocker_kind: json_string_field(output_json.as_ref(), "blocker_kind")
             .filter(|kind| kind != "none"),
         blocker_reason: json_string_field(output_json.as_ref(), "blocker_reason")
             .filter(|reason| reason != "none"),
         output_json,
     })
+}
+
+fn normalize_reported_vfs_path(path: &str) -> String {
+    normalize_virtual_path(
+        path.strip_prefix("vfs:")
+            .or_else(|| path.strip_prefix("memory:"))
+            .unwrap_or(path),
+    )
 }
 
 fn execute_embedded_payload(
@@ -810,12 +914,14 @@ fn execute_embedded_payload(
         &engine,
         PayloadWasiState {
             args: vec![PAYLOAD_ARG0.to_owned()],
+            env: vec!["PWD=/".to_owned()],
             stdout: Vec::new(),
             stderr: Vec::new(),
             proc_exit_code: None,
             random_counter: 0,
             next_fd: WASI_PREOPEN_FD + 1,
             fds: BTreeMap::new(),
+            written_files: BTreeMap::new(),
         },
     );
     store
@@ -1156,18 +1262,43 @@ fn wasi_environ_sizes_get(
     count_ptr: i32,
     size_ptr: i32,
 ) -> i32 {
-    let status = write_u32(&mut caller, count_ptr, 0);
+    let env = caller.data().env.clone();
+    let status = write_u32(&mut caller, count_ptr, env.len() as u32);
     if status != WASI_ERRNO_SUCCESS {
         return status;
     }
-    write_u32(&mut caller, size_ptr, 0)
+    let env_buf_size = env
+        .iter()
+        .map(|entry| entry.len().saturating_add(1))
+        .sum::<usize>();
+    write_u32(&mut caller, size_ptr, env_buf_size as u32)
 }
 
 fn wasi_environ_get(
-    _caller: Caller<'_, PayloadWasiState>,
-    _env_ptr: i32,
-    _env_buf_ptr: i32,
+    mut caller: Caller<'_, PayloadWasiState>,
+    env_ptr: i32,
+    env_buf_ptr: i32,
 ) -> i32 {
+    let env = caller.data().env.clone();
+    let mut current_buf_ptr = env_buf_ptr;
+    for (index, entry) in env.iter().enumerate() {
+        let bytes = entry.as_bytes();
+        let pointer_slot = env_ptr + (index as i32 * 4);
+        let status = write_u32(&mut caller, pointer_slot, current_buf_ptr as u32);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let status = write_bytes(&mut caller, current_buf_ptr, bytes);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let terminator_ptr = current_buf_ptr + bytes.len() as i32;
+        let status = write_bytes(&mut caller, terminator_ptr, &[0]);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        current_buf_ptr = terminator_ptr + 1;
+    }
     WASI_ERRNO_SUCCESS
 }
 
@@ -1226,7 +1357,30 @@ fn wasi_fd_write(
     match fd {
         1 => caller.data_mut().stdout.extend_from_slice(&chunks),
         2 => caller.data_mut().stderr.extend_from_slice(&chunks),
-        _ => return WASI_ERRNO_BADF,
+        _ => {
+            let Some((path, position)) = caller.data().fds.get(&fd).and_then(|fd| match fd {
+                VirtualFd::WrittenFile { path, position } => Some((path.clone(), *position)),
+                _ => None,
+            }) else {
+                return WASI_ERRNO_BADF;
+            };
+            let file = caller
+                .data_mut()
+                .written_files
+                .entry(path.clone())
+                .or_default();
+            let start = position as usize;
+            let end = start.saturating_add(chunks.len());
+            if file.len() < end {
+                file.resize(end, 0);
+            }
+            file[start..end].copy_from_slice(&chunks);
+            if let Some(VirtualFd::WrittenFile { position, .. }) =
+                caller.data_mut().fds.get_mut(&fd)
+            {
+                *position = end as u64;
+            }
+        }
     }
     write_u32(&mut caller, nwritten_ptr, written)
 }
@@ -1262,22 +1416,40 @@ fn wasi_fd_read(
     let mut writes = Vec::<(u32, Vec<u8>)>::new();
     let mut total_read = 0_u32;
     {
-        let Some(VirtualFd::File {
-            bytes, position, ..
-        }) = caller.data_mut().fds.get_mut(&fd)
-        else {
-            return WASI_ERRNO_BADF;
+        let (bytes, mut position) = match caller.data().fds.get(&fd) {
+            Some(VirtualFd::File { bytes, position }) => (bytes.to_vec(), *position),
+            Some(VirtualFd::WrittenFile { path, position }) => {
+                let bytes = caller
+                    .data()
+                    .written_files
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_default();
+                (bytes, *position)
+            }
+            _ => return WASI_ERRNO_BADF,
         };
         for (ptr, len) in iovs {
-            let start = (*position as usize).min(bytes.len());
+            let start = (position as usize).min(bytes.len());
             let requested_end = start.saturating_add(len as usize).min(bytes.len());
             let chunk = bytes[start..requested_end].to_vec();
-            *position = requested_end as u64;
+            position = requested_end as u64;
             total_read = total_read.saturating_add(chunk.len() as u32);
             writes.push((ptr, chunk));
             if total_read == 0 || requested_end == bytes.len() {
                 break;
             }
+        }
+        match caller.data_mut().fds.get_mut(&fd) {
+            Some(VirtualFd::File {
+                position: file_position,
+                ..
+            })
+            | Some(VirtualFd::WrittenFile {
+                position: file_position,
+                ..
+            }) => *file_position = position,
+            _ => {}
         }
     }
 
@@ -1318,8 +1490,15 @@ fn wasi_fd_pread(
         iovs.push((ptr, len));
     }
 
-    let Some(VirtualFd::File { bytes, .. }) = caller.data().fds.get(&fd) else {
-        return WASI_ERRNO_BADF;
+    let bytes = match caller.data().fds.get(&fd) {
+        Some(VirtualFd::File { bytes, .. }) => bytes.to_vec(),
+        Some(VirtualFd::WrittenFile { path, .. }) => caller
+            .data()
+            .written_files
+            .get(path)
+            .cloned()
+            .unwrap_or_default(),
+        _ => return WASI_ERRNO_BADF,
     };
     let mut position = offset as usize;
     let mut writes = Vec::<(u32, Vec<u8>)>::new();
@@ -1361,6 +1540,7 @@ fn wasi_fd_fdstat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_pt
         WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
         _ => match caller.data().fds.get(&fd) {
             Some(VirtualFd::File { .. }) => WASI_FILETYPE_REGULAR_FILE,
+            Some(VirtualFd::WrittenFile { .. }) => WASI_FILETYPE_REGULAR_FILE,
             Some(VirtualFd::Directory { .. }) => WASI_FILETYPE_DIRECTORY,
             None => return WASI_ERRNO_BADF,
         },
@@ -1384,6 +1564,15 @@ fn wasi_fd_filestat_get(mut caller: Caller<'_, PayloadWasiState>, fd: i32, stat_
         WASI_PREOPEN_FD => (WASI_FILETYPE_DIRECTORY, 0),
         _ => match caller.data().fds.get(&fd) {
             Some(VirtualFd::File { bytes, .. }) => (WASI_FILETYPE_REGULAR_FILE, bytes.len() as u64),
+            Some(VirtualFd::WrittenFile { path, .. }) => (
+                WASI_FILETYPE_REGULAR_FILE,
+                caller
+                    .data()
+                    .written_files
+                    .get(path)
+                    .map(|bytes| bytes.len() as u64)
+                    .unwrap_or(0),
+            ),
             Some(VirtualFd::Directory { .. }) => (WASI_FILETYPE_DIRECTORY, 0),
             None => return WASI_ERRNO_BADF,
         },
@@ -1475,17 +1664,26 @@ fn wasi_fd_seek(
     if fd == WASI_PREOPEN_FD {
         return write_u64(&mut caller, newoffset_ptr, 0);
     }
+    let file_size = match caller.data().fds.get(&fd) {
+        Some(VirtualFd::File { bytes, .. }) => bytes.len() as i128,
+        Some(VirtualFd::WrittenFile { path, .. }) => caller
+            .data()
+            .written_files
+            .get(path)
+            .map(|bytes| bytes.len() as i128)
+            .unwrap_or(0),
+        _ => return WASI_ERRNO_BADF,
+    };
     let new_position = {
-        let Some(VirtualFd::File {
-            bytes, position, ..
-        }) = caller.data_mut().fds.get_mut(&fd)
-        else {
-            return WASI_ERRNO_BADF;
+        let position = match caller.data_mut().fds.get_mut(&fd) {
+            Some(VirtualFd::File { position, .. })
+            | Some(VirtualFd::WrittenFile { position, .. }) => position,
+            _ => return WASI_ERRNO_BADF,
         };
         let base = match whence {
             0 => 0_i128,
             1 => *position as i128,
-            2 => bytes.len() as i128,
+            2 => file_size,
             _ => return WASI_ERRNO_INVAL,
         };
         let next = base + offset as i128;
@@ -1531,6 +1729,13 @@ fn wasi_path_filestat_get(
             WASI_FILETYPE_REGULAR_FILE,
             file.bytes.len() as u64,
         )
+    } else if let Some(size) = caller
+        .data()
+        .written_files
+        .get(&normalized)
+        .map(|bytes| bytes.len() as u64)
+    {
+        write_filestat(&mut caller, stat_ptr, WASI_FILETYPE_REGULAR_FILE, size)
     } else {
         WASI_ERRNO_NOENT
     }
@@ -1555,7 +1760,7 @@ fn wasi_path_open(
     _dirflags: i32,
     path_ptr: i32,
     path_len: i32,
-    _oflags: i32,
+    oflags: i32,
     _rights_base: i64,
     _rights_inheriting: i64,
     _fdflags: i32,
@@ -1569,6 +1774,12 @@ fn wasi_path_open(
     };
     let normalized = normalize_virtual_path(&path);
     let next_fd = caller.data().next_fd;
+    if oflags & WASI_OFLAGS_DIRECTORY != 0 {
+        if !virtual_dir_exists(&normalized) {
+            let _ = write_u32(&mut caller, opened_fd_ptr, 0);
+            return WASI_ERRNO_NOENT;
+        }
+    }
     if let Some(file) = virtual_file(&normalized) {
         caller.data_mut().next_fd = next_fd.saturating_add(1);
         caller.data_mut().fds.insert(
@@ -1580,12 +1791,44 @@ fn wasi_path_open(
         );
         return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
     }
+    if caller.data().written_files.contains_key(&normalized) {
+        if oflags & WASI_OFLAGS_TRUNC != 0 {
+            caller
+                .data_mut()
+                .written_files
+                .insert(normalized.clone(), Vec::new());
+        }
+        caller.data_mut().next_fd = next_fd.saturating_add(1);
+        caller.data_mut().fds.insert(
+            next_fd,
+            VirtualFd::WrittenFile {
+                path: normalized,
+                position: 0,
+            },
+        );
+        return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
+    }
     if virtual_dir_exists(&normalized) {
         caller.data_mut().next_fd = next_fd.saturating_add(1);
         caller.data_mut().fds.insert(
             next_fd,
             VirtualFd::Directory {
                 entries: virtual_dir_entries(&normalized),
+            },
+        );
+        return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
+    }
+    if oflags & WASI_OFLAGS_CREAT != 0 {
+        caller
+            .data_mut()
+            .written_files
+            .insert(normalized.clone(), Vec::new());
+        caller.data_mut().next_fd = next_fd.saturating_add(1);
+        caller.data_mut().fds.insert(
+            next_fd,
+            VirtualFd::WrittenFile {
+                path: normalized,
+                position: 0,
             },
         );
         return write_u32(&mut caller, opened_fd_ptr, next_fd as u32);
@@ -1629,12 +1872,28 @@ fn wasi_path_rename(
 }
 
 fn wasi_path_unlink_file(
-    _caller: Caller<'_, PayloadWasiState>,
-    _fd: i32,
-    _path_ptr: i32,
-    _path_len: i32,
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
 ) -> i32 {
-    WASI_ERRNO_NOSYS
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let Some(path) = read_path(&caller, path_ptr, path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let normalized = normalize_virtual_path(&path);
+    if caller
+        .data_mut()
+        .written_files
+        .remove(&normalized)
+        .is_some()
+    {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_NOENT
+    }
 }
 
 fn wasi_proc_exit(mut caller: Caller<'_, PayloadWasiState>, code: i32) {

@@ -199,7 +199,15 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub blocker_component: String,
     pub blocker_reason: String,
     pub object_emission_attempted: bool,
+    pub object_emission_api: String,
     pub object_bytes_emitted: bool,
+    pub wasm_object_bytes_emitted: bool,
+    pub object_artifact_kind: Option<String>,
+    pub object_artifact_sha256: Option<String>,
+    pub object_artifact_size_bytes: Option<u64>,
+    pub object_artifact_location: Option<String>,
+    pub object_target_triple: Option<String>,
+    pub object_retrieval_method: Option<String>,
     pub llvm_ir_emitted: bool,
     pub llvm_ir_sha256: Option<String>,
     pub llvm_ir_byte_len: Option<u64>,
@@ -2688,9 +2696,9 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         executable_backend_payload_linked: true,
         backend_payload_artifact_path: ".rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-4f33fb70e05141c4.wasm".to_owned(),
         backend_payload_artifact_sha256:
-            "26a721627d8e3dfe1661bb1a643e50a64a8dba1023fb84079c3795232e5d7c06"
+            "38bbdedb795734948c6a5af64ec6648769ab0d3adc5fa1ede518e80931f7fbb9"
                 .to_owned(),
-        backend_payload_artifact_size_bytes: 67_708_457,
+        backend_payload_artifact_size_bytes: 67_734_995,
         embedded_backend_payload_executed: true,
         backend_payload_final_link_invoked: true,
         backend_payload_linker:
@@ -2698,7 +2706,7 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
                 .to_owned(),
         backend_payload_first_undefined_symbol: String::new(),
         backend_payload_llvm_undefined_symbols: Vec::new(),
-        backend_payload_execution_status: "llvm_ir_emitted".to_owned(),
+        backend_payload_execution_status: "wasm_object_bytes_emitted".to_owned(),
         backend_payload_blocker_kind: "none".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
         llvm_wrapper_target_artifact_kind: "staticlib".to_owned(),
@@ -2725,12 +2733,23 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, and emit real LLVM IR bytes".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, emit real LLVM IR bytes, emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve them through the rouwdi-owned virtual filesystem, and open the wasm-ld handoff".to_owned(),
         blocker_kind: "none".to_owned(),
         blocker_component: "none".to_owned(),
-        blocker_reason: "The assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload is linked, embedded, and executed from dist/rouwdi.wasm. It consumes the MIR/mono proof identity, creates a real LLVM context/module, creates a wasm32-wasip1 target machine, and emits LLVM IR bytes. Object emission remains the next frontier; no fake object or Wasm object bytes are claimed.".to_owned(),
-        object_emission_attempted: false,
-        object_bytes_emitted: false,
+        blocker_reason: "none".to_owned(),
+        object_emission_attempted: true,
+        object_emission_api: "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)".to_owned(),
+        object_bytes_emitted: true,
+        wasm_object_bytes_emitted: true,
+        object_artifact_kind: Some("wasm_object".to_owned()),
+        object_artifact_sha256: Some(
+            "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985"
+                .to_owned(),
+        ),
+        object_artifact_size_bytes: Some(207),
+        object_artifact_location: Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned()),
+        object_target_triple: Some("wasm32-wasip1".to_owned()),
+        object_retrieval_method: Some("rouwdi_owned_virtual_fs".to_owned()),
         llvm_ir_emitted: true,
         llvm_ir_sha256: Some(
             "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267"
@@ -4340,7 +4359,7 @@ mod tests {
     }
 
     #[test]
-    fn rustc_codegen_llvm_probe_records_real_backend_contact_and_target_blocker() {
+    fn rustc_codegen_llvm_probe_records_real_object_emission_and_linker_frontier() {
         let component = import_component("rustc_codegen_llvm").unwrap();
         let probe = rustc_codegen_llvm_backend_probe();
 
@@ -4349,18 +4368,20 @@ mod tests {
             component.source_path,
             "third_party/rust/compiler/rustc_codegen_llvm"
         );
-        assert_eq!(component.blocker_kind, "none");
+        assert_eq!(component.blocker_kind, "lld_not_embedded");
         assert!(component
             .probe_command
             .contains("compiler/rustc_codegen_llvm"));
         assert!(component.exact_blocker.contains("embedded"));
         assert!(component.exact_blocker.contains("LLVM IR"));
+        assert!(component.exact_blocker.contains("Wasm object"));
         assert!(component.exact_blocker.contains("exits 0"));
         assert!(component.exact_blocker.contains("LLVM context/module"));
         assert!(component.exact_blocker.contains("target machine"));
         assert!(component
             .exact_blocker
-            .contains("Object/Wasm-object emission remains"));
+            .contains("LLVMTargetMachineEmitToMemoryBuffer"));
+        assert!(component.exact_blocker.contains("wasm-ld"));
         assert_eq!(
             component.adapter_symbol.as_deref(),
             Some("rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe")
@@ -4429,7 +4450,10 @@ mod tests {
             .ends_with("wasm32-wasip1-clang.exe"));
         assert!(probe.backend_payload_first_undefined_symbol.is_empty());
         assert!(probe.backend_payload_llvm_undefined_symbols.is_empty());
-        assert_eq!(probe.backend_payload_execution_status, "llvm_ir_emitted");
+        assert_eq!(
+            probe.backend_payload_execution_status,
+            "wasm_object_bytes_emitted"
+        );
         assert_eq!(probe.backend_payload_blocker_kind, "none");
         assert_eq!(probe.llvm_wrapper_target, "wasm32-wasip1");
         assert_eq!(probe.llvm_wrapper_target_artifact_kind, "staticlib");
@@ -4449,14 +4473,31 @@ mod tests {
         assert!(!probe.enzyme_libloading_blocker_present);
         assert_eq!(probe.blocker_kind, "none");
         assert_eq!(probe.blocker_component, "none");
-        assert!(probe.blocker_reason.contains("embedded"));
-        assert!(probe.blocker_reason.contains("LLVM IR"));
-        assert!(probe.blocker_reason.contains("Object emission remains"));
+        assert_eq!(probe.blocker_reason, "none");
         assert!(probe
             .target_loadable_components
             .contains(&"rustc_codegen_ssa".to_owned()));
-        assert!(!probe.object_emission_attempted);
-        assert!(!probe.object_bytes_emitted);
+        assert!(probe.object_emission_attempted);
+        assert_eq!(
+            probe.object_emission_api,
+            "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)"
+        );
+        assert!(probe.object_bytes_emitted);
+        assert!(probe.wasm_object_bytes_emitted);
+        assert_eq!(probe.object_artifact_kind.as_deref(), Some("wasm_object"));
+        assert_eq!(
+            probe.object_artifact_sha256.as_deref(),
+            Some("0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985")
+        );
+        assert_eq!(probe.object_artifact_size_bytes, Some(207));
+        assert_eq!(
+            probe.object_artifact_location.as_deref(),
+            Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o")
+        );
+        assert_eq!(
+            probe.object_retrieval_method.as_deref(),
+            Some("rouwdi_owned_virtual_fs")
+        );
         assert!(probe.llvm_ir_emitted);
         assert_eq!(
             probe.llvm_ir_sha256.as_deref(),

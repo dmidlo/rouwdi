@@ -155,6 +155,8 @@ pub fn cli_main() -> i32 {
                     && report.llvm_module_created
                     && report.target_machine_created
                     && report.llvm_ir_emitted
+                    && report.object_emission_attempted
+                    && (!report.linker_handoff_created || report.wasm_object_bytes_emitted)
                 {
                     0
                 } else {

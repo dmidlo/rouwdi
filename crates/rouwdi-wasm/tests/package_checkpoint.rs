@@ -231,7 +231,13 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             if payload["monomorphization_status"]
                 == Value::String("mono_items_collected".to_owned())
             {
-                Value::String("codegen".to_owned())
+                if payload["codegen_object_bytes_emitted"] == Value::Bool(true)
+                    && payload["linker_handoff_created"] == Value::Bool(true)
+                {
+                    Value::String("linking".to_owned())
+                } else {
+                    Value::String("codegen".to_owned())
+                }
             } else {
                 Value::String("monomorphization".to_owned())
             }
@@ -273,9 +279,12 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned()
                 )
             );
-            assert_eq!(
-                payload["codegen_handoff_status"],
-                Value::String("llvm_ir_emitted".to_owned())
+            let codegen_status = payload["codegen_handoff_status"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                codegen_status == "wasm_object_bytes_emitted",
+                "canonical package must emit real Wasm object bytes, got {codegen_status}"
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
             assert_eq!(
@@ -286,10 +295,13 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 payload["codegen_expected_output_kind"],
                 Value::String("wasm_object".to_owned())
             );
-            assert_eq!(payload["codegen_blocker_kind"], Value::Null);
+            assert!(
+                payload["codegen_blocker_kind"].is_null()
+                    || payload["codegen_blocker_kind"] == Value::String("none".to_owned())
+            );
             assert_eq!(
                 payload["codegen_contact_state"],
-                Value::String("llvm_ir_emitted".to_owned())
+                payload["codegen_handoff_status"]
             );
             assert_eq!(
                 payload["host_probe_codegen_contact_state"],
@@ -316,7 +328,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 payload["backend_payload_kind"],
                 Value::String("codegen_backend_payload".to_owned())
             );
-            assert_eq!(payload["backend_payload_blocker_kind"], Value::Null);
+            assert!(
+                payload["backend_payload_blocker_kind"].is_null()
+                    || payload["backend_payload_blocker_kind"] == Value::String("none".to_owned())
+            );
             assert_eq!(payload["check_only_target_loadable"], Value::Bool(true));
             assert_eq!(
                 payload["executable_backend_payload_linked"],
@@ -386,19 +401,53 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 payload["target_llvm_library_closure_first_error"],
                 Value::String(String::new())
             );
-            assert_eq!(payload["codegen_blocker_reason"], Value::Null);
             assert_eq!(
                 payload["codegen_object_emission_attempted"],
-                Value::Bool(false)
+                Value::Bool(true)
             );
-            assert_eq!(payload["codegen_object_bytes_emitted"], Value::Bool(false));
             assert_eq!(payload["codegen_llvm_ir_emitted"], Value::Bool(true));
             assert_eq!(
-                payload["codegen_artifact_sha256"],
+                payload["codegen_llvm_ir_sha256"],
                 Value::String(
                     "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267".to_owned()
                 )
             );
+            assert_eq!(payload["codegen_llvm_ir_size_bytes"], Value::from(121));
+            assert!(payload["codegen_object_emission_api"]
+                .as_str()
+                .is_some_and(|api| api.contains("LLVMTargetMachineEmitToMemoryBuffer")));
+            assert_eq!(payload["codegen_object_bytes_emitted"], Value::Bool(true));
+            assert_eq!(
+                payload["codegen_wasm_object_bytes_emitted"],
+                Value::Bool(true)
+            );
+            assert_eq!(
+                payload["codegen_object_artifact_kind"],
+                Value::String("wasm_object".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_object_artifact_sha256"],
+                Value::String(
+                    "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985".to_owned()
+                )
+            );
+            assert_eq!(
+                payload["codegen_object_artifact_size_bytes"],
+                Value::from(207)
+            );
+            assert_eq!(
+                payload["codegen_object_artifact_location"],
+                Value::String("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_object_retrieval_method"],
+                Value::String("rouwdi_owned_virtual_fs".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_object_bytes_retrieved_by_rouwdi"],
+                Value::Bool(true)
+            );
+            assert_eq!(payload["codegen_object_sha256_verified"], Value::Bool(true));
             assert_eq!(payload["linker_handoff_created"], Value::Bool(true));
         }
         assert!(
@@ -456,7 +505,9 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     == Value::String("target_machine_created".to_owned())
                 && entry["host_probe_llvm_module_created"] == Value::Bool(true)
                 && entry["host_probe_target_machine_created"] == Value::Bool(true)
-                && entry["codegen_contact_state"] == Value::String("llvm_ir_emitted".to_owned())
+                && entry["codegen_contact_state"]
+                    .as_str()
+                    .is_some_and(|status| status == "wasm_object_bytes_emitted")
                 && entry["mono_proof_consumed"] == Value::Bool(true)
                 && entry["llvm_wrapper_target"] == Value::String("wasm32-wasip1".to_owned())
                 && entry["llvm_wrapper_artifact_kind"] == Value::String("staticlib".to_owned())
@@ -479,12 +530,31 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["llvm_module_created"] == Value::Bool(true)
                 && entry["target_machine_created"] == Value::Bool(true)
                 && entry["llvm_ir_emitted"] == Value::Bool(true)
-                && entry["codegen_artifact_sha256"]
+                && entry["llvm_ir_sha256"]
                     == Value::String(
                         "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267"
                             .to_owned(),
                     )
-                && entry["object_bytes_emitted"] == Value::Bool(false)
+                && entry["llvm_ir_size_bytes"] == Value::from(121)
+                && entry["object_emission_attempted"] == Value::Bool(true)
+                && entry["object_emission_api"]
+                    .as_str()
+                    .is_some_and(|api| api.contains("LLVMTargetMachineEmitToMemoryBuffer"))
+                && entry["object_bytes_emitted"] == Value::Bool(true)
+                && entry["wasm_object_bytes_emitted"] == Value::Bool(true)
+                && entry["object_artifact_kind"] == Value::String("wasm_object".to_owned())
+                && entry["object_artifact_sha256"]
+                    == Value::String(
+                        "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985"
+                            .to_owned(),
+                    )
+                && entry["object_artifact_size_bytes"] == Value::from(207)
+                && entry["object_artifact_location"]
+                    == Value::String("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned())
+                && entry["object_retrieval_method"]
+                    == Value::String("rouwdi_owned_virtual_fs".to_owned())
+                && entry["object_bytes_retrieved_by_rouwdi"] == Value::Bool(true)
+                && entry["object_sha256_verified"] == Value::Bool(true)
                 && entry["linker_handoff_created"] == Value::Bool(true)
         }),
         "canonical manifest must retain the assembly-owned LLVM backend payload route"

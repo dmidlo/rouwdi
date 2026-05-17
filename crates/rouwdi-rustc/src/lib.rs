@@ -634,9 +634,13 @@ pub struct RustLinkerHandoffRecord {
     pub target_triple: String,
     pub codegen_artifact_kind: String,
     pub codegen_artifact_hash: String,
+    pub codegen_artifact_size: u64,
     pub codegen_backend_identity: String,
     pub required_linker_component: String,
     pub expected_final_artifact_kind: String,
+    pub linker_input_count: u64,
+    pub required_runtime_objects: Vec<String>,
+    pub required_std_core_alloc_objects_or_archives: Vec<String>,
     pub current_status: String,
     pub blocker_kind: String,
     pub next_command: String,
@@ -709,6 +713,7 @@ pub struct RustCodegenHandoffRecord {
     pub target_machine_code_model: String,
     pub target_machine_optimization_level: String,
     pub object_emission_attempted: bool,
+    pub object_emission_api: Option<String>,
     pub current_status: String,
     pub blocker_kind: String,
     pub blocker_component: String,
@@ -716,8 +721,15 @@ pub struct RustCodegenHandoffRecord {
     pub next_command: String,
     pub proof_path: String,
     pub object_bytes_emitted: bool,
+    pub wasm_object_bytes_emitted: bool,
     pub object_path: Option<String>,
     pub object_sha256: Option<String>,
+    pub object_artifact_kind: Option<String>,
+    pub object_artifact_sha256: Option<String>,
+    pub object_artifact_size_bytes: Option<u64>,
+    pub object_artifact_location: Option<String>,
+    pub object_target_triple: Option<String>,
+    pub object_retrieval_method: Option<String>,
     pub codegen_artifact_kind: Option<String>,
     pub codegen_artifact_byte_len: Option<u64>,
     pub producer_backend: String,
@@ -725,6 +737,7 @@ pub struct RustCodegenHandoffRecord {
     pub linker_required: bool,
     pub llvm_ir_emitted: bool,
     pub llvm_ir_sha256: Option<String>,
+    pub llvm_ir_size_bytes: Option<u64>,
     pub linker_handoff_created: bool,
     pub linker_handoff: Option<RustLinkerHandoffRecord>,
 }
@@ -746,8 +759,12 @@ impl RustCodegenHandoffRecord {
         } else {
             "object"
         };
-        let blocker_kind = if codegen_probe.llvm_ir_emitted || codegen_probe.object_bytes_emitted {
+        let blocker_kind = if codegen_probe.object_bytes_emitted {
             "none".to_owned()
+        } else if codegen_probe.object_emission_attempted {
+            codegen_probe.blocker_kind.clone()
+        } else if codegen_probe.llvm_ir_emitted {
+            "object_emission_not_attempted".to_owned()
         } else {
             codegen_probe.backend_payload_blocker_kind.clone()
         };
@@ -767,6 +784,8 @@ impl RustCodegenHandoffRecord {
         };
         let current_status = if codegen_probe.object_bytes_emitted {
             "wasm_object_bytes_emitted".to_owned()
+        } else if codegen_probe.object_emission_attempted {
+            codegen_probe.backend_payload_execution_status.clone()
         } else if codegen_probe.llvm_ir_emitted {
             "llvm_ir_emitted".to_owned()
         } else if codegen_probe.backend_payload_blocker_kind != "none" {
@@ -848,10 +867,7 @@ impl RustCodegenHandoffRecord {
                 "object".to_owned(),
                 "wasm object".to_owned(),
             ],
-            required_target_machine: format!(
-                "LLVM TargetMachine for {}",
-                proof.target_triple
-            ),
+            required_target_machine: format!("LLVM TargetMachine for {}", proof.target_triple),
             required_target_spec: format!("rustc_target target spec for {}", proof.target_triple),
             required_linker: if proof.target_triple.starts_with("wasm32") {
                 "wasm-ld".to_owned()
@@ -878,12 +894,15 @@ impl RustCodegenHandoffRecord {
             crate_identity,
             target_spec_identity,
             backend_contact_attempted: true,
-            backend_contact_command: rouwdi_rustc_upstream::RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND
-                .to_owned(),
+            backend_contact_command:
+                rouwdi_rustc_upstream::RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND.to_owned(),
             backend_contact_status: if codegen_probe.backend_constructed {
                 "host_codegen_probe_backend_constructed".to_owned()
             } else {
-                format!("host_codegen_probe_blocked_at_{}", codegen_probe.blocker_kind)
+                format!(
+                    "host_codegen_probe_blocked_at_{}",
+                    codegen_probe.blocker_kind
+                )
             },
             target_loadable_probe_command: codegen_probe.target_loadable_probe_command,
             target_loadable_probe_exit_code: codegen_probe.target_loadable_probe_exit_code,
@@ -935,23 +954,37 @@ impl RustCodegenHandoffRecord {
                 String::new()
             },
             object_emission_attempted: codegen_probe.object_emission_attempted,
+            object_emission_api: Some(codegen_probe.object_emission_api.clone()),
             current_status,
             blocker_kind,
             blocker_component,
             blocker_reason,
-            next_command:
-                "Lower the real mono item into the LLVM module body and attempt object emission through rustc_codegen_llvm without dummy bytes"
-                    .to_owned(),
+            next_command: if codegen_probe.object_bytes_emitted {
+                "Embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted Wasm object plus target-pack runtime objects".to_owned()
+            } else {
+                "Emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve them through rouwdi-owned logic, then open wasm-ld handoff".to_owned()
+            },
             proof_path: "graph/rust-source-codegen-handoff.json".to_owned(),
             object_bytes_emitted: codegen_probe.object_bytes_emitted,
-            object_path: None,
-            object_sha256: None,
-            codegen_artifact_kind: if codegen_probe.llvm_ir_emitted {
+            wasm_object_bytes_emitted: codegen_probe.wasm_object_bytes_emitted,
+            object_path: codegen_probe.object_artifact_location.clone(),
+            object_sha256: codegen_probe.object_artifact_sha256.clone(),
+            object_artifact_kind: codegen_probe.object_artifact_kind.clone(),
+            object_artifact_sha256: codegen_probe.object_artifact_sha256.clone(),
+            object_artifact_size_bytes: codegen_probe.object_artifact_size_bytes,
+            object_artifact_location: codegen_probe.object_artifact_location.clone(),
+            object_target_triple: codegen_probe.object_target_triple.clone(),
+            object_retrieval_method: codegen_probe.object_retrieval_method.clone(),
+            codegen_artifact_kind: if codegen_probe.object_bytes_emitted {
+                codegen_probe.object_artifact_kind.clone()
+            } else if codegen_probe.llvm_ir_emitted {
                 Some("llvm_ir".to_owned())
             } else {
                 None
             },
-            codegen_artifact_byte_len: if codegen_probe.llvm_ir_emitted {
+            codegen_artifact_byte_len: if codegen_probe.object_bytes_emitted {
+                codegen_probe.object_artifact_size_bytes
+            } else if codegen_probe.llvm_ir_emitted {
                 codegen_probe.llvm_ir_byte_len
             } else {
                 None
@@ -961,14 +994,22 @@ impl RustCodegenHandoffRecord {
             linker_required: codegen_probe.llvm_ir_emitted || codegen_probe.object_bytes_emitted,
             llvm_ir_emitted: codegen_probe.llvm_ir_emitted,
             llvm_ir_sha256: codegen_probe.llvm_ir_sha256.clone(),
-            linker_handoff_created: codegen_probe.llvm_ir_emitted || codegen_probe.object_bytes_emitted,
-            linker_handoff: if codegen_probe.llvm_ir_emitted {
-                codegen_probe.llvm_ir_sha256.clone().map(|llvm_ir_sha256| {
-                    RustLinkerHandoffRecord {
+            llvm_ir_size_bytes: codegen_probe.llvm_ir_byte_len,
+            linker_handoff_created: codegen_probe.object_bytes_emitted,
+            linker_handoff: if codegen_probe.object_bytes_emitted {
+                match (
+                    codegen_probe.object_artifact_sha256.clone(),
+                    codegen_probe.object_artifact_size_bytes,
+                ) {
+                    (Some(object_sha256), Some(object_size)) => Some(RustLinkerHandoffRecord {
                         compile_unit_id: proof.compile_unit_id.clone(),
                         target_triple: proof.target_triple.clone(),
-                        codegen_artifact_kind: "llvm_ir".to_owned(),
-                        codegen_artifact_hash: llvm_ir_sha256,
+                        codegen_artifact_kind: codegen_probe
+                            .object_artifact_kind
+                            .clone()
+                            .unwrap_or_else(|| expected_output_kind.to_owned()),
+                        codegen_artifact_hash: object_sha256,
+                        codegen_artifact_size: object_size,
                         codegen_backend_identity:
                             "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
                         required_linker_component: if proof.target_triple.starts_with("wasm32") {
@@ -978,16 +1019,30 @@ impl RustCodegenHandoffRecord {
                         },
                         expected_final_artifact_kind: if proof.target_triple.starts_with("wasm32")
                         {
-                            "wasm_module".to_owned()
+                            "wasm32-wasip1 module".to_owned()
                         } else {
                             "native_executable".to_owned()
                         },
-                        current_status: "blocked_until_object_bytes_emitted".to_owned(),
-                        blocker_kind: "linker_handoff_waiting_for_wasm_object_bytes".to_owned(),
-                        next_command: "emit wasm object bytes from the embedded LLVM backend, then invoke rouwdi-owned wasm-ld".to_owned(),
+                        linker_input_count: 1,
+                        required_runtime_objects: if proof.target_triple.starts_with("wasm32") {
+                            vec!["crt1-command.o".to_owned()]
+                        } else {
+                            Vec::new()
+                        },
+                        required_std_core_alloc_objects_or_archives: vec![
+                            "libcore.rlib".to_owned(),
+                            "liballoc.rlib".to_owned(),
+                            "libstd.rlib".to_owned(),
+                            "libwasip1.rlib".to_owned(),
+                            "libc.a".to_owned(),
+                        ],
+                        current_status: "wasm_ld_payload_required".to_owned(),
+                        blocker_kind: "lld_not_embedded".to_owned(),
+                        next_command: "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus target-pack runtime objects".to_owned(),
                         proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
-                    }
-                })
+                    }),
+                    _ => None,
+                }
             } else {
                 None
             },
@@ -1174,30 +1229,91 @@ impl RustCodegenHandoffRecord {
         if self.object_emission_attempted && !self.llvm_module_created {
             return Err("object emission setup requires an LLVM module".to_owned());
         }
+        if self.object_emission_attempted {
+            let api = self
+                .object_emission_api
+                .as_deref()
+                .ok_or_else(|| "object emission attempt requires exact LLVM API".to_owned())?;
+            if !api.contains("LLVMTargetMachineEmitToMemoryBuffer")
+                && !api.contains("rustc_codegen_llvm")
+            {
+                return Err(
+                    "object emission attempt must name the real LLVM/rustc_codegen_llvm API"
+                        .to_owned(),
+                );
+            }
+        }
         if self.current_status == "object_bytes_emitted"
             || self.current_status == "wasm_object_bytes_emitted"
         {
             if !self.object_bytes_emitted {
                 return Err("codegen success requires real object bytes".to_owned());
             }
-            if self.codegen_artifact_byte_len.unwrap_or_default() == 0 {
+            if self.codegen_artifact_byte_len.unwrap_or_default() == 0
+                || self.object_artifact_size_bytes.unwrap_or_default() == 0
+            {
                 return Err("codegen success requires a non-empty artifact byte length".to_owned());
             }
             let object_sha = self
                 .object_sha256
                 .as_deref()
+                .or(self.object_artifact_sha256.as_deref())
                 .ok_or_else(|| "codegen success requires object_sha256".to_owned())?;
             if object_sha == self.mono_item_graph_hash || object_sha == self.mir_body_hash {
                 return Err("object hash must not reuse mono graph or MIR body hashes".to_owned());
             }
+            if self.llvm_ir_sha256.as_deref() == Some(object_sha) {
+                return Err("object hash must not reuse LLVM IR hash".to_owned());
+            }
+            if self.target_triple.starts_with("wasm32") {
+                if !self.wasm_object_bytes_emitted
+                    || self.object_artifact_kind.as_deref() != Some("wasm_object")
+                    || self.codegen_artifact_kind.as_deref() != Some("wasm_object")
+                {
+                    return Err("wasm targets require real wasm_object bytes".to_owned());
+                }
+            }
+            let location = self
+                .object_artifact_location
+                .as_deref()
+                .or(self.object_path.as_deref())
+                .ok_or_else(|| {
+                    "object bytes require a rouwdi-owned artifact location".to_owned()
+                })?;
+            if location.ends_with(".json")
+                || location.contains("/proof")
+                || location.contains("\\proof")
+                || location.contains("host:")
+            {
+                return Err(
+                    "object artifact location must not point at proof JSON or host sidecar output"
+                        .to_owned(),
+                );
+            }
+            if self
+                .object_retrieval_method
+                .as_deref()
+                .is_none_or(|method| {
+                    method != "rouwdi_owned_virtual_fs" && method != "guest_memory"
+                })
+            {
+                return Err("object bytes must be retrieved by rouwdi-owned logic".to_owned());
+            }
         } else if self.object_bytes_emitted
+            || self.wasm_object_bytes_emitted
             || self.object_path.is_some()
             || self.object_sha256.is_some()
+            || self.object_artifact_sha256.is_some()
+            || self.object_artifact_size_bytes.is_some()
         {
             return Err("blocked codegen handoff must not claim object bytes".to_owned());
         }
         if self.llvm_ir_emitted {
-            if self.codegen_artifact_byte_len.unwrap_or_default() == 0 {
+            if self
+                .llvm_ir_size_bytes
+                .unwrap_or(self.codegen_artifact_byte_len.unwrap_or_default())
+                == 0
+            {
                 return Err("LLVM IR emission requires a non-empty artifact byte length".to_owned());
             }
             let llvm_ir_sha = self
@@ -1208,21 +1324,33 @@ impl RustCodegenHandoffRecord {
                 return Err("LLVM IR hash must not reuse mono graph or MIR body hashes".to_owned());
             }
         }
-        let has_real_codegen_bytes = self.object_bytes_emitted || self.llvm_ir_emitted;
-        if self.linker_handoff_created && !has_real_codegen_bytes {
-            return Err("linker handoff is forbidden without real codegen bytes".to_owned());
+        if self.linker_handoff_created && !self.object_bytes_emitted {
+            return Err("linker handoff is forbidden without real object bytes".to_owned());
         }
-        if self.linker_handoff.is_some() && !has_real_codegen_bytes {
-            return Err("linker handoff is forbidden without real codegen bytes".to_owned());
+        if self.linker_handoff.is_some() && !self.object_bytes_emitted {
+            return Err("linker handoff is forbidden without real object bytes".to_owned());
         }
         if let Some(linker_handoff) = &self.linker_handoff {
             let codegen_sha = self
                 .object_sha256
                 .as_deref()
-                .or(self.llvm_ir_sha256.as_deref())
+                .or(self.object_artifact_sha256.as_deref())
                 .ok_or_else(|| "linker handoff requires a codegen artifact hash".to_owned())?;
             if linker_handoff.codegen_artifact_hash != codegen_sha {
                 return Err("linker handoff artifact hash must match codegen output".to_owned());
+            }
+            if linker_handoff.codegen_artifact_kind != "wasm_object"
+                && linker_handoff.codegen_artifact_kind != "native_object"
+            {
+                return Err("linker handoff must consume real object bytes".to_owned());
+            }
+            if linker_handoff.codegen_artifact_size == 0 || linker_handoff.linker_input_count == 0 {
+                return Err("linker handoff requires object size and input count".to_owned());
+            }
+            if linker_handoff.required_linker_component != "wasm-ld"
+                && linker_handoff.required_linker_component != "lld"
+            {
+                return Err("linker handoff must name wasm-ld/lld".to_owned());
             }
         }
         Ok(())
@@ -1949,7 +2077,7 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "third_party/rust/compiler/rustc_monomorphize",
             "monomorphization collector",
         ),
-        pending_component(
+        imported_component(
             "rustc_codegen_llvm",
             "third_party/rust/compiler/rustc_codegen_llvm",
             "LLVM-grade codegen backend",
@@ -5318,7 +5446,10 @@ mod tests {
         assert!(inventory
             .iter()
             .any(|component| component.name == "rustc_codegen_llvm"
-                && !component.embedded_in_assembly));
+                && component.embedded_in_assembly));
+        assert!(inventory
+            .iter()
+            .any(|component| component.name == "lld" && !component.embedded_in_assembly));
         assert!(!complete_rustc_semantics_embedded());
     }
 

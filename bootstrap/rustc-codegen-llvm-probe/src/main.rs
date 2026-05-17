@@ -61,8 +61,28 @@ struct TargetMachineSetup {
     blocker_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ObjectEmissionSetup {
+    attempted: bool,
+    api: String,
+    object_bytes_emitted: bool,
+    wasm_object_bytes_emitted: bool,
+    artifact_kind: Option<String>,
+    artifact_sha256: Option<String>,
+    artifact_size_bytes: Option<usize>,
+    artifact_location: Option<String>,
+    target_triple: String,
+    retrieval_method: Option<String>,
+    blocker_kind: Option<String>,
+    blocker_reason: Option<String>,
+}
+
 type LLVMTargetRef = *mut c_void;
 type LLVMTargetMachineRef = *mut c_void;
+type LLVMMemoryBufferRef = *mut c_void;
+
+const LLVM_OBJECT_FILE: c_uint = 1;
+const OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1.o";
 
 #[link(name = "llvm-wrapper", kind = "static")]
 unsafe extern "C" {}
@@ -96,6 +116,16 @@ unsafe extern "C" {
         code_model: c_uint,
     ) -> LLVMTargetMachineRef;
     fn LLVMDisposeTargetMachine(target_machine: LLVMTargetMachineRef);
+    fn LLVMTargetMachineEmitToMemoryBuffer(
+        target_machine: LLVMTargetMachineRef,
+        module: *mut c_void,
+        codegen: c_uint,
+        error_message: *mut *mut c_char,
+        out_mem_buf: *mut LLVMMemoryBufferRef,
+    ) -> c_int;
+    fn LLVMGetBufferStart(mem_buf: LLVMMemoryBufferRef) -> *const c_char;
+    fn LLVMGetBufferSize(mem_buf: LLVMMemoryBufferRef) -> usize;
+    fn LLVMDisposeMemoryBuffer(mem_buf: LLVMMemoryBufferRef);
     fn LLVMDisposeMessage(message: *mut c_char);
 }
 
@@ -127,9 +157,22 @@ fn main() -> ExitCode {
             blocker_reason: module_setup.blocker_reason.clone(),
         }
     };
+    let object_emission = attempt_object_emission(&input);
 
     let llvm_ir_emitted = module_setup.llvm_ir.is_some();
-    let codegen_contact_state = if llvm_ir_emitted {
+    let codegen_contact_state = if object_emission.wasm_object_bytes_emitted {
+        "wasm_object_bytes_emitted"
+    } else if object_emission.attempted
+        && object_emission
+            .blocker_kind
+            .as_deref()
+            .is_some_and(|kind| kind != "none")
+    {
+        object_emission
+            .blocker_kind
+            .as_deref()
+            .unwrap_or("object_emission_blocked")
+    } else if llvm_ir_emitted {
         "llvm_ir_emitted"
     } else if target_machine_setup.target_machine_created {
         "target_machine_created"
@@ -146,13 +189,15 @@ fn main() -> ExitCode {
         .blocker_kind
         .as_deref()
         .or(module_setup.blocker_kind.as_deref())
+        .or(object_emission.blocker_kind.as_deref())
         .unwrap_or("none");
     let blocker_reason = target_machine_setup
         .blocker_reason
         .as_deref()
         .or(module_setup.blocker_reason.as_deref())
+        .or(object_emission.blocker_reason.as_deref())
         .unwrap_or("none");
-    let codegen_artifact = if let Some(llvm_ir) = module_setup.llvm_ir.as_ref() {
+    let llvm_ir_artifact = if let Some(llvm_ir) = module_setup.llvm_ir.as_ref() {
         serde_json::json!({
             "artifact_kind": "llvm_ir",
             "byte_length": module_setup.llvm_ir_size_bytes,
@@ -161,6 +206,9 @@ fn main() -> ExitCode {
             "target_triple": input.target_triple,
             "mir_body_hash": input.mir_body_hash,
             "mono_item_graph_hash": input.mono_item_graph_hash,
+            "module_identity": module_setup.module_identity,
+            "module_identity_hash": module_setup.module_identity_hash,
+            "target_machine_identity": target_machine_identity(&target_machine_setup),
             "payload_hash": null,
             "linker_required": true,
             "embedded_artifact_location": "backend_stdout.codegen_artifact.llvm_ir",
@@ -169,18 +217,44 @@ fn main() -> ExitCode {
     } else {
         serde_json::Value::Null
     };
-    let linker_handoff = if llvm_ir_emitted {
+    let object_artifact = if object_emission.object_bytes_emitted {
+        serde_json::json!({
+            "artifact_kind": object_emission.artifact_kind,
+            "byte_length": object_emission.artifact_size_bytes,
+            "sha256": object_emission.artifact_sha256,
+            "producer_backend": "rustc_codegen_llvm",
+            "target_triple": object_emission.target_triple,
+            "mir_body_hash": input.mir_body_hash,
+            "mono_item_graph_hash": input.mono_item_graph_hash,
+            "llvm_module_identity_hash": module_setup.module_identity_hash,
+            "target_machine_identity": target_machine_identity(&target_machine_setup),
+            "embedded_artifact_location": object_emission.artifact_location,
+            "retrieval_method": object_emission.retrieval_method,
+        })
+    } else {
+        serde_json::Value::Null
+    };
+    let codegen_artifact = if object_emission.object_bytes_emitted {
+        object_artifact.clone()
+    } else {
+        llvm_ir_artifact.clone()
+    };
+    let linker_handoff = if object_emission.wasm_object_bytes_emitted {
         serde_json::json!({
             "compile_unit_id": input.compile_unit_id,
             "target_triple": input.target_triple,
-            "codegen_artifact_kind": "llvm_ir",
-            "codegen_artifact_hash": module_setup.llvm_ir_sha256,
+            "codegen_artifact_kind": "wasm_object",
+            "codegen_artifact_hash": object_emission.artifact_sha256,
+            "codegen_artifact_size": object_emission.artifact_size_bytes,
             "codegen_backend_identity": "rustc_codegen_llvm::LlvmCodegenBackend",
             "required_linker_component": "wasm-ld",
-            "expected_final_artifact_kind": "wasm_module",
-            "current_status": "blocked_until_object_bytes_emitted",
-            "blocker_kind": "linker_handoff_waiting_for_wasm_object_bytes",
-            "next_command": "emit wasm object bytes from the embedded LLVM backend, then invoke rouwdi-owned wasm-ld",
+            "expected_final_artifact_kind": "wasm32-wasip1 module",
+            "linker_input_count": 1,
+            "required_runtime_objects": ["crt1-command.o"],
+            "required_std_objects_or_archives": ["libcore.rlib", "liballoc.rlib", "libstd.rlib", "libwasip1.rlib", "libc.a"],
+            "current_status": "wasm_ld_payload_required",
+            "blocker_kind": "lld_not_embedded",
+            "next_command": "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus the wasm32-wasip1 target-pack runtime objects",
             "proof_path": "dist/manifest.json#/codegen_payloads/0/linker_handoff"
         })
     } else {
@@ -229,13 +303,25 @@ fn main() -> ExitCode {
             "blocker_kind": target_machine_setup.blocker_kind,
             "blocker_reason": target_machine_setup.blocker_reason,
         },
+        "llvm_ir_artifact": llvm_ir_artifact,
+        "object_artifact": object_artifact,
         "codegen_artifact": codegen_artifact,
-        "object_emission_attempted": false,
-        "object_bytes_emitted": false,
         "llvm_ir_emitted": llvm_ir_emitted,
+        "llvm_ir_sha256": module_setup.llvm_ir_sha256,
+        "llvm_ir_size_bytes": module_setup.llvm_ir_size_bytes,
+        "object_emission_attempted": object_emission.attempted,
+        "object_emission_api": object_emission.api,
+        "object_bytes_emitted": object_emission.object_bytes_emitted,
+        "wasm_object_bytes_emitted": object_emission.wasm_object_bytes_emitted,
+        "object_artifact_kind": object_emission.artifact_kind,
+        "object_artifact_sha256": object_emission.artifact_sha256,
+        "object_artifact_size_bytes": object_emission.artifact_size_bytes,
+        "object_artifact_location": object_emission.artifact_location,
+        "object_target_triple": object_emission.target_triple,
+        "object_retrieval_method": object_emission.retrieval_method,
         "bitcode_emitted": false,
-        "wasm_object_bytes_emitted": false,
-        "linker_handoff_created": llvm_ir_emitted,
+        "linker_required": true,
+        "linker_handoff_created": object_emission.wasm_object_bytes_emitted,
         "linker_handoff": linker_handoff,
         "blocker_kind": blocker_kind,
         "blocker_reason": blocker_reason
@@ -501,6 +587,237 @@ fn attempt_target_machine_setup(input: &ProbeInput) -> TargetMachineSetup {
             blocker_kind: None,
             blocker_reason: None,
         }
+    }
+}
+
+fn attempt_object_emission(input: &ProbeInput) -> ObjectEmissionSetup {
+    let api = "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)".to_owned();
+    let target_triple = input.target_triple.clone();
+    let module_name = match CString::new(input.compile_unit_id.as_str()) {
+        Ok(value) => value,
+        Err(error) => {
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_invalid_module_name",
+                error.to_string(),
+            );
+        }
+    };
+    let triple = match CString::new(input.target_triple.as_str()) {
+        Ok(value) => value,
+        Err(error) => {
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_invalid_target_triple",
+                error.to_string(),
+            );
+        }
+    };
+    let cpu = CString::new("generic").expect("static CPU has no nul");
+    let features = CString::new("").expect("static features have no nul");
+
+    unsafe {
+        LLVMInitializeWebAssemblyTargetInfo();
+        LLVMInitializeWebAssemblyTarget();
+        LLVMInitializeWebAssemblyTargetMC();
+        LLVMInitializeWebAssemblyAsmPrinter();
+
+        let context = LLVMContextCreate();
+        if context.is_null() {
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_LLVMContextCreate",
+                "LLVMContextCreate returned null".to_owned(),
+            );
+        }
+
+        let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), context);
+        if module.is_null() {
+            LLVMContextDispose(context);
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_LLVMModuleCreateWithNameInContext",
+                "LLVMModuleCreateWithNameInContext returned null".to_owned(),
+            );
+        }
+        LLVMSetTarget(module, triple.as_ptr());
+
+        let mut target = std::ptr::null_mut();
+        let mut error_message = std::ptr::null_mut();
+        let lookup_failed =
+            LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut error_message);
+        if lookup_failed != 0 || target.is_null() {
+            let reason = llvm_error_message(
+                error_message,
+                "LLVMGetTargetFromTriple returned no target".to_owned(),
+            );
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_LLVMGetTargetFromTriple",
+                reason,
+            );
+        }
+
+        let target_machine = LLVMCreateTargetMachine(
+            target,
+            triple.as_ptr(),
+            cpu.as_ptr(),
+            features.as_ptr(),
+            0,
+            2,
+            0,
+        );
+        if target_machine.is_null() {
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_LLVMCreateTargetMachine",
+                "LLVMCreateTargetMachine returned null".to_owned(),
+            );
+        }
+
+        let mut out_buffer = std::ptr::null_mut();
+        let mut emit_error = std::ptr::null_mut();
+        let failed = LLVMTargetMachineEmitToMemoryBuffer(
+            target_machine,
+            module,
+            LLVM_OBJECT_FILE,
+            &mut emit_error,
+            &mut out_buffer,
+        );
+        if failed != 0 || out_buffer.is_null() {
+            let reason = llvm_error_message(
+                emit_error,
+                "LLVMTargetMachineEmitToMemoryBuffer returned no object buffer".to_owned(),
+            );
+            LLVMDisposeTargetMachine(target_machine);
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_LLVMTargetMachineEmitToMemoryBuffer",
+                reason,
+            );
+        }
+
+        let ptr = LLVMGetBufferStart(out_buffer);
+        let len = LLVMGetBufferSize(out_buffer);
+        if ptr.is_null() || len == 0 {
+            LLVMDisposeMemoryBuffer(out_buffer);
+            LLVMDisposeTargetMachine(target_machine);
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            return object_blocked(
+                api,
+                target_triple,
+                "object_emission_attempted_blocked_at_empty_LLVM_memory_buffer",
+                "LLVMTargetMachineEmitToMemoryBuffer returned an empty buffer".to_owned(),
+            );
+        }
+
+        let object_bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec();
+        LLVMDisposeMemoryBuffer(out_buffer);
+        LLVMDisposeTargetMachine(target_machine);
+        LLVMDisposeModule(module);
+        LLVMContextDispose(context);
+
+        if cfg!(target_arch = "wasm32") {
+            if let Err(error) = std::fs::write(OBJECT_ARTIFACT_PATH, &object_bytes) {
+                return object_blocked(
+                    api,
+                    target_triple,
+                    "object_emission_attempted_blocked_at_rouwdi_virtual_fs_write",
+                    format!(
+                        "failed to write emitted object bytes to rouwdi-owned WASI VFS: {error}"
+                    ),
+                );
+            }
+        }
+
+        ObjectEmissionSetup {
+            attempted: true,
+            api,
+            object_bytes_emitted: true,
+            wasm_object_bytes_emitted: input.target_triple.starts_with("wasm32"),
+            artifact_kind: Some(if input.target_triple.starts_with("wasm32") {
+                "wasm_object".to_owned()
+            } else {
+                "native_object".to_owned()
+            }),
+            artifact_sha256: Some(sha256_hex(&object_bytes)),
+            artifact_size_bytes: Some(object_bytes.len()),
+            artifact_location: Some(if cfg!(target_arch = "wasm32") {
+                format!("vfs:/workspace/{OBJECT_ARTIFACT_PATH}")
+            } else {
+                "memory://LLVMTargetMachineEmitToMemoryBuffer".to_owned()
+            }),
+            target_triple,
+            retrieval_method: Some(if cfg!(target_arch = "wasm32") {
+                "rouwdi_owned_virtual_fs".to_owned()
+            } else {
+                "guest_memory".to_owned()
+            }),
+            blocker_kind: None,
+            blocker_reason: None,
+        }
+    }
+}
+
+fn object_blocked(
+    api: String,
+    target_triple: String,
+    blocker_kind: &str,
+    blocker_reason: String,
+) -> ObjectEmissionSetup {
+    ObjectEmissionSetup {
+        attempted: true,
+        api,
+        object_bytes_emitted: false,
+        wasm_object_bytes_emitted: false,
+        artifact_kind: None,
+        artifact_sha256: None,
+        artifact_size_bytes: None,
+        artifact_location: None,
+        target_triple,
+        retrieval_method: None,
+        blocker_kind: Some(blocker_kind.to_owned()),
+        blocker_reason: Some(blocker_reason),
+    }
+}
+
+unsafe fn llvm_error_message(message: *mut c_char, fallback: String) -> String {
+    if message.is_null() {
+        fallback
+    } else {
+        let reason = CStr::from_ptr(message).to_string_lossy().into_owned();
+        LLVMDisposeMessage(message);
+        reason
+    }
+}
+
+fn target_machine_identity(setup: &TargetMachineSetup) -> Option<String> {
+    if setup.target_machine_created {
+        Some(format!(
+            "target_machine=LLVM;target={};cpu={};features={};reloc={};code_model={};opt={}",
+            setup.target_triple,
+            setup.cpu,
+            setup.features,
+            setup.relocation_model,
+            setup.code_model,
+            setup.optimization_level
+        ))
+    } else {
+        None
     }
 }
 

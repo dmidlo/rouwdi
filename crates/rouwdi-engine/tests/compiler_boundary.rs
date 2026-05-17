@@ -7,10 +7,11 @@ use rouwdi_rustc::{
     RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
     RustCodegenHandoffRecord, RustCompilerPipelineStatus, RustCompilerStage,
     RustEmbeddedMirPayloadExecution, RustExpansionStageRecord, RustExpansionStageStatus,
-    RustMirBodyProof, RustMirHandoffBlockerCategory, RustMirHandoffRecord, RustMirHandoffStatus,
-    RustMonomorphizationProof, RustNameResolutionDiagnosticCode, RustNameResolutionStageRecord,
-    RustNameResolutionStageStatus, RustParseStageRecord, RustParseStageStatus,
-    RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord, RustTypeCheckStageStatus,
+    RustLinkerHandoffRecord, RustMirBodyProof, RustMirHandoffBlockerCategory, RustMirHandoffRecord,
+    RustMirHandoffStatus, RustMonomorphizationProof, RustNameResolutionDiagnosticCode,
+    RustNameResolutionStageRecord, RustNameResolutionStageStatus, RustParseStageRecord,
+    RustParseStageStatus, RustTypeCheckDiagnosticCode, RustTypeCheckStageRecord,
+    RustTypeCheckStageStatus,
 };
 use rouwdi_vfs::{MemoryStorage, Storage};
 use std::collections::BTreeSet;
@@ -561,7 +562,7 @@ fn embedded_mir_body_output_becomes_mir_stage_success_and_monomorphization_front
 }
 
 #[test]
-fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
+fn mono_item_graph_success_writes_mono_proof_and_reaches_object_emission_frontier() {
     let mut storage = no_deps_wasi_binary_storage();
     let execution = synthetic_embedded_mono_items_collected_execution();
 
@@ -651,7 +652,10 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .codegen_contact_points
         .iter()
         .any(|point| point.contains("LlvmCodegenBackend::new")));
-    assert_eq!(codegen_handoff.codegen_contact_state, "llvm_ir_emitted");
+    assert_eq!(
+        codegen_handoff.codegen_contact_state,
+        "wasm_object_bytes_emitted"
+    );
     assert_eq!(
         codegen_handoff.host_probe_codegen_contact_state,
         "target_machine_created"
@@ -687,27 +691,52 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert!(codegen_handoff.backend_payload_embedded_in_assembly);
     assert!(codegen_handoff.backend_payload_instantiated);
     assert!(codegen_handoff.backend_payload_executed);
-    assert_eq!(codegen_handoff.current_status, "llvm_ir_emitted");
+    assert_eq!(codegen_handoff.current_status, "wasm_object_bytes_emitted");
     assert_eq!(codegen_handoff.blocker_kind, "none");
     assert_eq!(codegen_handoff.blocker_component, "none");
     assert_eq!(codegen_handoff.blocker_reason, "none");
-    assert!(!codegen_handoff.object_emission_attempted);
-    assert!(!codegen_handoff.object_bytes_emitted);
-    assert!(codegen_handoff.object_sha256.is_none());
+    assert!(codegen_handoff.object_emission_attempted);
+    assert_eq!(
+        codegen_handoff.object_emission_api.as_deref(),
+        Some("LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)")
+    );
+    assert!(codegen_handoff.object_bytes_emitted);
+    assert!(codegen_handoff.wasm_object_bytes_emitted);
+    assert_eq!(
+        codegen_handoff.object_artifact_kind.as_deref(),
+        Some("wasm_object")
+    );
+    assert_eq!(
+        codegen_handoff.object_sha256.as_deref(),
+        Some("0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985")
+    );
+    assert_eq!(codegen_handoff.object_artifact_size_bytes, Some(207));
+    assert_eq!(
+        codegen_handoff.object_artifact_location.as_deref(),
+        Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o")
+    );
+    assert_eq!(
+        codegen_handoff.object_retrieval_method.as_deref(),
+        Some("rouwdi_owned_virtual_fs")
+    );
     assert!(codegen_handoff.llvm_ir_emitted);
     assert_eq!(
         codegen_handoff.llvm_ir_sha256.as_deref(),
         Some("6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267")
     );
-    assert_eq!(codegen_handoff.codegen_artifact_byte_len, Some(121));
+    assert_eq!(codegen_handoff.llvm_ir_size_bytes, Some(121));
+    assert_eq!(
+        codegen_handoff.codegen_artifact_kind.as_deref(),
+        Some("wasm_object")
+    );
+    assert_eq!(codegen_handoff.codegen_artifact_byte_len, Some(207));
     assert!(codegen_handoff.linker_handoff_created);
     let linker_handoff = codegen_handoff.linker_handoff.as_ref().unwrap();
-    assert_eq!(linker_handoff.codegen_artifact_kind, "llvm_ir");
-    assert_eq!(
-        linker_handoff.codegen_artifact_hash,
-        "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267"
-    );
+    assert_eq!(linker_handoff.codegen_artifact_kind, "wasm_object");
+    assert_eq!(linker_handoff.codegen_artifact_size, 207);
     assert_eq!(linker_handoff.required_linker_component, "wasm-ld");
+    assert_eq!(linker_handoff.current_status, "wasm_ld_payload_required");
+    assert_eq!(linker_handoff.blocker_kind, "lld_not_embedded");
     codegen_handoff
         .validate_against_monomorphization_proof(mono_proof)
         .unwrap();
@@ -717,7 +746,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
             .as_ref()
             .unwrap()
             .stage,
-        RustCompilerStage::Codegen
+        RustCompilerStage::Linking
     );
 
     let mono_path = format!("{}/proofs/monomorphization.json", report.run_root);
@@ -729,16 +758,21 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert!(manifest.proof_files.contains(&codegen_path));
     assert_eq!(
         manifest.artifact_pipeline[0].blocked_at_stage,
-        Some(RustCompilerStage::Codegen)
+        Some(RustCompilerStage::Linking)
     );
     assert_eq!(
         manifest.artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_codegen_llvm")
+        Some("lld")
     );
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
         .iter()
         .any(|stage| stage.stage == RustCompilerStage::Codegen
+            && stage.status == ArtifactPipelineStageStatus::Completed));
+    assert!(manifest.artifact_pipeline[0]
+        .remaining_stages
+        .iter()
+        .any(|stage| stage.stage == RustCompilerStage::Linking
             && stage.status == ArtifactPipelineStageStatus::Blocked));
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
@@ -751,7 +785,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .any(|unit| {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
-                && unit.codegen_handoff_status.as_deref() == Some("llvm_ir_emitted")
+                && unit.codegen_handoff_status.as_deref() == Some("wasm_object_bytes_emitted")
         }));
 }
 
@@ -902,14 +936,44 @@ fn fake_object_bytes_and_reused_mono_hash_are_rejected() {
 
     codegen_handoff.current_status = "wasm_object_bytes_emitted".to_owned();
     codegen_handoff.object_bytes_emitted = true;
+    codegen_handoff.wasm_object_bytes_emitted = true;
     codegen_handoff.object_path = Some("run/artifacts/app.wasm.o".to_owned());
     codegen_handoff.object_sha256 = Some(codegen_handoff.mono_item_graph_hash.clone());
+    codegen_handoff.object_artifact_kind = Some("wasm_object".to_owned());
+    codegen_handoff.object_artifact_sha256 = codegen_handoff.object_sha256.clone();
+    codegen_handoff.object_artifact_size_bytes = Some(128);
+    codegen_handoff.object_artifact_location = Some("vfs:/workspace/app.wasm.o".to_owned());
+    codegen_handoff.object_retrieval_method = Some("rouwdi_owned_virtual_fs".to_owned());
+    codegen_handoff.codegen_artifact_kind = Some("wasm_object".to_owned());
     codegen_handoff.codegen_artifact_byte_len = Some(128);
 
     assert!(codegen_handoff
         .validate_against_monomorphization_proof(&mono_proof)
         .unwrap_err()
         .contains("object hash must not reuse mono graph"));
+}
+
+#[test]
+fn object_hash_reusing_llvm_ir_hash_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    let llvm_ir_sha = codegen_handoff.llvm_ir_sha256.clone().unwrap();
+
+    codegen_handoff.current_status = "wasm_object_bytes_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = true;
+    codegen_handoff.wasm_object_bytes_emitted = true;
+    codegen_handoff.object_sha256 = Some(llvm_ir_sha.clone());
+    codegen_handoff.object_artifact_kind = Some("wasm_object".to_owned());
+    codegen_handoff.object_artifact_sha256 = Some(llvm_ir_sha);
+    codegen_handoff.object_artifact_size_bytes = Some(128);
+    codegen_handoff.object_artifact_location = Some("vfs:/workspace/app.wasm.o".to_owned());
+    codegen_handoff.object_retrieval_method = Some("rouwdi_owned_virtual_fs".to_owned());
+    codegen_handoff.codegen_artifact_kind = Some("wasm_object".to_owned());
+    codegen_handoff.codegen_artifact_byte_len = Some(128);
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("object hash must not reuse LLVM IR hash"));
 }
 
 #[test]
@@ -930,6 +994,16 @@ fn fake_llvm_ir_reusing_mir_hash_is_rejected() {
 fn linker_handoff_without_codegen_bytes_is_rejected() {
     let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
 
+    codegen_handoff.current_status = "llvm_ir_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = false;
+    codegen_handoff.wasm_object_bytes_emitted = false;
+    codegen_handoff.object_path = None;
+    codegen_handoff.object_sha256 = None;
+    codegen_handoff.object_artifact_kind = None;
+    codegen_handoff.object_artifact_sha256 = None;
+    codegen_handoff.object_artifact_size_bytes = None;
+    codegen_handoff.object_artifact_location = None;
+    codegen_handoff.object_retrieval_method = None;
     codegen_handoff.llvm_ir_emitted = false;
     codegen_handoff.llvm_ir_sha256 = None;
     codegen_handoff.codegen_artifact_byte_len = None;
@@ -942,6 +1016,70 @@ fn linker_handoff_without_codegen_bytes_is_rejected() {
 }
 
 #[test]
+fn linker_handoff_from_llvm_ir_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    let llvm_ir_sha = codegen_handoff.llvm_ir_sha256.clone().unwrap();
+
+    codegen_handoff.current_status = "llvm_ir_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = false;
+    codegen_handoff.wasm_object_bytes_emitted = false;
+    codegen_handoff.object_path = None;
+    codegen_handoff.object_sha256 = None;
+    codegen_handoff.object_artifact_kind = None;
+    codegen_handoff.object_artifact_sha256 = None;
+    codegen_handoff.object_artifact_size_bytes = None;
+    codegen_handoff.object_artifact_location = None;
+    codegen_handoff.object_retrieval_method = None;
+    codegen_handoff.codegen_artifact_kind = Some("llvm_ir".to_owned());
+    codegen_handoff.codegen_artifact_byte_len = Some(121);
+    codegen_handoff.linker_handoff_created = true;
+    codegen_handoff.linker_handoff = Some(RustLinkerHandoffRecord {
+        compile_unit_id: codegen_handoff.compile_unit_id.clone(),
+        target_triple: codegen_handoff.target_triple.clone(),
+        codegen_artifact_kind: "llvm_ir".to_owned(),
+        codegen_artifact_hash: llvm_ir_sha,
+        codegen_artifact_size: 121,
+        codegen_backend_identity: "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
+        required_linker_component: "wasm-ld".to_owned(),
+        expected_final_artifact_kind: "wasm32-wasip1 module".to_owned(),
+        linker_input_count: 1,
+        required_runtime_objects: vec!["crt1-command.o".to_owned()],
+        required_std_core_alloc_objects_or_archives: vec!["libcore.rlib".to_owned()],
+        current_status: "blocked_until_object_bytes_emitted".to_owned(),
+        blocker_kind: "linker_handoff_waiting_for_wasm_object_bytes".to_owned(),
+        next_command: "emit object bytes first".to_owned(),
+        proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
+    });
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("real object bytes"));
+}
+
+#[test]
+fn host_sidecar_object_location_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.current_status = "wasm_object_bytes_emitted".to_owned();
+    codegen_handoff.object_bytes_emitted = true;
+    codegen_handoff.wasm_object_bytes_emitted = true;
+    codegen_handoff.object_sha256 = Some("f".repeat(64));
+    codegen_handoff.object_artifact_kind = Some("wasm_object".to_owned());
+    codegen_handoff.object_artifact_sha256 = Some("f".repeat(64));
+    codegen_handoff.object_artifact_size_bytes = Some(128);
+    codegen_handoff.object_artifact_location = Some("host:.rouwdi/app.wasm.o".to_owned());
+    codegen_handoff.object_retrieval_method = Some("rouwdi_owned_virtual_fs".to_owned());
+    codegen_handoff.codegen_artifact_kind = Some("wasm_object".to_owned());
+    codegen_handoff.codegen_artifact_byte_len = Some(128);
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("host sidecar"));
+}
+
+#[test]
 fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
     let component = rouwdi_rustc_upstream::import_component("rustc_codegen_llvm")
         .expect("rustc_codegen_llvm must be in upstream import ledger");
@@ -951,17 +1089,19 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
         component.source_path,
         "third_party/rust/compiler/rustc_codegen_llvm"
     );
-    assert_eq!(component.blocker_kind, "none");
+    assert_eq!(component.blocker_kind, "lld_not_embedded");
     assert!(component
         .probe_command
         .contains("compiler/rustc_codegen_llvm"));
     assert!(component.exact_blocker.contains("embedded"));
     assert!(component.exact_blocker.contains("LLVM IR"));
+    assert!(component.exact_blocker.contains("Wasm object"));
     assert!(component.exact_blocker.contains("LLVM context/module"));
     assert!(component.exact_blocker.contains("target machine"));
     assert!(component
         .exact_blocker
-        .contains("Object/Wasm-object emission remains"));
+        .contains("LLVMTargetMachineEmitToMemoryBuffer"));
+    assert!(component.exact_blocker.contains("wasm-ld"));
     assert!(component
         .adapter_evidence
         .as_deref()

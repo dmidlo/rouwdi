@@ -672,21 +672,43 @@ try {
     if ($codegenPayloadExecution.llvm_ir_emitted -ne $true) {
         throw "Canonical codegen payload did not emit real LLVM IR bytes"
     }
-    if ($codegenPayloadExecution.codegen_artifact_kind -ne "llvm_ir") {
-        throw "Canonical codegen payload emitted unexpected artifact kind: $($codegenPayloadExecution.codegen_artifact_kind)"
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.codegen_artifact_sha256) -or ([string]$codegenPayloadExecution.codegen_artifact_sha256).Length -ne 64) {
+    if ([string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.llvm_ir_sha256) -or ([string]$codegenPayloadExecution.llvm_ir_sha256).Length -ne 64) {
         throw "Canonical codegen payload did not report a SHA-256 for emitted LLVM IR bytes"
     }
-    if ([int64]$codegenPayloadExecution.codegen_artifact_size_bytes -le 0) {
+    if ([int64]$codegenPayloadExecution.llvm_ir_size_bytes -le 0) {
         throw "Canonical codegen payload did not report positive LLVM IR byte length"
     }
-    if ($codegenPayloadExecution.linker_handoff_created -eq $true `
-        -and $codegenPayloadExecution.llvm_ir_emitted -ne $true `
-        -and $codegenPayloadExecution.bitcode_emitted -ne $true `
-        -and $codegenPayloadExecution.object_bytes_emitted -ne $true `
-        -and $codegenPayloadExecution.wasm_object_bytes_emitted -ne $true) {
-        throw "Canonical codegen payload created linker handoff without real codegen bytes"
+    if ($codegenPayloadExecution.object_emission_attempted -ne $true) {
+        throw "Canonical codegen payload did not attempt real object emission"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.object_emission_api) -or -not ([string]$codegenPayloadExecution.object_emission_api).Contains("LLVMTargetMachineEmitToMemoryBuffer")) {
+        throw "Canonical codegen payload did not record the exact LLVM object emission API"
+    }
+    if ($codegenPayloadExecution.object_bytes_emitted -eq $true -or $codegenPayloadExecution.wasm_object_bytes_emitted -eq $true) {
+        if ($codegenPayloadExecution.wasm_object_bytes_emitted -ne $true) {
+            throw "Canonical wasm32 codegen payload emitted object bytes but did not classify them as Wasm object bytes"
+        }
+        if ($codegenPayloadExecution.object_artifact_kind -ne "wasm_object" -or $codegenPayloadExecution.codegen_artifact_kind -ne "wasm_object") {
+            throw "Canonical codegen object output must be artifact kind wasm_object"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.object_artifact_sha256) -or ([string]$codegenPayloadExecution.object_artifact_sha256).Length -ne 64) {
+            throw "Canonical codegen payload emitted object bytes without object SHA-256"
+        }
+        if ([int64]$codegenPayloadExecution.object_artifact_size_bytes -le 0) {
+            throw "Canonical codegen payload emitted object bytes without positive object size"
+        }
+        if ($codegenPayloadExecution.object_bytes_retrieved_by_rouwdi -ne $true -or $codegenPayloadExecution.object_sha256_verified -ne $true) {
+            throw "Canonical object bytes must be retrieved and hashed by rouwdi-owned logic"
+        }
+        $objectLocation = [string]$codegenPayloadExecution.object_artifact_location
+        if ([string]::IsNullOrWhiteSpace($objectLocation) -or $objectLocation.EndsWith(".json") -or $objectLocation.Contains("proof") -or $objectLocation.Contains("host:")) {
+            throw "Canonical object artifact location is not an object-byte location: $objectLocation"
+        }
+    } elseif ($codegenPayloadExecution.linker_handoff_created -eq $true) {
+        throw "Canonical codegen payload created linker handoff without real object bytes"
+    }
+    if ($codegenPayloadExecution.linker_handoff_created -eq $true -and $codegenPayloadExecution.wasm_object_bytes_emitted -ne $true) {
+        throw "Canonical linker handoff requires real Wasm object bytes"
     }
     $monoInvoked = $null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_invoked -eq $true
     $monoStatus = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_status } else { $null }
@@ -699,7 +721,13 @@ try {
     $codegenUnitCount = if ($null -ne $payloadOutput -and $payloadOutput.codegen_unit_count -ne $null) { [int64]$payloadOutput.codegen_unit_count } else { $null }
     $monoItemGraphHash = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_item_graph_hash) { [string]$payloadOutput.mono_item_graph_hash } else { $null }
     $nextFrontier = if ($mirBodyHashEmitted) {
-        if ($monoStatus -eq "mono_items_collected") { "codegen" } else { "monomorphization" }
+        if ($monoStatus -eq "mono_items_collected") {
+            if ($codegenPayloadExecution.wasm_object_bytes_emitted -eq $true -and $codegenPayloadExecution.linker_handoff_created -eq $true) {
+                "linking"
+            } else {
+                "object_emission"
+            }
+        } else { "monomorphization" }
     } else {
         "mir_provider"
     }
@@ -733,6 +761,15 @@ try {
     $codegenArtifactSha256 = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_artifact_sha256 } else { $null }
     $codegenArtifactSizeBytes = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.codegen_artifact_size_bytes } else { $null }
     $codegenArtifactLocation = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_artifact_location } else { $null }
+    $llvmIrSha256 = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_ir_sha256 } else { $null }
+    $llvmIrSizeBytes = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.llvm_ir_size_bytes } else { $null }
+    $objectEmissionApi = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_emission_api } else { $null }
+    $objectArtifactKind = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_artifact_kind } else { $null }
+    $objectArtifactSha256 = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_artifact_sha256 } else { $null }
+    $objectArtifactSizeBytes = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_artifact_size_bytes } else { $null }
+    $objectArtifactLocation = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_artifact_location } else { $null }
+    $objectTargetTriple = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_target_triple } else { $null }
+    $objectRetrievalMethod = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_retrieval_method } else { $null }
     $linkerHandoffCreated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_handoff_created } else { $false }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
@@ -862,8 +899,22 @@ try {
         codegen_artifact_sha256 = $codegenArtifactSha256
         codegen_artifact_size_bytes = $codegenArtifactSizeBytes
         codegen_artifact_location = $codegenArtifactLocation
+        codegen_llvm_ir_artifact_kind = if ($monoStatus -eq "mono_items_collected") { "llvm_ir" } else { $null }
+        codegen_llvm_ir_sha256 = $llvmIrSha256
+        codegen_llvm_ir_size_bytes = $llvmIrSizeBytes
+        codegen_linker_required = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_required } else { $false }
         codegen_object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+        codegen_object_emission_api = $objectEmissionApi
         codegen_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
+        codegen_wasm_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.wasm_object_bytes_emitted } else { $false }
+        codegen_object_artifact_kind = $objectArtifactKind
+        codegen_object_artifact_sha256 = $objectArtifactSha256
+        codegen_object_artifact_size_bytes = $objectArtifactSizeBytes
+        codegen_object_artifact_location = $objectArtifactLocation
+        codegen_object_target_triple = $objectTargetTriple
+        codegen_object_retrieval_method = $objectRetrievalMethod
+        codegen_object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
+        codegen_object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
         codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
         linker_handoff_created = $linkerHandoffCreated
         next_frontier = $nextFrontier
@@ -960,11 +1011,24 @@ try {
                 codegen_artifact_sha256 = $codegenArtifactSha256
                 codegen_artifact_size_bytes = $codegenArtifactSizeBytes
                 codegen_artifact_location = $codegenArtifactLocation
+                llvm_ir_artifact_kind = if ($monoStatus -eq "mono_items_collected") { "llvm_ir" } else { $null }
+                llvm_ir_sha256 = $llvmIrSha256
+                llvm_ir_size_bytes = $llvmIrSizeBytes
                 llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
                 bitcode_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.bitcode_emitted } else { $false }
                 object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+                object_emission_api = $objectEmissionApi
                 object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
                 wasm_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.wasm_object_bytes_emitted } else { $false }
+                object_artifact_kind = $objectArtifactKind
+                object_artifact_sha256 = $objectArtifactSha256
+                object_artifact_size_bytes = $objectArtifactSizeBytes
+                object_artifact_location = $objectArtifactLocation
+                object_target_triple = $objectTargetTriple
+                object_retrieval_method = $objectRetrievalMethod
+                object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
+                object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
+                linker_required = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_required } else { $false }
                 linker_handoff_created = $linkerHandoffCreated
                 linker_handoff = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.output_json.linker_handoff) { $codegenPayloadExecution.output_json.linker_handoff } else { $null }
             }
@@ -1102,8 +1166,22 @@ try {
             codegen_artifact_sha256 = $codegenArtifactSha256
             codegen_artifact_size_bytes = $codegenArtifactSizeBytes
             codegen_artifact_location = $codegenArtifactLocation
+            codegen_llvm_ir_artifact_kind = if ($monoStatus -eq "mono_items_collected") { "llvm_ir" } else { $null }
+            codegen_llvm_ir_sha256 = $llvmIrSha256
+            codegen_llvm_ir_size_bytes = $llvmIrSizeBytes
+            codegen_linker_required = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_required } else { $false }
             codegen_object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+            codegen_object_emission_api = $objectEmissionApi
             codegen_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
+            codegen_wasm_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.wasm_object_bytes_emitted } else { $false }
+            codegen_object_artifact_kind = $objectArtifactKind
+            codegen_object_artifact_sha256 = $objectArtifactSha256
+            codegen_object_artifact_size_bytes = $objectArtifactSizeBytes
+            codegen_object_artifact_location = $objectArtifactLocation
+            codegen_object_target_triple = $objectTargetTriple
+            codegen_object_retrieval_method = $objectRetrievalMethod
+            codegen_object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
+            codegen_object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
             codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
             linker_handoff_created = $linkerHandoffCreated
             next_frontier = $nextFrontier
@@ -1134,6 +1212,8 @@ try {
             embedded_codegen_payload_execution_source_required = "embedded_registry"
             embedded_codegen_payload_execute_required = $true
             embedded_codegen_payload_llvm_ir_required = $true
+            embedded_codegen_payload_object_emission_attempt_required = $true
+            linker_handoff_requires_wasm_object_bytes = $true
         }
     }
 
