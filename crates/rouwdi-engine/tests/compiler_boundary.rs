@@ -629,7 +629,11 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert_eq!(codegen_handoff.target_loadable_probe_exit_code, 0);
     assert_eq!(
         codegen_handoff.target_loadable_status,
-        "rustc_codegen_llvm_target_loadable"
+        "rustc_codegen_llvm_target_loadable_check_only"
+    );
+    assert_eq!(
+        codegen_handoff.target_loadable_check_only_status,
+        "rustc_codegen_llvm_target_loadable_check_only"
     );
     assert!(codegen_handoff
         .required_dependency_components
@@ -648,16 +652,60 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .iter()
         .any(|point| point.contains("LlvmCodegenBackend::new")));
     assert_eq!(
-        codegen_handoff.current_status,
-        "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols"
+        codegen_handoff.codegen_contact_state,
+        "target_machine_created"
     );
-    assert_eq!(codegen_handoff.blocker_kind, "llvm_c_api_and_cxx_symbols");
-    assert_eq!(codegen_handoff.blocker_component, "rustc_codegen_llvm");
+    assert!(codegen_handoff.mono_proof_consumed);
+    assert!(codegen_handoff.llvm_module_setup_invoked);
+    assert!(codegen_handoff.llvm_context_created);
+    assert!(codegen_handoff.llvm_module_created);
+    assert!(codegen_handoff
+        .llvm_module_identity
+        .as_deref()
+        .is_some_and(|identity| identity.contains("module=app:rust:app:wasm32-wasip1")));
+    assert!(codegen_handoff
+        .llvm_module_identity
+        .as_deref()
+        .is_some_and(|identity| identity.contains("mono=0123456789abcdef")));
+    assert!(codegen_handoff
+        .llvm_module_identity_hash
+        .as_deref()
+        .is_some_and(|hash| hash.len() == 64));
+    assert_eq!(
+        codegen_handoff.llvm_module_target_triple.as_deref(),
+        Some("wasm32-wasip1")
+    );
+    assert!(codegen_handoff.target_machine_setup_invoked);
+    assert!(codegen_handoff.target_machine_created);
+    assert_eq!(codegen_handoff.target_machine_cpu, "generic");
+    assert_eq!(codegen_handoff.target_machine_relocation_model, "pic");
+    assert_eq!(
+        codegen_handoff.backend_payload_kind,
+        "codegen_backend_payload"
+    );
+    assert_eq!(
+        codegen_handoff.backend_payload_blocker_kind,
+        "wasm32_llvm_wrapper_static_library_missing"
+    );
+    assert!(!codegen_handoff.backend_payload_embedded_in_assembly);
+    assert_eq!(
+        codegen_handoff.current_status,
+        "target_machine_setup_invoked"
+    );
+    assert_eq!(
+        codegen_handoff.blocker_kind,
+        "object_emission_not_attempted"
+    );
+    assert_eq!(
+        codegen_handoff.blocker_component,
+        "rustc_codegen_llvm::back::write"
+    );
     assert!(codegen_handoff.blocker_reason.contains("target-loadable"));
-    assert!(codegen_handoff.blocker_reason.contains("LLVMBuildSelect"));
     assert!(codegen_handoff
         .blocker_reason
-        .contains("llvm::Linker::Linker"));
+        .contains("LLVM context/module"));
+    assert!(codegen_handoff.blocker_reason.contains("target machine"));
+    assert!(!codegen_handoff.object_emission_attempted);
     assert!(!codegen_handoff.object_bytes_emitted);
     assert!(codegen_handoff.object_sha256.is_none());
     assert!(!codegen_handoff.llvm_ir_emitted);
@@ -688,7 +736,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     );
     assert_eq!(
         manifest.artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_codegen_llvm")
+        Some("rustc_codegen_llvm::back::write")
     );
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
@@ -706,8 +754,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .any(|unit| {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
-                && unit.codegen_handoff_status.as_deref()
-                    == Some("rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols")
+                && unit.codegen_handoff_status.as_deref() == Some("target_machine_setup_invoked")
         }));
 }
 
@@ -816,6 +863,43 @@ fn codegen_success_without_real_backend_contact_is_rejected() {
 }
 
 #[test]
+fn check_only_target_loadability_is_not_codegen_execution() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.codegen_contact_state =
+        "rustc_codegen_llvm_target_loadable_check_only".to_owned();
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("check-only target loadability is not backend execution"));
+}
+
+#[test]
+fn codegen_attempt_without_mono_proof_consumption_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.mono_proof_consumed = false;
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("consume the mono proof"));
+}
+
+#[test]
+fn cranelift_primary_backend_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    codegen_handoff.backend_family = "cranelift".to_owned();
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("llvm-grade"));
+}
+
+#[test]
 fn fake_object_bytes_and_reused_mono_hash_are_rejected() {
     let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
 
@@ -867,13 +951,15 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
         component.source_path,
         "third_party/rust/compiler/rustc_codegen_llvm"
     );
-    assert_eq!(component.blocker_kind, "llvm_c_api_and_cxx_symbols");
+    assert_eq!(component.blocker_kind, "object_emission_not_attempted");
     assert!(component
         .probe_command
         .contains("compiler/rustc_codegen_llvm"));
     assert!(component.exact_blocker.contains("target-loadable"));
-    assert!(component.exact_blocker.contains("LLVMBuildSelect"));
-    assert!(component.exact_blocker.contains("llvm::Linker::Linker"));
+    assert!(component.exact_blocker.contains("llvm-config.exe"));
+    assert!(component.exact_blocker.contains("LLVM context/module"));
+    assert!(component.exact_blocker.contains("target machine"));
+    assert!(component.exact_blocker.contains("No object"));
     assert!(component
         .adapter_evidence
         .as_deref()

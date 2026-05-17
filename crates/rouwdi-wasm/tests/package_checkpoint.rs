@@ -275,9 +275,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_handoff_status"],
-                Value::String(
-                    "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols".to_owned()
-                )
+                Value::String("target_machine_setup_invoked".to_owned())
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
             assert_eq!(
@@ -290,17 +288,42 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_blocker_kind"],
-                Value::String("llvm_c_api_and_cxx_symbols".to_owned())
+                Value::String("object_emission_not_attempted".to_owned())
+            );
+            assert_eq!(
+                payload["codegen_contact_state"],
+                Value::String("target_machine_created".to_owned())
+            );
+            assert_eq!(payload["codegen_mono_proof_consumed"], Value::Bool(true));
+            assert_eq!(payload["llvm_module_setup_invoked"], Value::Bool(true));
+            assert_eq!(payload["llvm_context_created"], Value::Bool(true));
+            assert_eq!(payload["llvm_module_created"], Value::Bool(true));
+            assert!(payload["llvm_module_identity_hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64));
+            assert_eq!(payload["target_machine_setup_invoked"], Value::Bool(true));
+            assert_eq!(payload["target_machine_created"], Value::Bool(true));
+            assert_eq!(
+                payload["backend_payload_kind"],
+                Value::String("codegen_backend_payload".to_owned())
+            );
+            assert_eq!(
+                payload["backend_payload_blocker_kind"],
+                Value::String("wasm32_llvm_wrapper_static_library_missing".to_owned())
             );
             assert!(
                 payload["codegen_blocker_reason"]
                     .as_str()
                     .is_some_and(|reason| {
                         reason.contains("target-loadable")
-                            && reason.contains("LLVMBuildSelect")
-                            && reason.contains("llvm::Linker::Linker")
+                            && reason.contains("LLVM context/module")
+                            && reason.contains("target machine")
                     }),
                 "codegen handoff must retain exact rustc_codegen_llvm blocker"
+            );
+            assert_eq!(
+                payload["codegen_object_emission_attempted"],
+                Value::Bool(false)
             );
             assert_eq!(payload["codegen_object_bytes_emitted"], Value::Bool(false));
             assert_eq!(payload["linker_handoff_created"], Value::Bool(false));
@@ -328,6 +351,31 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
     assert!(
         artifact.len() >= payload_size + MIN_PRODUCT_SIZE_BYTES,
         "dist/rouwdi.wasm is too small to carry the raw MIR payload"
+    );
+
+    let codegen_payloads = manifest["codegen_payloads"]
+        .as_array()
+        .expect("canonical manifest must list codegen payload routes");
+    assert!(
+        codegen_payloads.iter().any(|entry| {
+            entry["payload_name"] == Value::String("rouwdi-llvm-codegen-backend-payload".to_owned())
+                && entry["payload_kind"] == Value::String("codegen_backend_payload".to_owned())
+                && entry["backend_family"] == Value::String("llvm-grade".to_owned())
+                && entry["upstream_component"] == Value::String("rustc_codegen_llvm".to_owned())
+                && entry["target_triple"] == Value::String("wasm32-wasip1".to_owned())
+                && entry["check_only_status"]
+                    == Value::String("rustc_codegen_llvm_target_loadable_check_only".to_owned())
+                && entry["host_probe_state"]
+                    == Value::String("host_codegen_probe_backend_constructed".to_owned())
+                && entry["codegen_contact_state"]
+                    == Value::String("target_machine_created".to_owned())
+                && entry["mono_proof_consumed"] == Value::Bool(true)
+                && entry["llvm_module_created"] == Value::Bool(true)
+                && entry["target_machine_created"] == Value::Bool(true)
+                && entry["object_bytes_emitted"] == Value::Bool(false)
+                && entry["linker_handoff_created"] == Value::Bool(false)
+        }),
+        "canonical manifest must retain the assembly-owned LLVM backend payload route"
     );
 
     let embedded_payloads = manifest["embedded_payloads"]

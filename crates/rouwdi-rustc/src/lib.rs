@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -671,12 +672,39 @@ pub struct RustCodegenHandoffRecord {
     pub required_relocation_model: String,
     pub codegen_backend_entrypoint: String,
     pub codegen_contact_points: Vec<String>,
+    pub codegen_contact_state: String,
+    pub mono_proof_consumed: bool,
+    pub crate_identity: String,
+    pub target_spec_identity: String,
     pub backend_contact_attempted: bool,
     pub backend_contact_command: String,
     pub backend_contact_status: String,
     pub target_loadable_probe_command: String,
     pub target_loadable_probe_exit_code: i32,
     pub target_loadable_status: String,
+    pub target_loadable_check_only_status: String,
+    pub backend_payload_name: String,
+    pub backend_payload_kind: String,
+    pub backend_payload_route: String,
+    pub backend_payload_embedded_in_assembly: bool,
+    pub backend_payload_instantiated: bool,
+    pub backend_payload_executed: bool,
+    pub backend_payload_execution_status: String,
+    pub backend_payload_blocker_kind: String,
+    pub llvm_module_setup_invoked: bool,
+    pub llvm_context_created: bool,
+    pub llvm_module_created: bool,
+    pub llvm_module_identity: Option<String>,
+    pub llvm_module_identity_hash: Option<String>,
+    pub llvm_module_target_triple: Option<String>,
+    pub target_machine_setup_invoked: bool,
+    pub target_machine_created: bool,
+    pub target_machine_cpu: String,
+    pub target_machine_features: String,
+    pub target_machine_relocation_model: String,
+    pub target_machine_code_model: String,
+    pub target_machine_optimization_level: String,
+    pub object_emission_attempted: bool,
     pub current_status: String,
     pub blocker_kind: String,
     pub blocker_component: String,
@@ -714,21 +742,41 @@ impl RustCodegenHandoffRecord {
         } else {
             "object"
         };
-        let blocker_kind = codegen_component
-            .as_ref()
-            .map(|component| component.blocker_kind.clone())
-            .filter(|kind| !kind.trim().is_empty() && kind != "none")
-            .unwrap_or_else(|| codegen_probe.blocker_kind.clone());
-        let blocker_component = codegen_component
-            .as_ref()
-            .map(|component| component.name.clone())
-            .unwrap_or_else(|| codegen_probe.blocker_component.clone());
+        let blocker_kind = codegen_probe.blocker_kind.clone();
+        let blocker_component = codegen_probe.blocker_component.clone();
         let blocker_reason = codegen_component
             .as_ref()
             .map(|component| component.exact_blocker.clone())
             .filter(|reason| !reason.trim().is_empty())
             .unwrap_or_else(|| codegen_probe.blocker_reason.clone());
-        let current_status = format!("rustc_codegen_llvm_invoked_blocked_at_{blocker_kind}");
+        let current_status = if codegen_probe.target_machine_created {
+            "target_machine_setup_invoked".to_owned()
+        } else if codegen_probe.llvm_module_created {
+            "llvm_module_setup_invoked".to_owned()
+        } else if codegen_probe.backend_constructed {
+            "rustc_codegen_llvm_backend_constructed".to_owned()
+        } else {
+            format!("rustc_codegen_llvm_backend_blocked_at_{blocker_kind}")
+        };
+        let crate_identity = format!(
+            "crate={};target={};profile={}",
+            proof.package, proof.target, proof.profile
+        );
+        let target_spec_identity = format!("rustc_target::spec({})", proof.target_triple);
+        let llvm_module_identity = if codegen_probe.llvm_module_created {
+            Some(format!(
+                "module={};target={};mir={};mono={}",
+                proof.compile_unit_id,
+                proof.target_triple,
+                proof.mir_body_hash,
+                mono_item_graph_hash
+            ))
+        } else {
+            None
+        };
+        let llvm_module_identity_hash = llvm_module_identity
+            .as_ref()
+            .map(|identity| hex::encode(Sha256::digest(identity.as_bytes())));
 
         let record = Self {
             compile_unit_id: proof.compile_unit_id.clone(),
@@ -792,25 +840,58 @@ impl RustCodegenHandoffRecord {
                 "rustc_codegen_llvm::LlvmCodegenBackend::new".to_owned(),
                 "rustc_codegen_ssa::traits::CodegenBackend".to_owned(),
                 "rustc_codegen_llvm wasm32-wasip1 target-loadable check".to_owned(),
-                "llvm-wrapper native link boundary".to_owned(),
+                "LLVM context/module setup through rustc_llvm".to_owned(),
+                "LLVM target machine setup through rustc_llvm".to_owned(),
+                "assembly-owned wasm32-wasip1 backend payload route".to_owned(),
             ],
+            codegen_contact_state: codegen_probe.codegen_contact_state,
+            mono_proof_consumed: true,
+            crate_identity,
+            target_spec_identity,
             backend_contact_attempted: true,
             backend_contact_command: rouwdi_rustc_upstream::RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND
                 .to_owned(),
             backend_contact_status: if codegen_probe.backend_constructed {
-                "rustc_codegen_llvm_backend_constructed_host_probe".to_owned()
+                "host_codegen_probe_backend_constructed".to_owned()
             } else {
-                "host_codegen_probe_blocked_at_unresolved_llvm_c_api_and_cxx_symbols".to_owned()
+                format!("host_codegen_probe_blocked_at_{}", codegen_probe.blocker_kind)
             },
             target_loadable_probe_command: codegen_probe.target_loadable_probe_command,
             target_loadable_probe_exit_code: codegen_probe.target_loadable_probe_exit_code,
             target_loadable_status: codegen_probe.target_loadable_status,
+            target_loadable_check_only_status: codegen_probe.target_loadable_check_only_status,
+            backend_payload_name: "rouwdi-llvm-codegen-backend-payload".to_owned(),
+            backend_payload_kind: "codegen_backend_payload".to_owned(),
+            backend_payload_route: codegen_probe.llvm_payload_route,
+            backend_payload_embedded_in_assembly: false,
+            backend_payload_instantiated: false,
+            backend_payload_executed: false,
+            backend_payload_execution_status: codegen_probe.backend_payload_execution_status,
+            backend_payload_blocker_kind: codegen_probe.backend_payload_blocker_kind,
+            llvm_module_setup_invoked: codegen_probe.llvm_module_created,
+            llvm_context_created: codegen_probe.llvm_context_created,
+            llvm_module_created: codegen_probe.llvm_module_created,
+            llvm_module_identity,
+            llvm_module_identity_hash,
+            llvm_module_target_triple: if codegen_probe.llvm_module_created {
+                Some(proof.target_triple.clone())
+            } else {
+                codegen_probe.llvm_module_target_triple
+            },
+            target_machine_setup_invoked: codegen_probe.target_machine_setup_invoked,
+            target_machine_created: codegen_probe.target_machine_created,
+            target_machine_cpu: codegen_probe.target_machine_cpu,
+            target_machine_features: codegen_probe.target_machine_features,
+            target_machine_relocation_model: codegen_probe.target_machine_relocation_model,
+            target_machine_code_model: codegen_probe.target_machine_code_model,
+            target_machine_optimization_level: codegen_probe.target_machine_optimization_level,
+            object_emission_attempted: codegen_probe.object_emission_attempted,
             current_status,
             blocker_kind,
             blocker_component,
             blocker_reason,
             next_command:
-                "Resolve the LLVM C API/C++ link boundary for the backend payload, then invoke LLVM module setup or object emission without dummy bytes"
+                "Lower the real mono item into the LLVM module body and attempt object emission through rustc_codegen_llvm without dummy bytes"
                     .to_owned(),
             proof_path: "graph/rust-source-codegen-handoff.json".to_owned(),
             object_bytes_emitted: false,
@@ -913,6 +994,17 @@ impl RustCodegenHandoffRecord {
         if self.backend_family != "llvm-grade" {
             return Err("codegen handoff must stay on the llvm-grade backend family".to_owned());
         }
+        if self
+            .backend_family
+            .to_ascii_lowercase()
+            .contains("cranelift")
+            || self
+                .producer_backend
+                .to_ascii_lowercase()
+                .contains("cranelift")
+        {
+            return Err("Cranelift must not be the primary codegen backend".to_owned());
+        }
         if self.expected_output_kind.contains("probe")
             || self
                 .expected_output_kinds
@@ -929,6 +1021,61 @@ impl RustCodegenHandoffRecord {
             return Err(
                 "codegen handoff has no real rustc_codegen_llvm backend contact".to_owned(),
             );
+        }
+        if !self.mono_proof_consumed {
+            return Err("codegen attempt must consume the mono proof".to_owned());
+        }
+        if self.codegen_contact_state == "rustc_codegen_llvm_target_loadable_check_only" {
+            return Err("check-only target loadability is not backend execution".to_owned());
+        }
+        if self.backend_payload_kind != "codegen_backend_payload" {
+            return Err(
+                "LLVM backend payload must be recorded as a codegen backend payload".to_owned(),
+            );
+        }
+        if !self.backend_payload_route.contains("rustc_codegen_llvm") {
+            return Err("LLVM backend payload route must name rustc_codegen_llvm".to_owned());
+        }
+        if self.backend_payload_embedded_in_assembly
+            && (!self.backend_payload_instantiated || !self.backend_payload_executed)
+        {
+            return Err(
+                "embedded LLVM backend payload must record instantiation and execution".to_owned(),
+            );
+        }
+        if self.llvm_module_created {
+            if !self.llvm_module_setup_invoked || !self.llvm_context_created {
+                return Err("LLVM module creation requires context and setup invocation".to_owned());
+            }
+            if self
+                .llvm_module_identity
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                || self
+                    .llvm_module_identity_hash
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+            {
+                return Err("LLVM module creation requires a real module identity".to_owned());
+            }
+            if self.llvm_module_target_triple.as_deref() != Some(self.target_triple.as_str()) {
+                return Err("LLVM module target triple must match the compile unit".to_owned());
+            }
+        }
+        if self.target_machine_created {
+            if !self.target_machine_setup_invoked {
+                return Err("target machine creation requires setup invocation".to_owned());
+            }
+            if self.target_machine_relocation_model != self.required_relocation_model {
+                return Err("target machine relocation model must match the handoff".to_owned());
+            }
+        }
+        if self.object_emission_attempted && !self.llvm_module_created {
+            return Err("object emission setup requires an LLVM module".to_owned());
         }
         if self.current_status == "object_bytes_emitted"
             || self.current_status == "wasm_object_bytes_emitted"

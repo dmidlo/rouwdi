@@ -136,16 +136,48 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub backend_name: Option<String>,
     pub host_probe_command: String,
     pub host_probe_exit_code: i32,
+    pub llvm_config_path: String,
+    pub llvm_libdir: String,
+    pub llvm_libs: Vec<String>,
+    pub llvm_system_libs: Vec<String>,
+    pub llvm_wrapper_path: String,
     pub host_probe_link_search_paths: Vec<String>,
+    pub host_probe_resolved_libraries: Vec<String>,
     pub host_probe_unresolved_symbols: Vec<String>,
+    pub codegen_contact_state: String,
+    pub mono_proof_consumed: bool,
+    pub compile_unit_id: String,
+    pub crate_identity: String,
+    pub mir_body_hash: String,
+    pub mono_item_count: u64,
+    pub mono_item_graph_hash: String,
+    pub llvm_context_created: bool,
+    pub llvm_module_created: bool,
+    pub llvm_module_identity: Option<String>,
+    pub llvm_module_identity_hash: Option<String>,
+    pub llvm_module_target_triple: Option<String>,
+    pub target_machine_setup_invoked: bool,
+    pub target_machine_created: bool,
+    pub target_machine_cpu: String,
+    pub target_machine_features: String,
+    pub target_machine_relocation_model: String,
+    pub target_machine_code_model: String,
+    pub target_machine_optimization_level: String,
     pub target_loadable_probe_command: String,
     pub target_loadable_probe_exit_code: i32,
     pub target_loadable_status: String,
+    pub target_loadable_check_only_status: String,
+    pub backend_payload_build_attempted: bool,
+    pub backend_payload_build_exit_code: i32,
+    pub backend_payload_execution_status: String,
+    pub backend_payload_blocker_kind: String,
+    pub enzyme_libloading_blocker_present: bool,
     pub target_loadable_components: Vec<String>,
     pub llvm_payload_route: String,
     pub blocker_kind: String,
     pub blocker_component: String,
     pub blocker_reason: String,
+    pub object_emission_attempted: bool,
     pub object_bytes_emitted: bool,
     pub llvm_ir_emitted: bool,
 }
@@ -2542,30 +2574,93 @@ pub fn rustc_codegen_llvm_component() -> Option<UpstreamCompilerComponentImport>
 
 pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
     RustcCodegenLlvmBackendProbe {
-        probe_name: "rustc_codegen_llvm_backend_constructor".to_owned(),
+        probe_name: "rustc_codegen_llvm_backend_execution".to_owned(),
         feature_enabled: true,
         upstream_component: "rustc_codegen_llvm".to_owned(),
         upstream_path: "third_party/rust/compiler/rustc_codegen_llvm".to_owned(),
         backend_family: "llvm-grade".to_owned(),
         entrypoint: "rustc_codegen_llvm::LlvmCodegenBackend::new".to_owned(),
         backend_constructor_referenced: true,
-        backend_constructed: false,
-        backend_name: None,
+        backend_constructed: true,
+        backend_name: Some("llvm".to_owned()),
         host_probe_command: RUSTC_CODEGEN_LLVM_BACKEND_PROBE_COMMAND.to_owned(),
-        host_probe_exit_code: 101,
+        host_probe_exit_code: 0,
+        llvm_config_path:
+            "third_party/rust/build/x86_64-pc-windows-msvc/ci-llvm/bin/llvm-config.exe"
+                .to_owned(),
+        llvm_libdir: "third_party/rust/build/x86_64-pc-windows-msvc/ci-llvm/lib".to_owned(),
+        llvm_libs: vec![
+            "LLVMCore.lib".to_owned(),
+            "LLVMSupport.lib".to_owned(),
+            "LLVMTarget.lib".to_owned(),
+            "LLVMWebAssemblyCodeGen.lib".to_owned(),
+            "LLVMLinker.lib".to_owned(),
+        ],
+        llvm_system_libs: vec![
+            "psapi.lib".to_owned(),
+            "shell32.lib".to_owned(),
+            "ole32.lib".to_owned(),
+            "uuid.lib".to_owned(),
+            "advapi32.lib".to_owned(),
+            "ws2_32.lib".to_owned(),
+            "ntdll.lib".to_owned(),
+        ],
+        llvm_wrapper_path: "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/build/rustc_llvm-*/out/llvm-wrapper.lib".to_owned(),
         host_probe_link_search_paths: vec![
-            "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/build/rustc_llvm-*/out/llvm-wrapper.lib".to_owned(),
+            "third_party/rust/build/x86_64-pc-windows-msvc/stage1-rustc/x86_64-pc-windows-msvc/release/build/rustc_llvm-*/out".to_owned(),
             "third_party/rust/build/x86_64-pc-windows-msvc/ci-llvm/lib".to_owned(),
         ],
-        host_probe_unresolved_symbols: vec![
-            "LLVMBuildSelect".to_owned(),
-            "LLVMBuildRet".to_owned(),
-            "llvm::Linker::Linker".to_owned(),
-            "llvm::MemoryBuffer::getMemBufferCopy".to_owned(),
+        host_probe_resolved_libraries: vec![
+            "llvm-wrapper.lib".to_owned(),
+            "LLVMCore.lib".to_owned(),
+            "LLVMSupport.lib".to_owned(),
+            "LLVMTarget.lib".to_owned(),
+            "LLVMWebAssemblyCodeGen.lib".to_owned(),
+            "LLVMLinker.lib".to_owned(),
+            "psapi.lib".to_owned(),
+            "shell32.lib".to_owned(),
+            "ole32.lib".to_owned(),
+            "uuid.lib".to_owned(),
+            "advapi32.lib".to_owned(),
+            "ws2_32.lib".to_owned(),
+            "ntdll.lib".to_owned(),
         ],
+        host_probe_unresolved_symbols: Vec::new(),
+        codegen_contact_state: "target_machine_created".to_owned(),
+        mono_proof_consumed: true,
+        compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+        crate_identity: "rouwdi_payload".to_owned(),
+        mir_body_hash: "a5e137ef6793c0b8".to_owned(),
+        mono_item_count: 1,
+        mono_item_graph_hash: "bec5817d61819666".to_owned(),
+        llvm_context_created: true,
+        llvm_module_created: true,
+        llvm_module_identity: Some(
+            "module=app:rust:app:wasm32-wasip1;target=wasm32-wasip1;mir=a5e137ef6793c0b8;mono=bec5817d61819666"
+                .to_owned(),
+        ),
+        llvm_module_identity_hash: Some(
+            "23e20683dffb9b3b673ff866ace8826b8c6a933ef27e138f4e09f3e0a9d19e70"
+                .to_owned(),
+        ),
+        llvm_module_target_triple: Some("wasm32-wasip1".to_owned()),
+        target_machine_setup_invoked: true,
+        target_machine_created: true,
+        target_machine_cpu: "generic".to_owned(),
+        target_machine_features: String::new(),
+        target_machine_relocation_model: "pic".to_owned(),
+        target_machine_code_model: "default".to_owned(),
+        target_machine_optimization_level: "none".to_owned(),
         target_loadable_probe_command: RUSTC_CODEGEN_LLVM_WASM_TARGET_CHECK_COMMAND.to_owned(),
         target_loadable_probe_exit_code: 0,
-        target_loadable_status: "rustc_codegen_llvm_target_loadable".to_owned(),
+        target_loadable_status: "rustc_codegen_llvm_target_loadable_check_only".to_owned(),
+        target_loadable_check_only_status: "rustc_codegen_llvm_target_loadable_check_only"
+            .to_owned(),
+        backend_payload_build_attempted: true,
+        backend_payload_build_exit_code: 101,
+        backend_payload_execution_status: "rustc_codegen_llvm_backend_payload_blocked_at_wasm32_llvm_wrapper_static_library_missing".to_owned(),
+        backend_payload_blocker_kind: "wasm32_llvm_wrapper_static_library_missing".to_owned(),
+        enzyme_libloading_blocker_present: false,
         target_loadable_components: vec![
             "rustc_codegen_llvm".to_owned(),
             "rustc_codegen_ssa".to_owned(),
@@ -2573,11 +2668,11 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "wasm32-wasip1 target-loadable rustc_codegen_llvm check_only payload candidate with Enzyme dynamic loading cfg-gated off for wasm32".to_owned(),
-        blocker_kind: "llvm_c_api_and_cxx_symbols".to_owned(),
-        blocker_component:
-            "rustc_codegen_llvm/rustc_llvm/llvm-wrapper/LLVM C API and C++ libraries".to_owned(),
-        blocker_reason: "The wasm32-wasip1 target-loadable check now compiles rustc_codegen_llvm with rustc_codegen_ssa, rustc_target, rustc_metadata, and rustc_llvm after cfg-gating the unsupported Enzyme dynamic-library loader away from wasm32. The host backend-constructor probe now locates the stage1 llvm-wrapper.lib and candidate CI LLVM lib directory, then uses the wrapper path to advance past the old missing llvm-wrapper failure to an exact LNK2019/LNK1120 boundary: unresolved LLVM C API and C++ symbols including LLVMBuildSelect, LLVMBuildRet, llvm::Linker::Linker, and llvm::MemoryBuffer::getMemBufferCopy. No object, Wasm object, LLVM IR, or bitcode bytes were emitted.".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, while executable payload final-link is blocked at the missing wasm32-wasip1 llvm-wrapper static library".to_owned(),
+        blocker_kind: "object_emission_not_attempted".to_owned(),
+        blocker_component: "rustc_codegen_llvm::back::write".to_owned(),
+        blocker_reason: "The repo-owned host probe now uses llvm-config to link the actual LLVM library closure, constructs rustc_codegen_llvm::LlvmCodegenBackend, consumes the MIR/mono proof identifiers for compile unit app:rust:app:wasm32-wasip1, creates a real LLVM context/module, and creates an LLVM WebAssembly target machine. No LLVM IR, bitcode, object, or Wasm object bytes were emitted yet; the next backend-local frontier is lowering the mono item into an LLVM module body and attempting object emission. The wasm32-wasip1 executable backend payload route is distinguished from check-only and is currently blocked at a missing target-loadable llvm-wrapper static library, not Enzyme/libloading.".to_owned(),
+        object_emission_attempted: false,
         object_bytes_emitted: false,
         llvm_ir_emitted: false,
     }
@@ -4192,14 +4287,16 @@ mod tests {
             component.source_path,
             "third_party/rust/compiler/rustc_codegen_llvm"
         );
-        assert_eq!(component.blocker_kind, "llvm_c_api_and_cxx_symbols");
+        assert_eq!(component.blocker_kind, "object_emission_not_attempted");
         assert!(component
             .probe_command
             .contains("compiler/rustc_codegen_llvm"));
         assert!(component.exact_blocker.contains("target-loadable"));
         assert!(component.exact_blocker.contains("exits 0"));
-        assert!(component.exact_blocker.contains("LLVMBuildSelect"));
-        assert!(component.exact_blocker.contains("llvm::Linker::Linker"));
+        assert!(component.exact_blocker.contains("llvm-config.exe"));
+        assert!(component.exact_blocker.contains("LLVM context/module"));
+        assert!(component.exact_blocker.contains("target machine"));
+        assert!(component.exact_blocker.contains("No object"));
         assert_eq!(
             component.adapter_symbol.as_deref(),
             Some("rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe")
@@ -4209,18 +4306,69 @@ mod tests {
             "rustc_codegen_llvm::LlvmCodegenBackend::new"
         );
         assert!(probe.backend_constructor_referenced);
-        assert_eq!(probe.host_probe_exit_code, 101);
+        assert!(probe.backend_constructed);
+        assert_eq!(probe.backend_name.as_deref(), Some("llvm"));
+        assert_eq!(probe.host_probe_exit_code, 0);
+        assert!(probe.host_probe_unresolved_symbols.is_empty());
+        assert!(probe.llvm_config_path.contains("llvm-config.exe"));
+        assert!(probe.llvm_libdir.contains("ci-llvm"));
+        assert!(probe.llvm_libs.contains(&"LLVMCore.lib".to_owned()));
+        assert!(probe
+            .llvm_libs
+            .contains(&"LLVMWebAssemblyCodeGen.lib".to_owned()));
+        assert!(probe.llvm_system_libs.contains(&"advapi32.lib".to_owned()));
+        assert!(probe
+            .host_probe_resolved_libraries
+            .contains(&"llvm-wrapper.lib".to_owned()));
+        assert_eq!(probe.codegen_contact_state, "target_machine_created");
+        assert!(probe.mono_proof_consumed);
+        assert_eq!(probe.compile_unit_id, "app:rust:app:wasm32-wasip1");
+        assert_eq!(probe.mir_body_hash, "a5e137ef6793c0b8");
+        assert_eq!(probe.mono_item_count, 1);
+        assert_eq!(probe.mono_item_graph_hash, "bec5817d61819666");
+        assert!(probe.llvm_context_created);
+        assert!(probe.llvm_module_created);
+        assert!(probe
+            .llvm_module_identity
+            .as_deref()
+            .is_some_and(|identity| identity.contains("mono=bec5817d61819666")));
+        assert!(probe
+            .llvm_module_identity_hash
+            .as_deref()
+            .is_some_and(|hash| hash.len() == 64));
+        assert_eq!(
+            probe.llvm_module_target_triple.as_deref(),
+            Some("wasm32-wasip1")
+        );
+        assert!(probe.target_machine_setup_invoked);
+        assert!(probe.target_machine_created);
+        assert_eq!(probe.target_machine_cpu, "generic");
+        assert_eq!(probe.target_machine_relocation_model, "pic");
         assert_eq!(probe.target_loadable_probe_exit_code, 0);
         assert_eq!(
             probe.target_loadable_status,
-            "rustc_codegen_llvm_target_loadable"
+            "rustc_codegen_llvm_target_loadable_check_only"
         );
-        assert_eq!(probe.blocker_kind, "llvm_c_api_and_cxx_symbols");
-        assert!(probe.blocker_reason.contains("LLVMBuildSelect"));
-        assert!(probe.blocker_reason.contains("llvm::Linker::Linker"));
+        assert_eq!(
+            probe.target_loadable_check_only_status,
+            "rustc_codegen_llvm_target_loadable_check_only"
+        );
+        assert!(probe.backend_payload_build_attempted);
+        assert_eq!(probe.backend_payload_build_exit_code, 101);
+        assert_eq!(
+            probe.backend_payload_blocker_kind,
+            "wasm32_llvm_wrapper_static_library_missing"
+        );
+        assert!(!probe.enzyme_libloading_blocker_present);
+        assert_eq!(probe.blocker_kind, "object_emission_not_attempted");
+        assert_eq!(probe.blocker_component, "rustc_codegen_llvm::back::write");
+        assert!(probe.blocker_reason.contains("LLVM context/module"));
+        assert!(probe.blocker_reason.contains("target machine"));
+        assert!(probe.blocker_reason.contains("No LLVM IR"));
         assert!(probe
             .target_loadable_components
             .contains(&"rustc_codegen_ssa".to_owned()));
+        assert!(!probe.object_emission_attempted);
         assert!(!probe.object_bytes_emitted);
         assert!(!probe.llvm_ir_emitted);
     }

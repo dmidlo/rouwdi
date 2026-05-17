@@ -1961,11 +1961,13 @@ dependencies = [
 name = "rouwdi-rustc"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "parser",
  "rouwdi-rustc-upstream",
  "rustc_lexer",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

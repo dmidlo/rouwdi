@@ -77,6 +77,19 @@ function Get-ArtifactIdentity {
     }
 }
 
+function Get-Sha256HexString {
+    param([string]$Text)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        $hash = $sha256.ComputeHash($bytes)
+        return -join ($hash | ForEach-Object { $_.ToString("x2") })
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function Read-TomlTable {
     param(
         [string]$Path,
@@ -502,17 +515,28 @@ try {
         "mir_provider"
     }
     $codegenHandoffStatus = if ($monoStatus -eq "mono_items_collected") {
-        "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols"
+        "target_machine_setup_invoked"
     } else {
         $null
     }
     $codegenBlockerKind = if ($monoStatus -eq "mono_items_collected") {
-        "llvm_c_api_and_cxx_symbols"
+        "object_emission_not_attempted"
     } else {
         $null
     }
     $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
-        "Real upstream codegen contact was attempted: the wasm32-wasip1 target-loadable rustc_codegen_llvm check now exits 0 after cfg-gating unsupported Enzyme dynamic-library loading, and the standalone backend-constructor probe references rustc_codegen_llvm::LlvmCodegenBackend::new. The host probe now locates the stage1 llvm-wrapper.lib and candidate CI LLVM lib directory, then uses the wrapper path to fail at the exact LLVM C API/C++ linkage boundary with unresolved symbols including LLVMBuildSelect, LLVMBuildRet, llvm::Linker::Linker, and llvm::MemoryBuffer::getMemBufferCopy. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+        "Real upstream codegen contact was attempted: the repo-owned host probe uses llvm-config.exe to discover the CI LLVM libdir, LLVM libraries, linker flags, and MSVC system libraries, links them with stage1 llvm-wrapper.lib, constructs rustc_codegen_llvm::LlvmCodegenBackend, consumes the MIR/mono compile-unit identity, creates a real LLVM context/module for wasm32-wasip1, initializes the WebAssembly LLVM target, and creates an LLVM target machine. The wasm32-wasip1 rustc_codegen_llvm check-only route still exits 0 after cfg-gating unsupported Enzyme dynamic-library loading. The executable backend payload route is separate from check-only and is currently blocked at a missing target-loadable wasm32 llvm-wrapper static library. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+    } else {
+        $null
+    }
+    $codegenContactState = if ($monoStatus -eq "mono_items_collected") { "target_machine_created" } else { $null }
+    $llvmModuleIdentity = if ($monoStatus -eq "mono_items_collected") {
+        "module=app:rust:app:wasm32-wasip1;target=wasm32-wasip1;mir=$mirBodyHash;mono=$monoItemGraphHash"
+    } else {
+        $null
+    }
+    $llvmModuleIdentityHash = if ($null -ne $llvmModuleIdentity) {
+        Get-Sha256HexString -Text $llvmModuleIdentity
     } else {
         $null
     }
@@ -580,9 +604,37 @@ try {
         codegen_backend_family = if ($monoStatus -eq "mono_items_collected") { "llvm-grade" } else { $null }
         codegen_expected_output_kind = if ($monoStatus -eq "mono_items_collected") { "wasm_object" } else { $null }
         codegen_backend_entrypoint = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::LlvmCodegenBackend::new" } else { $null }
+        codegen_contact_state = $codegenContactState
+        codegen_mono_proof_consumed = ($monoStatus -eq "mono_items_collected")
+        codegen_compile_unit_id = if ($monoStatus -eq "mono_items_collected") { "app:rust:app:wasm32-wasip1" } else { $null }
+        codegen_mir_body_hash = if ($monoStatus -eq "mono_items_collected") { $mirBodyHash } else { $null }
+        codegen_mono_item_count = if ($monoStatus -eq "mono_items_collected") { $monoItemCount } else { $null }
+        codegen_mono_item_graph_hash = if ($monoStatus -eq "mono_items_collected") { $monoItemGraphHash } else { $null }
+        llvm_module_setup_invoked = ($monoStatus -eq "mono_items_collected")
+        llvm_context_created = ($monoStatus -eq "mono_items_collected")
+        llvm_module_created = ($monoStatus -eq "mono_items_collected")
+        llvm_module_identity = $llvmModuleIdentity
+        llvm_module_identity_hash = $llvmModuleIdentityHash
+        llvm_module_target_triple = if ($monoStatus -eq "mono_items_collected") { "wasm32-wasip1" } else { $null }
+        target_machine_setup_invoked = ($monoStatus -eq "mono_items_collected")
+        target_machine_created = ($monoStatus -eq "mono_items_collected")
+        target_machine_cpu = if ($monoStatus -eq "mono_items_collected") { "generic" } else { $null }
+        target_machine_features = if ($monoStatus -eq "mono_items_collected") { "" } else { $null }
+        target_machine_relocation_model = if ($monoStatus -eq "mono_items_collected") { "pic" } else { $null }
+        target_machine_code_model = if ($monoStatus -eq "mono_items_collected") { "default" } else { $null }
+        target_machine_optimization_level = if ($monoStatus -eq "mono_items_collected") { "none" } else { $null }
+        backend_payload_name = if ($monoStatus -eq "mono_items_collected") { "rouwdi-llvm-codegen-backend-payload" } else { $null }
+        backend_payload_kind = if ($monoStatus -eq "mono_items_collected") { "codegen_backend_payload" } else { $null }
+        backend_payload_route = if ($monoStatus -eq "mono_items_collected") { "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route" } else { $null }
+        backend_payload_embedded_in_assembly = $false
+        backend_payload_instantiated = $false
+        backend_payload_executed = $false
+        backend_payload_execution_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_backend_payload_blocked_at_wasm32_llvm_wrapper_static_library_missing" } else { $null }
+        backend_payload_blocker_kind = if ($monoStatus -eq "mono_items_collected") { "wasm32_llvm_wrapper_static_library_missing" } else { $null }
         codegen_blocker_kind = $codegenBlockerKind
-        codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm" } else { $null }
+        codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::back::write" } else { $null }
         codegen_blocker_reason = $codegenBlockerReason
+        codegen_object_emission_attempted = $false
         codegen_object_bytes_emitted = $false
         codegen_llvm_ir_emitted = $false
         linker_handoff_created = $false
@@ -608,6 +660,42 @@ try {
             reason = "target/.../rouwdi_wasm.wasm is the cdylib stub, not the canonical assembly"
         }
         embedded_payloads = @($embeddedPayload)
+        codegen_payloads = @(
+            [ordered]@{
+                payload_name = "rouwdi-llvm-codegen-backend-payload"
+                payload_kind = "codegen_backend_payload"
+                backend_family = "llvm-grade"
+                upstream_component = "rustc_codegen_llvm"
+                dependency_components = @(
+                    "rustc_codegen_ssa",
+                    "rustc_target",
+                    "rustc_metadata",
+                    "rustc_llvm",
+                    "LLVM wrapper/C++ layer"
+                )
+                target_triple = "wasm32-wasip1"
+                artifact_path = $null
+                artifact_hash = $null
+                artifact_size_bytes = $null
+                embedded_in_dist_rouwdi_wasm = $false
+                instantiated = $false
+                executed = $false
+                execution_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_backend_payload_blocked_at_wasm32_llvm_wrapper_static_library_missing" } else { "not_reached" }
+                blocker_kind = if ($monoStatus -eq "mono_items_collected") { "wasm32_llvm_wrapper_static_library_missing" } else { $null }
+                check_only_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_target_loadable_check_only" } else { $null }
+                host_probe_state = if ($monoStatus -eq "mono_items_collected") { "host_codegen_probe_backend_constructed" } else { $null }
+                codegen_contact_state = $codegenContactState
+                mono_proof_consumed = ($monoStatus -eq "mono_items_collected")
+                mir_body_hash = if ($monoStatus -eq "mono_items_collected") { $mirBodyHash } else { $null }
+                mono_item_graph_hash = if ($monoStatus -eq "mono_items_collected") { $monoItemGraphHash } else { $null }
+                llvm_module_created = ($monoStatus -eq "mono_items_collected")
+                llvm_module_identity_hash = $llvmModuleIdentityHash
+                target_machine_created = ($monoStatus -eq "mono_items_collected")
+                object_emission_attempted = $false
+                object_bytes_emitted = $false
+                linker_handoff_created = $false
+            }
+        )
         mir_payload = [ordered]@{
             state = [string]$payloadExecution.execution_state
             embedded = $true
@@ -677,9 +765,37 @@ try {
             codegen_backend_family = if ($monoStatus -eq "mono_items_collected") { "llvm-grade" } else { $null }
             codegen_expected_output_kind = if ($monoStatus -eq "mono_items_collected") { "wasm_object" } else { $null }
             codegen_backend_entrypoint = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::LlvmCodegenBackend::new" } else { $null }
+            codegen_contact_state = $codegenContactState
+            codegen_mono_proof_consumed = ($monoStatus -eq "mono_items_collected")
+            codegen_compile_unit_id = if ($monoStatus -eq "mono_items_collected") { "app:rust:app:wasm32-wasip1" } else { $null }
+            codegen_mir_body_hash = if ($monoStatus -eq "mono_items_collected") { $mirBodyHash } else { $null }
+            codegen_mono_item_count = if ($monoStatus -eq "mono_items_collected") { $monoItemCount } else { $null }
+            codegen_mono_item_graph_hash = if ($monoStatus -eq "mono_items_collected") { $monoItemGraphHash } else { $null }
+            llvm_module_setup_invoked = ($monoStatus -eq "mono_items_collected")
+            llvm_context_created = ($monoStatus -eq "mono_items_collected")
+            llvm_module_created = ($monoStatus -eq "mono_items_collected")
+            llvm_module_identity = $llvmModuleIdentity
+            llvm_module_identity_hash = $llvmModuleIdentityHash
+            llvm_module_target_triple = if ($monoStatus -eq "mono_items_collected") { "wasm32-wasip1" } else { $null }
+            target_machine_setup_invoked = ($monoStatus -eq "mono_items_collected")
+            target_machine_created = ($monoStatus -eq "mono_items_collected")
+            target_machine_cpu = if ($monoStatus -eq "mono_items_collected") { "generic" } else { $null }
+            target_machine_features = if ($monoStatus -eq "mono_items_collected") { "" } else { $null }
+            target_machine_relocation_model = if ($monoStatus -eq "mono_items_collected") { "pic" } else { $null }
+            target_machine_code_model = if ($monoStatus -eq "mono_items_collected") { "default" } else { $null }
+            target_machine_optimization_level = if ($monoStatus -eq "mono_items_collected") { "none" } else { $null }
+            backend_payload_name = if ($monoStatus -eq "mono_items_collected") { "rouwdi-llvm-codegen-backend-payload" } else { $null }
+            backend_payload_kind = if ($monoStatus -eq "mono_items_collected") { "codegen_backend_payload" } else { $null }
+            backend_payload_route = if ($monoStatus -eq "mono_items_collected") { "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route" } else { $null }
+            backend_payload_embedded_in_assembly = $false
+            backend_payload_instantiated = $false
+            backend_payload_executed = $false
+            backend_payload_execution_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_backend_payload_blocked_at_wasm32_llvm_wrapper_static_library_missing" } else { $null }
+            backend_payload_blocker_kind = if ($monoStatus -eq "mono_items_collected") { "wasm32_llvm_wrapper_static_library_missing" } else { $null }
             codegen_blocker_kind = $codegenBlockerKind
-            codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm" } else { $null }
+            codegen_blocker_component = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm::back::write" } else { $null }
             codegen_blocker_reason = $codegenBlockerReason
+            codegen_object_emission_attempted = $false
             codegen_object_bytes_emitted = $false
             codegen_llvm_ir_emitted = $false
             linker_handoff_created = $false
