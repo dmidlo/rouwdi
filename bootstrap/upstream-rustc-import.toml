@@ -392,27 +392,27 @@ adapter_evidence = "rustc_codegen_llvm imports rustc_metadata::EncodedMetadata; 
 name = "rustc_llvm"
 source_path = "third_party/rust/compiler/rustc_llvm"
 desired_role = "LLVM C++ wrapper FFI used by rustc_codegen_llvm for target-machine setup, LLVM module operations, optimization, and object emission"
-import_status = "target_loadable_wasm_blocked"
+import_status = "target_loadable_wasm"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-host-probe.ps1; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
-blocker_kind = "llvm_dependency"
-exact_blocker = "The standalone backend-constructor probe reaches rustc_llvm/rustc_codegen_llvm and type-checks the real rustc_codegen_llvm::LlvmCodegenBackend::new entrypoint, but the runnable probe binary cannot link: first the native static library llvm-wrapper is missing from the standalone cargo route, and with the stage1 llvm-wrapper path supplied the link advances to unresolved LLVM C/C++ symbols (LNK2019/LNK1120). The wasm32-wasip1 target-loadable check separately reaches rustc_codegen_llvm and fails before object emission in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs because libloading::Library and libloading::Symbol are unavailable for wasm32-wasip1."
+blocker_kind = "llvm_c_api_and_cxx_symbols"
+exact_blocker = "The wasm32-wasip1 target-loadable check compiles rustc_llvm as part of the real rustc_codegen_llvm dependency closure after the unsupported Enzyme dynamic-library loader is cfg-gated away from wasm32. The host backend-constructor probe now locates the stage1 llvm-wrapper.lib and candidate CI LLVM lib directory, then uses the wrapper path to advance past the old missing llvm-wrapper failure to unresolved LLVM C API/C++ symbols (LNK2019/LNK1120), including LLVMBuildSelect, LLVMBuildRet, llvm::Linker::Linker, and llvm::MemoryBuffer::getMemBufferCopy."
 adapter_symbol = "rustc_llvm::LLVMRustCreateTargetMachine"
-adapter_evidence = "rustc_codegen_llvm's target-machine/object path depends on rustc_llvm LLVMRust* FFI. The current target-loadable probe does not reach object setup because the wasm target cannot compile the dynamic-library Enzyme wrapper path first."
+adapter_evidence = "rustc_codegen_llvm's target-machine/object path depends on rustc_llvm LLVMRust* FFI. The target-loadable wasm32-wasip1 check exits 0; the remaining host execution blocker is exact LLVM C API/C++ symbol linkage, not Enzyme libloading."
 
 [[components]]
 name = "rustc_codegen_llvm"
 source_path = "third_party/rust/compiler/rustc_codegen_llvm"
 desired_role = "LLVM-grade release codegen backend, LLVM module creation, target-machine setup, and object emission"
-import_status = "target_loadable_wasm_blocked"
+import_status = "target_loadable_wasm"
 attempted = true
 adapter_path = "crates/rouwdi-rustc-upstream"
 probe_command = "python x.py check compiler/rustc_codegen_llvm --stage 1 -v; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-host-probe.ps1; powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
-blocker_kind = "llvm_dependency"
-exact_blocker = "Real upstream codegen contact was attempted. Host stage1 bootstrap checked rustc_codegen_llvm successfully. The standalone backend-constructor probe type-checks the real rustc_codegen_llvm::LlvmCodegenBackend::new entrypoint, but the runnable probe binary cannot link: first rustc_codegen_llvm fails with missing native static library llvm-wrapper, and with the stage1 llvm-wrapper path supplied it advances to unresolved LLVM C/C++ symbols (LNK2019/LNK1120). The target-loadable wasm32-wasip1 check also reaches rustc_codegen_llvm with check_only enabled, then fails before LLVM module/object bytes because compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs references libloading::Library and libloading::Symbol, which are unavailable on wasm32-wasip1 (E0433/E0425). No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+blocker_kind = "llvm_c_api_and_cxx_symbols"
+exact_blocker = "Real upstream codegen contact was attempted. Host stage1 bootstrap checked rustc_codegen_llvm successfully. The unsupported wasm32 Enzyme dynamic-library loader path in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs is cfg-gated away, and bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1 now exits 0, proving rustc_codegen_llvm, rustc_codegen_ssa, rustc_target, rustc_metadata, and rustc_llvm are target-loadable for wasm32-wasip1 in the check_only payload route. The standalone backend-constructor probe now locates the stage1 llvm-wrapper.lib and candidate CI LLVM lib directory, then uses the wrapper path to advance past the missing llvm-wrapper failure to unresolved LLVM C API/C++ symbols (LNK2019/LNK1120), including LLVMBuildSelect, LLVMBuildRet, llvm::Linker::Linker, and llvm::MemoryBuffer::getMemBufferCopy. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
 adapter_symbol = "rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe"
-adapter_evidence = "The standalone bootstrap/rustc-codegen-llvm-probe crate owns the direct rustc_codegen_llvm dependency and type-checks a call to rustc_codegen_llvm::LlvmCodegenBackend::new; linking that runnable probe is blocked by the LLVM wrapper/C++ dependency chain, and the target-loadable build probe then demonstrates the exact wasm blocker before object emission. The normal workspace records this evidence without depending directly on rustc_codegen_llvm, because rustc_llvm pins cc=1.2.16 and would otherwise conflict with the runner's wasmtime dependency."
+adapter_evidence = "The standalone bootstrap/rustc-codegen-llvm-probe crate owns the direct rustc_codegen_llvm dependency and type-checks a call to rustc_codegen_llvm::LlvmCodegenBackend::new; linking that runnable probe is blocked by exact LLVM C API/C++ symbols after locating stage1 llvm-wrapper. The target-loadable build probe compiles rustc_codegen_llvm for wasm32-wasip1 after the Enzyme dynamic-loader path is isolated. The normal workspace records this evidence without depending directly on rustc_codegen_llvm, because rustc_llvm pins cc=1.2.16 and would otherwise conflict with the runner's wasmtime dependency."
 
 [[frontend_stages]]
 stage = "lex"

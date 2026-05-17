@@ -275,7 +275,9 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_handoff_status"],
-                Value::String("rustc_codegen_llvm_invoked_blocked_at_llvm_dependency".to_owned())
+                Value::String(
+                    "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols".to_owned()
+                )
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
             assert_eq!(
@@ -288,13 +290,15 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_blocker_kind"],
-                Value::String("llvm_dependency".to_owned())
+                Value::String("llvm_c_api_and_cxx_symbols".to_owned())
             );
             assert!(
                 payload["codegen_blocker_reason"]
                     .as_str()
                     .is_some_and(|reason| {
-                        reason.contains("libloading::Library") && reason.contains("LLVM")
+                        reason.contains("target-loadable")
+                            && reason.contains("LLVMBuildSelect")
+                            && reason.contains("llvm::Linker::Linker")
                     }),
                 "codegen handoff must retain exact rustc_codegen_llvm blocker"
             );

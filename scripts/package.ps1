@@ -502,17 +502,17 @@ try {
         "mir_provider"
     }
     $codegenHandoffStatus = if ($monoStatus -eq "mono_items_collected") {
-        "rustc_codegen_llvm_invoked_blocked_at_llvm_dependency"
+        "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols"
     } else {
         $null
     }
     $codegenBlockerKind = if ($monoStatus -eq "mono_items_collected") {
-        "llvm_dependency"
+        "llvm_c_api_and_cxx_symbols"
     } else {
         $null
     }
     $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
-        "Real upstream codegen contact was attempted: host stage1 bootstrap checked rustc_codegen_llvm successfully, and the standalone backend-constructor probe type-checks rustc_codegen_llvm::LlvmCodegenBackend::new but cannot link the runnable probe binary because the standalone route is missing LLVM wrapper/C++ library linkage. The wasm32-wasip1 target-loadable check also reached rustc_codegen_llvm before failing in compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs because libloading::Library and libloading::Symbol are unavailable for wasm32-wasip1. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+        "Real upstream codegen contact was attempted: the wasm32-wasip1 target-loadable rustc_codegen_llvm check now exits 0 after cfg-gating unsupported Enzyme dynamic-library loading, and the standalone backend-constructor probe references rustc_codegen_llvm::LlvmCodegenBackend::new. The host probe now locates the stage1 llvm-wrapper.lib and candidate CI LLVM lib directory, then uses the wrapper path to fail at the exact LLVM C API/C++ linkage boundary with unresolved symbols including LLVMBuildSelect, LLVMBuildRet, llvm::Linker::Linker, and llvm::MemoryBuffer::getMemBufferCopy. No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
     } else {
         $null
     }

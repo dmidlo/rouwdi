@@ -626,21 +626,43 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert!(codegen_handoff
         .codegen_backend_entrypoint
         .contains("rustc_codegen_llvm::LlvmCodegenBackend"));
-    assert_eq!(codegen_handoff.target_loadable_probe_exit_code, 1);
+    assert_eq!(codegen_handoff.target_loadable_probe_exit_code, 0);
+    assert_eq!(
+        codegen_handoff.target_loadable_status,
+        "rustc_codegen_llvm_target_loadable"
+    );
+    assert!(codegen_handoff
+        .required_dependency_components
+        .contains(&"rustc_codegen_ssa".to_owned()));
+    assert!(codegen_handoff
+        .required_dependency_components
+        .contains(&"LLVM wrapper/C++ layer".to_owned()));
+    assert!(codegen_handoff
+        .expected_output_kinds
+        .contains(&"LLVM module".to_owned()));
+    assert!(codegen_handoff
+        .expected_output_kinds
+        .contains(&"wasm object".to_owned()));
+    assert!(codegen_handoff
+        .codegen_contact_points
+        .iter()
+        .any(|point| point.contains("LlvmCodegenBackend::new")));
     assert_eq!(
         codegen_handoff.current_status,
-        "rustc_codegen_llvm_invoked_blocked_at_llvm_dependency"
+        "rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols"
     );
-    assert_eq!(codegen_handoff.blocker_kind, "llvm_dependency");
+    assert_eq!(codegen_handoff.blocker_kind, "llvm_c_api_and_cxx_symbols");
     assert_eq!(codegen_handoff.blocker_component, "rustc_codegen_llvm");
+    assert!(codegen_handoff.blocker_reason.contains("target-loadable"));
+    assert!(codegen_handoff.blocker_reason.contains("LLVMBuildSelect"));
     assert!(codegen_handoff
         .blocker_reason
-        .contains("libloading::Library"));
-    assert!(codegen_handoff.blocker_reason.contains("llvm-wrapper"));
+        .contains("llvm::Linker::Linker"));
     assert!(!codegen_handoff.object_bytes_emitted);
     assert!(codegen_handoff.object_sha256.is_none());
     assert!(!codegen_handoff.llvm_ir_emitted);
     assert!(!codegen_handoff.linker_handoff_created);
+    assert!(codegen_handoff.linker_handoff.is_none());
     codegen_handoff
         .validate_against_monomorphization_proof(mono_proof)
         .unwrap();
@@ -685,7 +707,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
                 && unit.codegen_handoff_status.as_deref()
-                    == Some("rustc_codegen_llvm_invoked_blocked_at_llvm_dependency")
+                    == Some("rustc_codegen_llvm_invoked_blocked_at_llvm_c_api_and_cxx_symbols")
         }));
 }
 
@@ -801,6 +823,7 @@ fn fake_object_bytes_and_reused_mono_hash_are_rejected() {
     codegen_handoff.object_bytes_emitted = true;
     codegen_handoff.object_path = Some("run/artifacts/app.wasm.o".to_owned());
     codegen_handoff.object_sha256 = Some(codegen_handoff.mono_item_graph_hash.clone());
+    codegen_handoff.codegen_artifact_byte_len = Some(128);
 
     assert!(codegen_handoff
         .validate_against_monomorphization_proof(&mono_proof)
@@ -814,6 +837,7 @@ fn fake_llvm_ir_reusing_mir_hash_is_rejected() {
 
     codegen_handoff.llvm_ir_emitted = true;
     codegen_handoff.llvm_ir_sha256 = Some(codegen_handoff.mir_body_hash.clone());
+    codegen_handoff.codegen_artifact_byte_len = Some(128);
 
     assert!(codegen_handoff
         .validate_against_monomorphization_proof(&mono_proof)
@@ -843,12 +867,13 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
         component.source_path,
         "third_party/rust/compiler/rustc_codegen_llvm"
     );
-    assert_eq!(component.blocker_kind, "llvm_dependency");
+    assert_eq!(component.blocker_kind, "llvm_c_api_and_cxx_symbols");
     assert!(component
         .probe_command
         .contains("compiler/rustc_codegen_llvm"));
-    assert!(component.exact_blocker.contains("libloading::Library"));
-    assert!(component.exact_blocker.contains("llvm-wrapper"));
+    assert!(component.exact_blocker.contains("target-loadable"));
+    assert!(component.exact_blocker.contains("LLVMBuildSelect"));
+    assert!(component.exact_blocker.contains("llvm::Linker::Linker"));
     assert!(component
         .adapter_evidence
         .as_deref()
