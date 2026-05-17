@@ -28,6 +28,24 @@ pub struct EmbeddedCompilerPayload {
     pub bytes: &'static [u8],
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EmbeddedCodegenPayload {
+    pub name: &'static str,
+    pub kind: &'static str,
+    pub backend: &'static str,
+    pub backend_family: &'static str,
+    pub target_triple: &'static str,
+    pub artifact_path: &'static str,
+    pub generation_command: &'static str,
+    pub load_strategy: &'static str,
+    pub embedding_method: &'static str,
+    pub state: &'static str,
+    pub expected_sha256: &'static str,
+    pub expected_size_bytes: u64,
+    #[serde(skip_serializing)]
+    pub bytes: &'static [u8],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EmbeddedCompilerPayloadReport {
     pub name: String,
@@ -122,8 +140,75 @@ pub struct EmbeddedCompilerPayloadLoadError {
     pub error: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EmbeddedCodegenPayloadExecutionReport {
+    pub name: String,
+    pub kind: String,
+    pub backend: String,
+    pub backend_family: String,
+    pub target_triple: String,
+    pub execution_source: String,
+    pub external: bool,
+    pub opened_external_file: bool,
+    pub artifact_path: String,
+    pub load_strategy: String,
+    pub embedding_method: String,
+    pub expected_sha256: String,
+    pub actual_sha256: String,
+    pub hash_verified: bool,
+    pub expected_size_bytes: u64,
+    pub actual_size_bytes: u64,
+    pub size_verified: bool,
+    pub wasm_magic_verified: bool,
+    pub module_instantiated: bool,
+    pub start_called: bool,
+    pub start_trapped: bool,
+    pub start_trap: Option<String>,
+    pub execute_status: i32,
+    pub imports: Vec<String>,
+    pub exports: Vec<String>,
+    pub argv: Vec<String>,
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+    pub stdout_text: String,
+    pub stderr_text: String,
+    pub output_json: Option<serde_json::Value>,
+    pub backend_constructed: bool,
+    pub backend_name: Option<String>,
+    pub codegen_contact_state: Option<String>,
+    pub mono_proof_consumed: bool,
+    pub mir_body_hash: Option<String>,
+    pub mono_item_count: Option<u64>,
+    pub mono_item_graph_hash: Option<String>,
+    pub llvm_context_created: bool,
+    pub llvm_module_created: bool,
+    pub llvm_module_identity: Option<String>,
+    pub llvm_module_identity_hash: Option<String>,
+    pub llvm_module_target_triple: Option<String>,
+    pub target_machine_setup_invoked: bool,
+    pub target_machine_created: bool,
+    pub target_machine_cpu: Option<String>,
+    pub target_machine_features: Option<String>,
+    pub target_machine_relocation_model: Option<String>,
+    pub target_machine_code_model: Option<String>,
+    pub target_machine_optimization_level: Option<String>,
+    pub llvm_ir_emitted: bool,
+    pub bitcode_emitted: bool,
+    pub object_emission_attempted: bool,
+    pub object_bytes_emitted: bool,
+    pub wasm_object_bytes_emitted: bool,
+    pub codegen_artifact_kind: Option<String>,
+    pub codegen_artifact_sha256: Option<String>,
+    pub codegen_artifact_size_bytes: Option<u64>,
+    pub codegen_artifact_location: Option<String>,
+    pub linker_handoff_created: bool,
+    pub blocker_kind: Option<String>,
+    pub blocker_reason: Option<String>,
+}
+
 #[derive(Debug)]
 struct PayloadWasiState {
+    args: Vec<String>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     proc_exit_code: Option<i32>,
@@ -284,8 +369,32 @@ static EMBEDDED_COMPILER_PAYLOADS: &[EmbeddedCompilerPayload] = &[EmbeddedCompil
 #[cfg(not(feature = "embedded-mir-payload"))]
 static EMBEDDED_COMPILER_PAYLOADS: &[EmbeddedCompilerPayload] = &[];
 
+#[cfg(feature = "embedded-mir-payload")]
+static EMBEDDED_CODEGEN_PAYLOADS: &[EmbeddedCodegenPayload] = &[EmbeddedCodegenPayload {
+    name: embedded_payloads::CODEGEN_PAYLOAD_NAME,
+    kind: embedded_payloads::CODEGEN_PAYLOAD_KIND,
+    backend: embedded_payloads::CODEGEN_PAYLOAD_BACKEND,
+    backend_family: embedded_payloads::CODEGEN_PAYLOAD_BACKEND_FAMILY,
+    target_triple: embedded_payloads::CODEGEN_PAYLOAD_TARGET_TRIPLE,
+    artifact_path: embedded_payloads::CODEGEN_PAYLOAD_ARTIFACT_PATH,
+    generation_command: embedded_payloads::CODEGEN_PAYLOAD_GENERATION_COMMAND,
+    load_strategy: embedded_payloads::CODEGEN_PAYLOAD_LOAD_STRATEGY,
+    embedding_method: embedded_payloads::CODEGEN_PAYLOAD_EMBEDDING_METHOD,
+    state: embedded_payloads::CODEGEN_PAYLOAD_STATE,
+    expected_sha256: embedded_payloads::CODEGEN_PAYLOAD_SHA256,
+    expected_size_bytes: embedded_payloads::CODEGEN_PAYLOAD_SIZE_BYTES,
+    bytes: embedded_payloads::CODEGEN_PAYLOAD_BYTES,
+}];
+
+#[cfg(not(feature = "embedded-mir-payload"))]
+static EMBEDDED_CODEGEN_PAYLOADS: &[EmbeddedCodegenPayload] = &[];
+
 pub fn embedded_compiler_payloads() -> &'static [EmbeddedCompilerPayload] {
     EMBEDDED_COMPILER_PAYLOADS
+}
+
+pub fn embedded_codegen_payloads() -> &'static [EmbeddedCodegenPayload] {
+    EMBEDDED_CODEGEN_PAYLOADS
 }
 
 pub fn embedded_compiler_payload_reports() -> Vec<EmbeddedCompilerPayloadReport> {
@@ -397,6 +506,61 @@ pub fn load_mir_handoff_payload(
     load_embedded_compiler_payload("rouwdi-mir-handoff-payload")
 }
 
+pub fn load_codegen_backend_payload(
+) -> Result<EmbeddedCodegenPayloadExecutionReport, EmbeddedCompilerPayloadLoadError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::thread::Builder::new()
+            .name("rouwdi-embedded-codegen-payload-loader".to_owned())
+            .stack_size(1024 * 1024 * 1024)
+            .spawn(load_codegen_backend_payload_inline)
+            .map_err(|error| EmbeddedCompilerPayloadLoadError {
+                name: "rouwdi-llvm-codegen-backend-payload".to_owned(),
+                execution_source: "embedded_registry".to_owned(),
+                external: false,
+                opened_external_file: false,
+                error: format!("failed to spawn embedded codegen payload loader thread: {error}"),
+            })?
+            .join()
+            .map_err(|_| EmbeddedCompilerPayloadLoadError {
+                name: "rouwdi-llvm-codegen-backend-payload".to_owned(),
+                execution_source: "embedded_registry".to_owned(),
+                external: false,
+                opened_external_file: false,
+                error: "embedded codegen payload loader thread panicked".to_owned(),
+            })?;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        load_codegen_backend_payload_inline()
+    }
+}
+
+fn load_codegen_backend_payload_inline(
+) -> Result<EmbeddedCodegenPayloadExecutionReport, EmbeddedCompilerPayloadLoadError> {
+    let Some(payload) = embedded_codegen_payloads()
+        .iter()
+        .find(|payload| payload.name == "rouwdi-llvm-codegen-backend-payload")
+    else {
+        return Err(EmbeddedCompilerPayloadLoadError {
+            name: "rouwdi-llvm-codegen-backend-payload".to_owned(),
+            execution_source: "embedded_registry".to_owned(),
+            external: false,
+            opened_external_file: false,
+            error: "embedded codegen payload was not found in registry".to_owned(),
+        });
+    };
+
+    execute_embedded_codegen_payload(payload).map_err(|error| EmbeddedCompilerPayloadLoadError {
+        name: payload.name.to_owned(),
+        execution_source: "embedded_registry".to_owned(),
+        external: false,
+        opened_external_file: false,
+        error,
+    })
+}
+
 pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMirPayloadExecution> {
     let report = load_mir_handoff_payload().ok()?;
     Some(rouwdi_rustc::RustEmbeddedMirPayloadExecution {
@@ -439,6 +603,166 @@ pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMi
         execution_state: report.execution_state,
         blocker_kind: report.blocker_kind,
         result_kind: report.result_kind,
+    })
+}
+
+fn execute_embedded_codegen_payload(
+    payload: &EmbeddedCodegenPayload,
+) -> Result<EmbeddedCodegenPayloadExecutionReport, String> {
+    let actual_sha256 = sha256_hex(payload.bytes);
+    let actual_size_bytes = payload.bytes.len() as u64;
+    let hash_verified = actual_sha256 == payload.expected_sha256;
+    let size_verified = actual_size_bytes == payload.expected_size_bytes;
+    let wasm_magic_verified = payload.bytes.starts_with(b"\0asm");
+    if !hash_verified || !size_verified || !wasm_magic_verified {
+        return Err(format!(
+            "embedded codegen payload identity verification failed: hash_verified={hash_verified} size_verified={size_verified} wasm_magic_verified={wasm_magic_verified}"
+        ));
+    }
+
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    config.set_max_recursion_depth(8192);
+    config.ignore_custom_sections(true);
+    let engine = Engine::new(&config);
+    let module = Module::new(&engine, payload.bytes)
+        .map_err(|error| format!("failed to compile embedded codegen payload: {error}"))?;
+    let imports = module
+        .imports()
+        .map(|import| format!("{}::{}", import.module(), import.name()))
+        .collect::<Vec<_>>();
+    let exports = module
+        .exports()
+        .map(|export| export.name().to_owned())
+        .collect::<Vec<_>>();
+    let argv = codegen_payload_argv();
+    let mut store = Store::new(
+        &engine,
+        PayloadWasiState {
+            args: argv.clone(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            proc_exit_code: None,
+            random_counter: 0,
+            next_fd: WASI_PREOPEN_FD + 1,
+            fds: BTreeMap::new(),
+        },
+    );
+    store
+        .set_fuel(PAYLOAD_FUEL_CHUNK)
+        .map_err(|error| error.to_string())?;
+    let mut linker = Linker::<PayloadWasiState>::new(&engine);
+    define_wasi_imports(&mut linker)?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|error| format!("failed to instantiate embedded codegen payload: {error}"))?;
+    let start = instance
+        .get_typed_func::<(), ()>(&store, "_start")
+        .map_err(|error| format!("missing/corrupt _start export: {error}"))?;
+    let start_outcome = call_start_with_resumable_fuel(&start, &mut store)?;
+    let start_trap = start_outcome.trap.clone();
+    let start_trapped = start_trap.is_some() && store.data().proc_exit_code.is_none();
+    if start_trapped {
+        return Err(format!(
+            "embedded codegen payload start trapped: {}",
+            start_trap.clone().unwrap_or_default()
+        ));
+    }
+
+    let stdout_bytes = store.data().stdout.len();
+    let stderr_bytes = store.data().stderr.len();
+    let stdout_text = String::from_utf8_lossy(&store.data().stdout).into_owned();
+    let stderr_text = String::from_utf8_lossy(&store.data().stderr).into_owned();
+    let output_json = serde_json::from_str::<serde_json::Value>(&stdout_text).ok();
+    let llvm_module_setup = output_json
+        .as_ref()
+        .and_then(|value| value.get("llvm_module_setup"));
+    let target_machine_setup = output_json
+        .as_ref()
+        .and_then(|value| value.get("target_machine_setup"));
+    let codegen_artifact = output_json
+        .as_ref()
+        .and_then(|value| value.get("codegen_artifact"));
+
+    Ok(EmbeddedCodegenPayloadExecutionReport {
+        name: payload.name.to_owned(),
+        kind: payload.kind.to_owned(),
+        backend: payload.backend.to_owned(),
+        backend_family: payload.backend_family.to_owned(),
+        target_triple: payload.target_triple.to_owned(),
+        execution_source: "embedded_registry".to_owned(),
+        external: false,
+        opened_external_file: false,
+        artifact_path: payload.artifact_path.to_owned(),
+        load_strategy: payload.load_strategy.to_owned(),
+        embedding_method: payload.embedding_method.to_owned(),
+        expected_sha256: payload.expected_sha256.to_owned(),
+        actual_sha256,
+        hash_verified,
+        expected_size_bytes: payload.expected_size_bytes,
+        actual_size_bytes,
+        size_verified,
+        wasm_magic_verified,
+        module_instantiated: true,
+        start_called: true,
+        start_trapped,
+        start_trap,
+        execute_status: store.data().proc_exit_code.unwrap_or(start_outcome.status),
+        imports,
+        exports,
+        argv,
+        stdout_bytes,
+        stderr_bytes,
+        stdout_text,
+        stderr_text,
+        backend_constructed: json_bool(output_json.as_ref(), "backend_constructed"),
+        backend_name: json_string_field(output_json.as_ref(), "backend_name"),
+        codegen_contact_state: json_string_field(output_json.as_ref(), "codegen_contact_state"),
+        mono_proof_consumed: json_bool(output_json.as_ref(), "mono_proof_consumed"),
+        mir_body_hash: json_string_field(output_json.as_ref(), "mir_body_hash"),
+        mono_item_count: output_json
+            .as_ref()
+            .and_then(|value| value.get("mono_item_count"))
+            .and_then(serde_json::Value::as_u64),
+        mono_item_graph_hash: json_string_field(output_json.as_ref(), "mono_item_graph_hash"),
+        llvm_context_created: json_bool(llvm_module_setup, "llvm_context_created"),
+        llvm_module_created: json_bool(llvm_module_setup, "llvm_module_created"),
+        llvm_module_identity: json_string_field(llvm_module_setup, "module_identity"),
+        llvm_module_identity_hash: json_string_field(llvm_module_setup, "module_identity_hash"),
+        llvm_module_target_triple: json_string_field(llvm_module_setup, "module_target_triple"),
+        target_machine_setup_invoked: json_bool(target_machine_setup, "attempted"),
+        target_machine_created: json_bool(target_machine_setup, "target_machine_created"),
+        target_machine_cpu: json_string_field(target_machine_setup, "cpu"),
+        target_machine_features: json_string_field(target_machine_setup, "features"),
+        target_machine_relocation_model: json_string_field(
+            target_machine_setup,
+            "relocation_model",
+        ),
+        target_machine_code_model: json_string_field(target_machine_setup, "code_model"),
+        target_machine_optimization_level: json_string_field(
+            target_machine_setup,
+            "optimization_level",
+        ),
+        llvm_ir_emitted: json_bool(output_json.as_ref(), "llvm_ir_emitted"),
+        bitcode_emitted: json_bool(output_json.as_ref(), "bitcode_emitted"),
+        object_emission_attempted: json_bool(output_json.as_ref(), "object_emission_attempted"),
+        object_bytes_emitted: json_bool(output_json.as_ref(), "object_bytes_emitted"),
+        wasm_object_bytes_emitted: json_bool(output_json.as_ref(), "wasm_object_bytes_emitted"),
+        codegen_artifact_kind: json_string_field(codegen_artifact, "artifact_kind"),
+        codegen_artifact_sha256: json_string_field(codegen_artifact, "sha256"),
+        codegen_artifact_size_bytes: codegen_artifact
+            .and_then(|value| value.get("byte_length"))
+            .and_then(serde_json::Value::as_u64),
+        codegen_artifact_location: json_string_field(
+            codegen_artifact,
+            "embedded_artifact_location",
+        ),
+        linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created"),
+        blocker_kind: json_string_field(output_json.as_ref(), "blocker_kind")
+            .filter(|kind| kind != "none"),
+        blocker_reason: json_string_field(output_json.as_ref(), "blocker_reason")
+            .filter(|reason| reason != "none"),
+        output_json,
     })
 }
 
@@ -485,6 +809,7 @@ fn execute_embedded_payload(
     let mut store = Store::new(
         &engine,
         PayloadWasiState {
+            args: vec![PAYLOAD_ARG0.to_owned()],
             stdout: Vec::new(),
             stderr: Vec::new(),
             proc_exit_code: None,
@@ -722,6 +1047,9 @@ fn define_wasi_imports(linker: &mut Linker<PayloadWasiState>) -> Result<(), Stri
         .func_wrap(WASI, "fd_read", wasi_fd_read)
         .map_err(to_string)?;
     linker
+        .func_wrap(WASI, "fd_pread", wasi_fd_pread)
+        .map_err(to_string)?;
+    linker
         .func_wrap(WASI, "fd_close", wasi_fd_close)
         .map_err(to_string)?;
     linker
@@ -783,15 +1111,16 @@ fn wasi_args_sizes_get(
     argc_ptr: i32,
     argv_buf_size_ptr: i32,
 ) -> i32 {
-    let status = write_u32(&mut caller, argc_ptr, 1);
+    let args = caller.data().args.clone();
+    let status = write_u32(&mut caller, argc_ptr, args.len() as u32);
     if status != WASI_ERRNO_SUCCESS {
         return status;
     }
-    write_u32(
-        &mut caller,
-        argv_buf_size_ptr,
-        PAYLOAD_ARG0.len().saturating_add(1) as u32,
-    )
+    let argv_buf_size = args
+        .iter()
+        .map(|arg| arg.len().saturating_add(1))
+        .sum::<usize>();
+    write_u32(&mut caller, argv_buf_size_ptr, argv_buf_size as u32)
 }
 
 fn wasi_args_get(
@@ -799,16 +1128,27 @@ fn wasi_args_get(
     argv_ptr: i32,
     argv_buf_ptr: i32,
 ) -> i32 {
-    let bytes = PAYLOAD_ARG0.as_bytes();
-    let status = write_u32(&mut caller, argv_ptr, argv_buf_ptr as u32);
-    if status != WASI_ERRNO_SUCCESS {
-        return status;
+    let args = caller.data().args.clone();
+    let mut current_buf_ptr = argv_buf_ptr;
+    for (index, arg) in args.iter().enumerate() {
+        let bytes = arg.as_bytes();
+        let pointer_slot = argv_ptr + (index as i32 * 4);
+        let status = write_u32(&mut caller, pointer_slot, current_buf_ptr as u32);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let status = write_bytes(&mut caller, current_buf_ptr, bytes);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let terminator_ptr = current_buf_ptr + bytes.len() as i32;
+        let status = write_bytes(&mut caller, terminator_ptr, &[0]);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        current_buf_ptr = terminator_ptr + 1;
     }
-    let status = write_bytes(&mut caller, argv_buf_ptr, bytes);
-    if status != WASI_ERRNO_SUCCESS {
-        return status;
-    }
-    write_bytes(&mut caller, argv_buf_ptr + bytes.len() as i32, &[0])
+    WASI_ERRNO_SUCCESS
 }
 
 fn wasi_environ_sizes_get(
@@ -938,6 +1278,61 @@ fn wasi_fd_read(
             if total_read == 0 || requested_end == bytes.len() {
                 break;
             }
+        }
+    }
+
+    for (ptr, bytes) in writes {
+        if memory.write(&mut caller, ptr as usize, &bytes).is_err() {
+            return WASI_ERRNO_INVAL;
+        }
+    }
+    write_u32(&mut caller, nread_ptr, total_read)
+}
+
+fn wasi_fd_pread(
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    offset: i64,
+    nread_ptr: i32,
+) -> i32 {
+    if iovs_ptr < 0 || iovs_len < 0 || offset < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    if fd == 0 || fd == WASI_PREOPEN_FD {
+        return write_u32(&mut caller, nread_ptr, 0);
+    }
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut iovs = Vec::new();
+    for index in 0..iovs_len {
+        let base = iovs_ptr as usize + (index as usize * 8);
+        let Ok(ptr) = read_memory_u32(&memory, &caller, base) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let Ok(len) = read_memory_u32(&memory, &caller, base + 4) else {
+            return WASI_ERRNO_INVAL;
+        };
+        iovs.push((ptr, len));
+    }
+
+    let Some(VirtualFd::File { bytes, .. }) = caller.data().fds.get(&fd) else {
+        return WASI_ERRNO_BADF;
+    };
+    let mut position = offset as usize;
+    let mut writes = Vec::<(u32, Vec<u8>)>::new();
+    let mut total_read = 0_u32;
+    for (ptr, len) in iovs {
+        let start = position.min(bytes.len());
+        let requested_end = start.saturating_add(len as usize).min(bytes.len());
+        let chunk = bytes[start..requested_end].to_vec();
+        position = requested_end;
+        total_read = total_read.saturating_add(chunk.len() as u32);
+        writes.push((ptr, chunk));
+        if total_read == 0 || requested_end == bytes.len() {
+            break;
         }
     }
 
@@ -1273,6 +1668,67 @@ struct PayloadExecuteOutcome {
     trap: Option<String>,
 }
 
+fn call_start_with_resumable_fuel(
+    start: &wasmi::TypedFunc<(), ()>,
+    store: &mut Store<PayloadWasiState>,
+) -> Result<PayloadExecuteOutcome, String> {
+    store
+        .set_fuel(PAYLOAD_FUEL_CHUNK)
+        .map_err(|error| error.to_string())?;
+    let mut call = match start.call_resumable(&mut *store, ()) {
+        Ok(call) => call,
+        Err(error) => {
+            return Ok(PayloadExecuteOutcome {
+                status: -1903,
+                trap: Some(error.to_string()),
+            });
+        }
+    };
+    let mut resumes = 0_usize;
+    loop {
+        match call {
+            TypedResumableCall::Finished(()) => {
+                return Ok(PayloadExecuteOutcome {
+                    status: 0,
+                    trap: None,
+                });
+            }
+            TypedResumableCall::HostTrap(trap) => {
+                return Ok(PayloadExecuteOutcome {
+                    status: -1902,
+                    trap: Some(format!("host import trap: {trap:?}")),
+                });
+            }
+            TypedResumableCall::OutOfFuel(out_of_fuel) => {
+                resumes = resumes.saturating_add(1);
+                if resumes > PAYLOAD_MAX_FUEL_RESUMES {
+                    return Err(format!(
+                        "_start export exceeded rouwdi-owned fuel budget after {resumes} resumptions"
+                    ));
+                }
+                let next_fuel = PAYLOAD_FUEL_CHUNK.max(out_of_fuel.required_fuel());
+                store
+                    .set_fuel(next_fuel)
+                    .map_err(|error| error.to_string())?;
+                if resumes == 1 || resumes % 1000 == 0 {
+                    trace_payload_loader(&format!(
+                        "_start resumed after out-of-fuel ({resumes} chunks)"
+                    ));
+                }
+                call = match out_of_fuel.resume(&mut *store) {
+                    Ok(call) => call,
+                    Err(error) => {
+                        return Ok(PayloadExecuteOutcome {
+                            status: -1901,
+                            trap: Some(error.to_string()),
+                        });
+                    }
+                };
+            }
+        }
+    }
+}
+
 fn call_execute_with_resumable_fuel(
     execute: &wasmi::TypedFunc<(i32, i32, i32, i32, i32, i32), i32>,
     store: &mut Store<PayloadWasiState>,
@@ -1532,6 +1988,43 @@ fn json_str<'a>(value: &'a Option<serde_json::Value>, key: &str) -> Option<&'a s
         .as_ref()
         .and_then(|value| value.get(key))
         .and_then(serde_json::Value::as_str)
+}
+
+fn json_bool(value: Option<&serde_json::Value>, key: &str) -> bool {
+    value
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn json_string_field(value: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    value
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+fn codegen_payload_argv() -> Vec<String> {
+    vec![
+        "rouwdi-rustc-codegen-llvm-probe.wasm".to_owned(),
+        "--json".to_owned(),
+        "--compile-unit-id".to_owned(),
+        "app:rust:app:wasm32-wasip1".to_owned(),
+        "--crate-identity".to_owned(),
+        "rouwdi_payload".to_owned(),
+        "--target-triple".to_owned(),
+        "wasm32-wasip1".to_owned(),
+        "--target-spec".to_owned(),
+        "rustc_target::spec::wasm32_wasip1".to_owned(),
+        "--mir-body-hash".to_owned(),
+        "a5e137ef6793c0b8".to_owned(),
+        "--mono-item-count".to_owned(),
+        "1".to_owned(),
+        "--mono-item-graph-hash".to_owned(),
+        "bec5817d61819666".to_owned(),
+        "--mono-item".to_owned(),
+        "fn:rouwdi_payload::main".to_owned(),
+    ]
 }
 
 fn to_string(error: impl ToString) -> String {

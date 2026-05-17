@@ -6,7 +6,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-rustc_codegen_llvm = { path = "../../third_party/rust/compiler/rustc_codegen_llvm", features = ["check_only"] }
+rustc_codegen_llvm = { path = "../../third_party/rust/compiler/rustc_codegen_llvm" }
 hex = "0.4"
 serde_json = "1"
 sha2 = "0.10"

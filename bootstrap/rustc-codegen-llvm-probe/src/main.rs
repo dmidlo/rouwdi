@@ -40,6 +40,9 @@ struct ModuleSetup {
     module_identity: Option<String>,
     module_identity_hash: Option<String>,
     module_target_triple: Option<String>,
+    llvm_ir: Option<String>,
+    llvm_ir_sha256: Option<String>,
+    llvm_ir_size_bytes: Option<usize>,
     blocker_kind: Option<String>,
     blocker_reason: Option<String>,
 }
@@ -58,16 +61,12 @@ struct TargetMachineSetup {
     blocker_reason: Option<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 type LLVMTargetRef = *mut c_void;
-#[cfg(not(target_arch = "wasm32"))]
 type LLVMTargetMachineRef = *mut c_void;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[link(name = "llvm-wrapper", kind = "static")]
 unsafe extern "C" {}
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" {
     fn LLVMContextCreate() -> *mut c_void;
     fn LLVMContextDispose(context: *mut c_void);
@@ -77,6 +76,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn LLVMDisposeModule(module: *mut c_void);
     fn LLVMSetTarget(module: *mut c_void, triple: *const c_char);
+    fn LLVMPrintModuleToString(module: *mut c_void) -> *mut c_char;
     fn LLVMInitializeWebAssemblyTargetInfo();
     fn LLVMInitializeWebAssemblyTarget();
     fn LLVMInitializeWebAssemblyTargetMC();
@@ -128,7 +128,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let codegen_contact_state = if target_machine_setup.target_machine_created {
+    let llvm_ir_emitted = module_setup.llvm_ir.is_some();
+    let codegen_contact_state = if llvm_ir_emitted {
+        "llvm_ir_emitted"
+    } else if target_machine_setup.target_machine_created {
         "target_machine_created"
     } else if target_machine_setup.attempted {
         "target_machine_setup_invoked"
@@ -149,6 +152,40 @@ fn main() -> ExitCode {
         .as_deref()
         .or(module_setup.blocker_reason.as_deref())
         .unwrap_or("none");
+    let codegen_artifact = if let Some(llvm_ir) = module_setup.llvm_ir.as_ref() {
+        serde_json::json!({
+            "artifact_kind": "llvm_ir",
+            "byte_length": module_setup.llvm_ir_size_bytes,
+            "sha256": module_setup.llvm_ir_sha256,
+            "producer_backend": "rustc_codegen_llvm",
+            "target_triple": input.target_triple,
+            "mir_body_hash": input.mir_body_hash,
+            "mono_item_graph_hash": input.mono_item_graph_hash,
+            "payload_hash": null,
+            "linker_required": true,
+            "embedded_artifact_location": "backend_stdout.codegen_artifact.llvm_ir",
+            "llvm_ir": llvm_ir,
+        })
+    } else {
+        serde_json::Value::Null
+    };
+    let linker_handoff = if llvm_ir_emitted {
+        serde_json::json!({
+            "compile_unit_id": input.compile_unit_id,
+            "target_triple": input.target_triple,
+            "codegen_artifact_kind": "llvm_ir",
+            "codegen_artifact_hash": module_setup.llvm_ir_sha256,
+            "codegen_backend_identity": "rustc_codegen_llvm::LlvmCodegenBackend",
+            "required_linker_component": "wasm-ld",
+            "expected_final_artifact_kind": "wasm_module",
+            "current_status": "blocked_until_object_bytes_emitted",
+            "blocker_kind": "linker_handoff_waiting_for_wasm_object_bytes",
+            "next_command": "emit wasm object bytes from the embedded LLVM backend, then invoke rouwdi-owned wasm-ld",
+            "proof_path": "dist/manifest.json#/codegen_payloads/0/linker_handoff"
+        })
+    } else {
+        serde_json::Value::Null
+    };
 
     let payload = serde_json::json!({
         "probe_name": "rustc_codegen_llvm_backend_execution",
@@ -192,12 +229,14 @@ fn main() -> ExitCode {
             "blocker_kind": target_machine_setup.blocker_kind,
             "blocker_reason": target_machine_setup.blocker_reason,
         },
+        "codegen_artifact": codegen_artifact,
         "object_emission_attempted": false,
         "object_bytes_emitted": false,
-        "llvm_ir_emitted": false,
+        "llvm_ir_emitted": llvm_ir_emitted,
         "bitcode_emitted": false,
         "wasm_object_bytes_emitted": false,
-        "linker_handoff_created": false,
+        "linker_handoff_created": llvm_ir_emitted,
+        "linker_handoff": linker_handoff,
         "blocker_kind": blocker_kind,
         "blocker_reason": blocker_reason
     });
@@ -253,7 +292,6 @@ fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<S
         .ok_or_else(|| format!("{option} requires a value"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
     let module_name = match CString::new(input.compile_unit_id.as_str()) {
         Ok(value) => value,
@@ -265,6 +303,9 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
                 module_identity: None,
                 module_identity_hash: None,
                 module_target_triple: None,
+                llvm_ir: None,
+                llvm_ir_sha256: None,
+                llvm_ir_size_bytes: None,
                 blocker_kind: Some("llvm_module_blocked_at_invalid_module_name".to_owned()),
                 blocker_reason: Some(error.to_string()),
             };
@@ -280,6 +321,9 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
                 module_identity: None,
                 module_identity_hash: None,
                 module_target_triple: None,
+                llvm_ir: None,
+                llvm_ir_sha256: None,
+                llvm_ir_size_bytes: None,
                 blocker_kind: Some("llvm_module_blocked_at_invalid_target_triple".to_owned()),
                 blocker_reason: Some(error.to_string()),
             };
@@ -296,6 +340,9 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
                 module_identity: None,
                 module_identity_hash: None,
                 module_target_triple: None,
+                llvm_ir: None,
+                llvm_ir_sha256: None,
+                llvm_ir_size_bytes: None,
                 blocker_kind: Some("llvm_module_blocked_at_context_create_null".to_owned()),
                 blocker_reason: Some("LLVMContextCreate returned null".to_owned()),
             };
@@ -311,6 +358,9 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
                 module_identity: None,
                 module_identity_hash: None,
                 module_target_triple: None,
+                llvm_ir: None,
+                llvm_ir_sha256: None,
+                llvm_ir_size_bytes: None,
                 blocker_kind: Some("llvm_module_blocked_at_module_create_null".to_owned()),
                 blocker_reason: Some("LLVMModuleCreateWithNameInContext returned null".to_owned()),
             };
@@ -325,6 +375,16 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
             input.mono_item_graph_hash
         );
         let identity_hash = sha256_hex(identity.as_bytes());
+        let ir_message = LLVMPrintModuleToString(module);
+        let llvm_ir = if ir_message.is_null() {
+            None
+        } else {
+            let ir = CStr::from_ptr(ir_message).to_string_lossy().into_owned();
+            LLVMDisposeMessage(ir_message);
+            Some(ir)
+        };
+        let llvm_ir_sha256 = llvm_ir.as_deref().map(|ir| sha256_hex(ir.as_bytes()));
+        let llvm_ir_size_bytes = llvm_ir.as_ref().map(|ir| ir.len());
         LLVMDisposeModule(module);
         LLVMContextDispose(context);
 
@@ -335,27 +395,15 @@ fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
             module_identity: Some(identity),
             module_identity_hash: Some(identity_hash),
             module_target_triple: Some(input.target_triple.clone()),
+            llvm_ir,
+            llvm_ir_sha256,
+            llvm_ir_size_bytes,
             blocker_kind: None,
             blocker_reason: None,
         }
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn attempt_llvm_module_setup(_input: &ProbeInput) -> ModuleSetup {
-    ModuleSetup {
-        attempted: false,
-        llvm_context_created: false,
-        llvm_module_created: false,
-        module_identity: None,
-        module_identity_hash: None,
-        module_target_triple: None,
-        blocker_kind: None,
-        blocker_reason: None,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn attempt_target_machine_setup(input: &ProbeInput) -> TargetMachineSetup {
     let cpu = "generic".to_owned();
     let features = String::new();
@@ -453,22 +501,6 @@ fn attempt_target_machine_setup(input: &ProbeInput) -> TargetMachineSetup {
             blocker_kind: None,
             blocker_reason: None,
         }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn attempt_target_machine_setup(input: &ProbeInput) -> TargetMachineSetup {
-    TargetMachineSetup {
-        attempted: false,
-        target_triple: input.target_triple.clone(),
-        cpu: "generic".to_owned(),
-        features: String::new(),
-        relocation_model: "pic".to_owned(),
-        code_model: "default".to_owned(),
-        optimization_level: "none".to_owned(),
-        target_machine_created: false,
-        blocker_kind: None,
-        blocker_reason: None,
     }
 }
 

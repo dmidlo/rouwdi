@@ -1,0 +1,8 @@
+#ifndef ROUWDI_WASI_SDK_SHIM_BITS_IOCTL_H
+#define ROUWDI_WASI_SDK_SHIM_BITS_IOCTL_H
+
+#ifndef TIOCGWINSZ
+#define TIOCGWINSZ 0x5413
+#endif
+
+#endif

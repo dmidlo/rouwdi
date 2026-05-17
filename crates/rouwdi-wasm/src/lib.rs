@@ -139,6 +139,33 @@ pub fn cli_main() -> i32 {
                 1
             }
         },
+        "codegen-payloads" => match payloads::load_codegen_backend_payload() {
+            Ok(report) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_default()
+                );
+                if report.hash_verified
+                    && report.size_verified
+                    && report.module_instantiated
+                    && report.start_called
+                    && report.execution_source == "embedded_registry"
+                    && !report.external
+                    && report.backend_constructed
+                    && report.llvm_module_created
+                    && report.target_machine_created
+                    && report.llvm_ir_emitted
+                {
+                    0
+                } else {
+                    1
+                }
+            }
+            Err(err) => {
+                println!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
+                1
+            }
+        },
         _ => {
             eprintln!("unknown rouwdi command: {command}");
             64

@@ -651,10 +651,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .codegen_contact_points
         .iter()
         .any(|point| point.contains("LlvmCodegenBackend::new")));
-    assert_eq!(
-        codegen_handoff.codegen_contact_state,
-        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-    );
+    assert_eq!(codegen_handoff.codegen_contact_state, "llvm_ir_emitted");
     assert_eq!(
         codegen_handoff.host_probe_codegen_contact_state,
         "target_machine_created"
@@ -663,54 +660,54 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     assert!(codegen_handoff.host_probe_llvm_module_created);
     assert!(codegen_handoff.host_probe_target_machine_created);
     assert!(codegen_handoff.mono_proof_consumed);
-    assert!(!codegen_handoff.llvm_module_setup_invoked);
-    assert!(!codegen_handoff.llvm_context_created);
-    assert!(!codegen_handoff.llvm_module_created);
-    assert!(codegen_handoff.llvm_module_identity.is_none());
-    assert!(codegen_handoff.llvm_module_identity_hash.is_none());
-    assert!(codegen_handoff.llvm_module_target_triple.is_none());
-    assert!(!codegen_handoff.target_machine_setup_invoked);
-    assert!(!codegen_handoff.target_machine_created);
-    assert!(codegen_handoff.target_machine_cpu.is_empty());
-    assert!(codegen_handoff.target_machine_relocation_model.is_empty());
+    assert!(codegen_handoff.llvm_module_setup_invoked);
+    assert!(codegen_handoff.llvm_context_created);
+    assert!(codegen_handoff.llvm_module_created);
+    assert!(codegen_handoff
+        .llvm_module_identity
+        .as_deref()
+        .is_some_and(|identity| identity.contains("mono=0123456789abcdef")));
+    assert!(codegen_handoff
+        .llvm_module_identity_hash
+        .as_deref()
+        .is_some_and(|hash| hash.len() == 64));
+    assert_eq!(
+        codegen_handoff.llvm_module_target_triple.as_deref(),
+        Some("wasm32-wasip1")
+    );
+    assert!(codegen_handoff.target_machine_setup_invoked);
+    assert!(codegen_handoff.target_machine_created);
+    assert_eq!(codegen_handoff.target_machine_cpu, "generic");
+    assert_eq!(codegen_handoff.target_machine_relocation_model, "pic");
     assert_eq!(
         codegen_handoff.backend_payload_kind,
         "codegen_backend_payload"
     );
-    assert_eq!(
-        codegen_handoff.backend_payload_blocker_kind,
-        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-    );
-    assert!(!codegen_handoff.backend_payload_embedded_in_assembly);
-    assert_eq!(
-        codegen_handoff.current_status,
-        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-    );
-    assert_eq!(
-        codegen_handoff.blocker_kind,
-        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-    );
-    assert_eq!(
-        codegen_handoff.blocker_component,
-        "LLVM Support CrashRecoveryContext wasm32-wasip1 signal support"
-    );
-    assert!(codegen_handoff.blocker_reason.contains("host evidence"));
-    assert!(codegen_handoff
-        .blocker_reason
-        .contains("target-compatible LLVM library closure"));
-    assert!(codegen_handoff
-        .blocker_reason
-        .contains("CrashRecoveryContext.cpp"));
-    assert!(codegen_handoff.blocker_reason.contains("sigaction"));
-    assert!(codegen_handoff
-        .blocker_reason
-        .contains("host evidence only"));
+    assert_eq!(codegen_handoff.backend_payload_blocker_kind, "none");
+    assert!(codegen_handoff.backend_payload_embedded_in_assembly);
+    assert!(codegen_handoff.backend_payload_instantiated);
+    assert!(codegen_handoff.backend_payload_executed);
+    assert_eq!(codegen_handoff.current_status, "llvm_ir_emitted");
+    assert_eq!(codegen_handoff.blocker_kind, "none");
+    assert_eq!(codegen_handoff.blocker_component, "none");
+    assert_eq!(codegen_handoff.blocker_reason, "none");
     assert!(!codegen_handoff.object_emission_attempted);
     assert!(!codegen_handoff.object_bytes_emitted);
     assert!(codegen_handoff.object_sha256.is_none());
-    assert!(!codegen_handoff.llvm_ir_emitted);
-    assert!(!codegen_handoff.linker_handoff_created);
-    assert!(codegen_handoff.linker_handoff.is_none());
+    assert!(codegen_handoff.llvm_ir_emitted);
+    assert_eq!(
+        codegen_handoff.llvm_ir_sha256.as_deref(),
+        Some("6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267")
+    );
+    assert_eq!(codegen_handoff.codegen_artifact_byte_len, Some(121));
+    assert!(codegen_handoff.linker_handoff_created);
+    let linker_handoff = codegen_handoff.linker_handoff.as_ref().unwrap();
+    assert_eq!(linker_handoff.codegen_artifact_kind, "llvm_ir");
+    assert_eq!(
+        linker_handoff.codegen_artifact_hash,
+        "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267"
+    );
+    assert_eq!(linker_handoff.required_linker_component, "wasm-ld");
     codegen_handoff
         .validate_against_monomorphization_proof(mono_proof)
         .unwrap();
@@ -736,7 +733,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
     );
     assert_eq!(
         manifest.artifact_pipeline[0].blocker_component.as_deref(),
-        Some("LLVM Support CrashRecoveryContext wasm32-wasip1 signal support")
+        Some("rustc_codegen_llvm")
     );
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
@@ -754,10 +751,7 @@ fn mono_item_graph_success_writes_mono_proof_and_opens_codegen_handoff() {
         .any(|unit| {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
-                && unit.codegen_handoff_status.as_deref()
-                    == Some(
-                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction",
-                    )
+                && unit.codegen_handoff_status.as_deref() == Some("llvm_ir_emitted")
         }));
 }
 
@@ -936,6 +930,9 @@ fn fake_llvm_ir_reusing_mir_hash_is_rejected() {
 fn linker_handoff_without_codegen_bytes_is_rejected() {
     let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
 
+    codegen_handoff.llvm_ir_emitted = false;
+    codegen_handoff.llvm_ir_sha256 = None;
+    codegen_handoff.codegen_artifact_byte_len = None;
     codegen_handoff.linker_handoff_created = true;
 
     assert!(codegen_handoff
@@ -954,22 +951,17 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
         component.source_path,
         "third_party/rust/compiler/rustc_codegen_llvm"
     );
-    assert_eq!(
-        component.blocker_kind,
-        "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-    );
+    assert_eq!(component.blocker_kind, "none");
     assert!(component
         .probe_command
         .contains("compiler/rustc_codegen_llvm"));
-    assert!(component
-        .exact_blocker
-        .contains("target-compatible LLVM library closure"));
-    assert!(component.exact_blocker.contains("CrashRecoveryContext.cpp"));
-    assert!(component.exact_blocker.contains("sigaction"));
-    assert!(component.exact_blocker.contains("llvm-config.exe"));
+    assert!(component.exact_blocker.contains("embedded"));
+    assert!(component.exact_blocker.contains("LLVM IR"));
     assert!(component.exact_blocker.contains("LLVM context/module"));
     assert!(component.exact_blocker.contains("target machine"));
-    assert!(component.exact_blocker.contains("No object"));
+    assert!(component
+        .exact_blocker
+        .contains("Object/Wasm-object emission remains"));
     assert!(component
         .adapter_evidence
         .as_deref()

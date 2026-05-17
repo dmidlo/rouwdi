@@ -171,7 +171,7 @@ function Assert-ContainsBytes {
     )
 
     if (-not [Rouwdi.ByteSearch]::Contains($Haystack, $Needle)) {
-        throw "dist/rouwdi.wasm does not contain embedded MIR payload evidence: $Description"
+        throw "dist/rouwdi.wasm does not contain embedded payload evidence: $Description"
     }
 }
 
@@ -186,6 +186,18 @@ function Invoke-CommandChecked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE"
     }
+}
+
+function To-JsonArray {
+    param([object]$Value)
+
+    $items = New-Object System.Collections.ArrayList
+    foreach ($item in @($Value)) {
+        if ($null -ne $item) {
+            [void]$items.Add($item)
+        }
+    }
+    return ,([object[]]$items.ToArray())
 }
 
 function Ensure-MirPayload {
@@ -229,11 +241,57 @@ function Ensure-MirPayload {
     }
 }
 
+function Ensure-CodegenPayload {
+    param(
+        [object]$WasmTargetReport
+    )
+
+    if ($WasmTargetReport.backend_payload_build_attempted -ne $true) {
+        throw "Executable wasm32-wasip1 codegen backend payload build was not attempted"
+    }
+    if ($WasmTargetReport.executable_backend_payload_linked -ne $true) {
+        throw "Executable wasm32-wasip1 codegen backend payload did not link; blocker=$($WasmTargetReport.blocker_kind): $($WasmTargetReport.blocker_reason)"
+    }
+
+    $payloadPath = [string]$WasmTargetReport.backend_payload_artifact_path
+    if ([string]::IsNullOrWhiteSpace($payloadPath)) {
+        throw "Executable codegen backend payload report did not provide backend_payload_artifact_path"
+    }
+
+    $payloadAbsolutePath = if ([System.IO.Path]::IsPathRooted($payloadPath)) {
+        (Resolve-Path -LiteralPath $payloadPath).Path
+    } else {
+        Join-Path $RepoRoot $payloadPath
+    }
+    if (-not (Test-Path -LiteralPath $payloadAbsolutePath -PathType Leaf)) {
+        throw "Executable codegen backend payload is missing: $payloadAbsolutePath"
+    }
+
+    $identity = Get-ArtifactIdentity -Path $payloadAbsolutePath
+    $expectedSha256 = [string]$WasmTargetReport.backend_payload_artifact_sha256
+    $expectedSizeBytes = [int64]$WasmTargetReport.backend_payload_artifact_size_bytes
+    if ($identity.sha256 -ne $expectedSha256) {
+        throw "Executable codegen backend payload hash mismatch for $($identity.path); expected $expectedSha256 got $($identity.sha256)"
+    }
+    if ($identity.size_bytes -ne $expectedSizeBytes) {
+        throw "Executable codegen backend payload size mismatch for $($identity.path); expected $expectedSizeBytes got $($identity.size_bytes)"
+    }
+
+    return [ordered]@{
+        path = $identity.path
+        absolute_path = $payloadAbsolutePath
+        sha256 = $identity.sha256
+        size_bytes = $identity.size_bytes
+        generation_command = "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
+    }
+}
+
 function Write-EmbeddedPayloadSource {
     param(
         [hashtable]$RootMetadata,
         [hashtable]$PayloadMetadata,
         [hashtable]$AbiMetadata,
+        [object]$CodegenPayloadMetadata,
         [string]$GeneratedPath
     )
 
@@ -248,6 +306,11 @@ function Write-EmbeddedPayloadSource {
     $generationCommand = [string]$PayloadMetadata["emitted_by"]
     $payloadSha256 = [string]$PayloadMetadata["sha256"]
     $payloadSizeBytes = [int64]$PayloadMetadata["size_bytes"]
+    $codegenPayloadPath = ([string]$CodegenPayloadMetadata["path"]).Replace("\", "/")
+    $codegenIncludePath = "../../../../$codegenPayloadPath"
+    $codegenGenerationCommand = [string]$CodegenPayloadMetadata["generation_command"]
+    $codegenPayloadSha256 = [string]$CodegenPayloadMetadata["sha256"]
+    $codegenPayloadSizeBytes = [int64]$CodegenPayloadMetadata["size_bytes"]
 
     if ([string]::IsNullOrWhiteSpace($payloadStage)) {
         throw "compiler-payload ABI manifest did not provide supported_stage"
@@ -279,6 +342,25 @@ pub(super) const MIR_PAYLOAD_SIZE_BYTES: u64 = $payloadSizeBytes;
 pub(super) const MIR_PAYLOAD_BYTES: &[u8] = include_bytes!(
     "$(Escape-RustString $includePath)"
 );
+
+pub(super) const CODEGEN_PAYLOAD_NAME: &str = "rouwdi-llvm-codegen-backend-payload";
+pub(super) const CODEGEN_PAYLOAD_KIND: &str = "codegen_backend_payload";
+pub(super) const CODEGEN_PAYLOAD_BACKEND: &str = "rustc_codegen_llvm";
+pub(super) const CODEGEN_PAYLOAD_BACKEND_FAMILY: &str = "llvm-grade";
+pub(super) const CODEGEN_PAYLOAD_TARGET_TRIPLE: &str = "wasm32-wasip1";
+pub(super) const CODEGEN_PAYLOAD_ARTIFACT_PATH: &str =
+    "$(Escape-RustString $codegenPayloadPath)";
+pub(super) const CODEGEN_PAYLOAD_GENERATION_COMMAND: &str =
+    "$(Escape-RustString $codegenGenerationCommand)";
+pub(super) const CODEGEN_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasi_cli_module";
+pub(super) const CODEGEN_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
+pub(super) const CODEGEN_PAYLOAD_STATE: &str = "embedded_payload";
+pub(super) const CODEGEN_PAYLOAD_SHA256: &str =
+    "$(Escape-RustString $codegenPayloadSha256)";
+pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = $codegenPayloadSizeBytes;
+pub(super) const CODEGEN_PAYLOAD_BYTES: &[u8] = include_bytes!(
+    "$(Escape-RustString $codegenIncludePath)"
+);
 "@
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $GeneratedPath) | Out-Null
@@ -302,10 +384,45 @@ try {
     $abiMetadata = Read-TomlTable -Path $abiManifestPath -TableName ""
 
     $payload = Ensure-MirPayload -ManifestPath $mirExportManifestPath -PayloadMetadata $payloadMetadata
+
+    Invoke-CommandChecked `
+        -Description "checking executable wasm32-wasip1 rustc_codegen_llvm backend payload route" `
+        -Command { & powershell -ExecutionPolicy Bypass -File $wasmTargetCheckScript }
+    if (-not (Test-Path -LiteralPath $wasmTargetReportPath -PathType Leaf)) {
+        throw "wasm target codegen backend route did not emit report: $wasmTargetReportPath"
+    }
+    if (-not (Test-Path -LiteralPath $llvmWrapperReportPath -PathType Leaf)) {
+        throw "target llvm-wrapper build did not emit report: $llvmWrapperReportPath"
+    }
+    $wasmTargetReport = Get-Content -Raw -LiteralPath $wasmTargetReportPath | ConvertFrom-Json
+    $llvmWrapperReport = Get-Content -Raw -LiteralPath $llvmWrapperReportPath | ConvertFrom-Json
+    if ($wasmTargetReport.check_only_exit_code -ne 0) {
+        throw "rustc_codegen_llvm wasm32-wasip1 check-only route failed with exit code $($wasmTargetReport.check_only_exit_code)"
+    }
+    if ($wasmTargetReport.backend_payload_build_attempted -ne $true) {
+        throw "executable wasm32-wasip1 backend payload build was not attempted"
+    }
+    if ($llvmWrapperReport.llvm_wrapper_target -ne "wasm32-wasip1") {
+        throw "target llvm-wrapper report used unexpected target: $($llvmWrapperReport.llvm_wrapper_target)"
+    }
+    if ($llvmWrapperReport.artifact_kind -ne "staticlib") {
+        throw "target llvm-wrapper report used unexpected artifact_kind: $($llvmWrapperReport.artifact_kind)"
+    }
+    if ($llvmWrapperReport.wrapper_archive_emitted -eq $true) {
+        if ([string]::IsNullOrWhiteSpace([string]$llvmWrapperReport.sha256) -or ([string]$llvmWrapperReport.sha256).Length -ne 64) {
+            throw "target llvm-wrapper archive report must carry SHA-256 when emitted"
+        }
+        if ([int64]$llvmWrapperReport.size_bytes -le 0) {
+            throw "target llvm-wrapper archive report must carry size when emitted"
+        }
+    }
+    $codegenPayload = Ensure-CodegenPayload -WasmTargetReport $wasmTargetReport
+
     Write-EmbeddedPayloadSource `
         -RootMetadata $mirRootMetadata `
         -PayloadMetadata $payloadMetadata `
         -AbiMetadata $abiMetadata `
+        -CodegenPayloadMetadata $codegenPayload `
         -GeneratedPath $generatedPayloadSource
 
     $previousCargoTargetDir = $env:CARGO_TARGET_DIR
@@ -335,7 +452,7 @@ try {
 
     $sourceIdentity = Get-ArtifactIdentity -Path $sourceAssembly
     $stubIdentity = Get-ArtifactIdentity -Path $cdylibStub
-    $minimumRawEmbeddedSize = [int64]$payload.size_bytes + [int64]$MinAssemblyShellBytes
+    $minimumRawEmbeddedSize = [int64]$payload.size_bytes + [int64]$codegenPayload.size_bytes + [int64]$MinAssemblyShellBytes
 
     if ($sourceIdentity.size_bytes -lt $minimumRawEmbeddedSize) {
         throw "Refusing to package assembly without the embedded MIR payload: $($sourceIdentity.path) is $($sourceIdentity.size_bytes) bytes, below raw embedded threshold $minimumRawEmbeddedSize"
@@ -376,12 +493,28 @@ try {
     Assert-ContainsBytes -Haystack $artifactBytes -Needle $middle -Description "payload middle"
     Assert-ContainsBytes -Haystack $artifactBytes -Needle $suffix -Description "payload suffix"
 
+    $codegenPayloadBytes = [System.IO.File]::ReadAllBytes($codegenPayload.absolute_path)
+    $codegenChunkLength = [Math]::Min($PayloadFingerprintBytes, $codegenPayloadBytes.Length)
+    $codegenMiddleOffset = [Math]::Max(0, [int](($codegenPayloadBytes.Length - $codegenChunkLength) / 2))
+    $codegenLastOffset = [Math]::Max(0, $codegenPayloadBytes.Length - $codegenChunkLength)
+
+    $codegenPrefix = Copy-ByteRange -Bytes $codegenPayloadBytes -Offset 0 -Length $codegenChunkLength
+    $codegenMiddle = Copy-ByteRange -Bytes $codegenPayloadBytes -Offset $codegenMiddleOffset -Length $codegenChunkLength
+    $codegenSuffix = Copy-ByteRange -Bytes $codegenPayloadBytes -Offset $codegenLastOffset -Length $codegenChunkLength
+
+    Assert-ContainsBytes -Haystack $artifactBytes -Needle $codegenPrefix -Description "codegen payload prefix"
+    Assert-ContainsBytes -Haystack $artifactBytes -Needle $codegenMiddle -Description "codegen payload middle"
+    Assert-ContainsBytes -Haystack $artifactBytes -Needle $codegenSuffix -Description "codegen payload suffix"
+
     $ascii = [System.Text.Encoding]::ASCII
     foreach ($identityString in @(
         "rouwdi-mir-handoff-payload",
         "raw_include_bytes",
         "embedded_payload",
-        $payload.sha256
+        $payload.sha256,
+        "rouwdi-llvm-codegen-backend-payload",
+        "rustc_codegen_llvm",
+        $codegenPayload.sha256
     )) {
         Assert-ContainsBytes `
             -Haystack $artifactBytes `
@@ -502,36 +635,58 @@ try {
     if ($payloadExecution.execution_state -match "mir_body" -and -not $mirBodyIdentityEmitted) {
         throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
     }
-    Invoke-CommandChecked `
-        -Description "checking executable wasm32-wasip1 rustc_codegen_llvm backend payload route" `
-        -Command { & powershell -ExecutionPolicy Bypass -File $wasmTargetCheckScript }
-    if (-not (Test-Path -LiteralPath $wasmTargetReportPath -PathType Leaf)) {
-        throw "wasm target codegen backend route did not emit report: $wasmTargetReportPath"
+    Write-Host "executing embedded codegen payload through dist/rouwdi.wasm"
+    $codegenPayloadExecutionJsonLines = & cargo run -q -p rouwdi -- run-wasm $canonicalArtifact codegen-payloads
+    if ($LASTEXITCODE -ne 0) {
+        throw "dist/rouwdi.wasm embedded codegen payload execution failed with exit code $LASTEXITCODE"
     }
-    if (-not (Test-Path -LiteralPath $llvmWrapperReportPath -PathType Leaf)) {
-        throw "target llvm-wrapper build did not emit report: $llvmWrapperReportPath"
+    $codegenPayloadExecutionJson = $codegenPayloadExecutionJsonLines -join "`n"
+    $codegenPayloadExecution = $codegenPayloadExecutionJson | ConvertFrom-Json
+    if ($codegenPayloadExecution.execution_source -ne "embedded_registry") {
+        throw "Canonical codegen payload execution source must be embedded_registry; got $($codegenPayloadExecution.execution_source)"
     }
-    $wasmTargetReport = Get-Content -Raw -LiteralPath $wasmTargetReportPath | ConvertFrom-Json
-    $llvmWrapperReport = Get-Content -Raw -LiteralPath $llvmWrapperReportPath | ConvertFrom-Json
-    if ($wasmTargetReport.check_only_exit_code -ne 0) {
-        throw "rustc_codegen_llvm wasm32-wasip1 check-only route failed with exit code $($wasmTargetReport.check_only_exit_code)"
+    if ($codegenPayloadExecution.external -ne $false) {
+        throw "Canonical codegen payload execution must not be external"
     }
-    if ($wasmTargetReport.backend_payload_build_attempted -ne $true) {
-        throw "executable wasm32-wasip1 backend payload build was not attempted"
+    if ($codegenPayloadExecution.opened_external_file -ne $false) {
+        throw "Canonical codegen payload execution opened an external payload file"
     }
-    if ($llvmWrapperReport.llvm_wrapper_target -ne "wasm32-wasip1") {
-        throw "target llvm-wrapper report used unexpected target: $($llvmWrapperReport.llvm_wrapper_target)"
+    if ($codegenPayloadExecution.hash_verified -ne $true -or $codegenPayloadExecution.size_verified -ne $true) {
+        throw "Canonical codegen payload execution did not verify payload hash/size"
     }
-    if ($llvmWrapperReport.artifact_kind -ne "staticlib") {
-        throw "target llvm-wrapper report used unexpected artifact_kind: $($llvmWrapperReport.artifact_kind)"
+    if ($codegenPayloadExecution.module_instantiated -ne $true -or $codegenPayloadExecution.start_called -ne $true) {
+        throw "Canonical codegen payload execution did not instantiate and start the embedded module"
     }
-    if ($llvmWrapperReport.wrapper_archive_emitted -eq $true) {
-        if ([string]::IsNullOrWhiteSpace([string]$llvmWrapperReport.sha256) -or ([string]$llvmWrapperReport.sha256).Length -ne 64) {
-            throw "target llvm-wrapper archive report must carry SHA-256 when emitted"
-        }
-        if ([int64]$llvmWrapperReport.size_bytes -le 0) {
-            throw "target llvm-wrapper archive report must carry size when emitted"
-        }
+    if ($codegenPayloadExecution.backend_constructed -ne $true) {
+        throw "Canonical codegen payload did not construct rustc_codegen_llvm backend"
+    }
+    if ($codegenPayloadExecution.mono_proof_consumed -ne $true) {
+        throw "Canonical codegen payload did not consume mono/MIR proof input"
+    }
+    if ($codegenPayloadExecution.llvm_context_created -ne $true -or $codegenPayloadExecution.llvm_module_created -ne $true) {
+        throw "Canonical codegen payload did not create LLVM context/module in the embedded product path"
+    }
+    if ($codegenPayloadExecution.target_machine_created -ne $true) {
+        throw "Canonical codegen payload did not create target machine in the embedded product path"
+    }
+    if ($codegenPayloadExecution.llvm_ir_emitted -ne $true) {
+        throw "Canonical codegen payload did not emit real LLVM IR bytes"
+    }
+    if ($codegenPayloadExecution.codegen_artifact_kind -ne "llvm_ir") {
+        throw "Canonical codegen payload emitted unexpected artifact kind: $($codegenPayloadExecution.codegen_artifact_kind)"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.codegen_artifact_sha256) -or ([string]$codegenPayloadExecution.codegen_artifact_sha256).Length -ne 64) {
+        throw "Canonical codegen payload did not report a SHA-256 for emitted LLVM IR bytes"
+    }
+    if ([int64]$codegenPayloadExecution.codegen_artifact_size_bytes -le 0) {
+        throw "Canonical codegen payload did not report positive LLVM IR byte length"
+    }
+    if ($codegenPayloadExecution.linker_handoff_created -eq $true `
+        -and $codegenPayloadExecution.llvm_ir_emitted -ne $true `
+        -and $codegenPayloadExecution.bitcode_emitted -ne $true `
+        -and $codegenPayloadExecution.object_bytes_emitted -ne $true `
+        -and $codegenPayloadExecution.wasm_object_bytes_emitted -ne $true) {
+        throw "Canonical codegen payload created linker handoff without real codegen bytes"
     }
     $monoInvoked = $null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_invoked -eq $true
     $monoStatus = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_status } else { $null }
@@ -549,29 +704,36 @@ try {
         "mir_provider"
     }
     $backendPayloadExecutionStatus = if ($monoStatus -eq "mono_items_collected") {
-        [string]$wasmTargetReport.backend_execution_status
+        [string]$codegenPayloadExecution.codegen_contact_state
     } else {
         $null
     }
-    $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.blocker_kind } else { $null }
+    $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.blocker_kind } else { $null }
     $codegenHandoffStatus = $backendPayloadExecutionStatus
     $codegenBlockerKind = $backendPayloadBlockerKind
-    $codegenBlockerComponent = if ($monoStatus -eq "mono_items_collected" -and $llvmWrapperReport.target_llvm_library_closure.blocker_component -ne $null) {
+    $codegenBlockerComponent = if ($monoStatus -eq "mono_items_collected" -and -not [string]::IsNullOrWhiteSpace([string]$codegenBlockerKind)) {
+        if ($llvmWrapperReport.target_llvm_library_closure.blocker_component -ne $null) {
         [string]$llvmWrapperReport.target_llvm_library_closure.blocker_component
-    } elseif ($monoStatus -eq "mono_items_collected") {
-        "rustc_codegen_llvm target LLVM library closure"
+        } else {
+            "embedded rustc_codegen_llvm backend payload"
+        }
     } else {
         $null
     }
-    $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected") {
-        "Host LLVM proof remains evidence only: the host probe reaches rustc_codegen_llvm backend construction, LLVM context/module setup, and target-machine creation. The product route emitted a wasm32-wasip1 llvm-wrapper archive at $($llvmWrapperReport.path), attempted the executable wasm32-wasip1 backend payload build, reached final link through $($wasmTargetReport.backend_payload_linker), and is blocked at $($wasmTargetReport.blocker_kind): $($wasmTargetReport.blocker_reason) No object, Wasm object, LLVM IR, or bitcode bytes were emitted."
+    $codegenBlockerReason = if ($monoStatus -eq "mono_items_collected" -and -not [string]::IsNullOrWhiteSpace([string]$codegenBlockerKind)) {
+        [string]$codegenPayloadExecution.blocker_reason
     } else {
         $null
     }
     $hostCodegenContactState = if ($monoStatus -eq "mono_items_collected") { "target_machine_created" } else { $null }
     $codegenContactState = $backendPayloadExecutionStatus
-    $llvmModuleIdentity = $null
-    $llvmModuleIdentityHash = $null
+    $llvmModuleIdentity = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_module_identity } else { $null }
+    $llvmModuleIdentityHash = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_module_identity_hash } else { $null }
+    $codegenArtifactKind = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_artifact_kind } else { $null }
+    $codegenArtifactSha256 = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_artifact_sha256 } else { $null }
+    $codegenArtifactSizeBytes = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.codegen_artifact_size_bytes } else { $null }
+    $codegenArtifactLocation = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_artifact_location } else { $null }
+    $linkerHandoffCreated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_handoff_created } else { $false }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
@@ -646,25 +808,25 @@ try {
         host_probe_llvm_context_created = ($monoStatus -eq "mono_items_collected")
         host_probe_llvm_module_created = ($monoStatus -eq "mono_items_collected")
         host_probe_target_machine_created = ($monoStatus -eq "mono_items_collected")
-        llvm_module_setup_invoked = $false
-        llvm_context_created = $false
-        llvm_module_created = $false
+        llvm_module_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
+        llvm_context_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_context_created } else { $false }
+        llvm_module_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
         llvm_module_identity = $llvmModuleIdentity
         llvm_module_identity_hash = $llvmModuleIdentityHash
-        llvm_module_target_triple = $null
-        target_machine_setup_invoked = $false
-        target_machine_created = $false
-        target_machine_cpu = $null
-        target_machine_features = $null
-        target_machine_relocation_model = $null
-        target_machine_code_model = $null
-        target_machine_optimization_level = $null
+        llvm_module_target_triple = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_module_target_triple } else { $null }
+        target_machine_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_setup_invoked } else { $false }
+        target_machine_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_created } else { $false }
+        target_machine_cpu = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_cpu } else { $null }
+        target_machine_features = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_features } else { $null }
+        target_machine_relocation_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_relocation_model } else { $null }
+        target_machine_code_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_code_model } else { $null }
+        target_machine_optimization_level = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_optimization_level } else { $null }
         backend_payload_name = if ($monoStatus -eq "mono_items_collected") { "rouwdi-llvm-codegen-backend-payload" } else { $null }
         backend_payload_kind = if ($monoStatus -eq "mono_items_collected") { "codegen_backend_payload" } else { $null }
         backend_payload_route = if ($monoStatus -eq "mono_items_collected") { "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route" } else { $null }
-        backend_payload_embedded_in_assembly = $false
-        backend_payload_instantiated = $false
-        backend_payload_executed = $false
+        backend_payload_embedded_in_assembly = ($monoStatus -eq "mono_items_collected")
+        backend_payload_instantiated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.module_instantiated } else { $false }
+        backend_payload_executed = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.start_called } else { $false }
         backend_payload_execution_status = $backendPayloadExecutionStatus
         backend_payload_blocker_kind = $backendPayloadBlockerKind
         check_only_target_loadable = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.check_only_exit_code -eq 0 } else { $null }
@@ -674,7 +836,7 @@ try {
         backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
         backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
         backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
-        backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+        backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { To-JsonArray $wasmTargetReport.backend_payload_llvm_undefined_symbols } else { [object[]]@() }
         backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
         llvm_wrapper_target = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.llvm_wrapper_target } else { $null }
         llvm_wrapper_artifact_kind = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.artifact_kind } else { $null }
@@ -696,10 +858,14 @@ try {
         codegen_blocker_kind = $codegenBlockerKind
         codegen_blocker_component = $codegenBlockerComponent
         codegen_blocker_reason = $codegenBlockerReason
-        codegen_object_emission_attempted = $false
-        codegen_object_bytes_emitted = $false
-        codegen_llvm_ir_emitted = $false
-        linker_handoff_created = $false
+        codegen_artifact_kind = $codegenArtifactKind
+        codegen_artifact_sha256 = $codegenArtifactSha256
+        codegen_artifact_size_bytes = $codegenArtifactSizeBytes
+        codegen_artifact_location = $codegenArtifactLocation
+        codegen_object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+        codegen_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
+        codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
+        linker_handoff_created = $linkerHandoffCreated
         next_frontier = $nextFrontier
         exact_blocker = $exactBlocker
     }
@@ -736,12 +902,12 @@ try {
                     "LLVM wrapper/C++ layer"
                 )
                 target_triple = "wasm32-wasip1"
-                artifact_path = $null
-                artifact_hash = $null
-                artifact_size_bytes = $null
-                embedded_in_dist_rouwdi_wasm = $false
-                instantiated = $false
-                executed = $false
+                artifact_path = if ($monoStatus -eq "mono_items_collected") { $codegenPayload.path } else { $null }
+                artifact_hash = if ($monoStatus -eq "mono_items_collected") { $codegenPayload.sha256 } else { $null }
+                artifact_size_bytes = if ($monoStatus -eq "mono_items_collected") { $codegenPayload.size_bytes } else { $null }
+                embedded_in_dist_rouwdi_wasm = ($monoStatus -eq "mono_items_collected")
+                instantiated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.module_instantiated } else { $false }
+                executed = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.start_called } else { $false }
                 execution_status = if ($monoStatus -eq "mono_items_collected") { $backendPayloadExecutionStatus } else { "not_reached" }
                 blocker_kind = if ($monoStatus -eq "mono_items_collected") { $backendPayloadBlockerKind } else { $null }
                 check_only_status = if ($monoStatus -eq "mono_items_collected") { "rustc_codegen_llvm_target_loadable_check_only" } else { $null }
@@ -752,14 +918,14 @@ try {
                 backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
                 backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
                 backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
-                backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+                backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { To-JsonArray $wasmTargetReport.backend_payload_llvm_undefined_symbols } else { [object[]]@() }
                 backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
                 host_probe_state = if ($monoStatus -eq "mono_items_collected") { "host_codegen_probe_backend_constructed" } else { $null }
                 host_probe_codegen_contact_state = $hostCodegenContactState
                 host_probe_llvm_module_created = ($monoStatus -eq "mono_items_collected")
                 host_probe_target_machine_created = ($monoStatus -eq "mono_items_collected")
                 codegen_contact_state = $codegenContactState
-                mono_proof_consumed = ($monoStatus -eq "mono_items_collected")
+                mono_proof_consumed = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.mono_proof_consumed } else { $false }
                 mir_body_hash = if ($monoStatus -eq "mono_items_collected") { $mirBodyHash } else { $null }
                 mono_item_graph_hash = if ($monoStatus -eq "mono_items_collected") { $monoItemGraphHash } else { $null }
                 llvm_wrapper_target = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.llvm_wrapper_target } else { $null }
@@ -777,12 +943,30 @@ try {
                 target_llvm_library_closure_build_exit_code = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.build_exit_code } else { $null }
                 target_llvm_library_closure_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.target_llvm_library_closure.log_path } else { $null }
                 target_llvm_library_closure_first_error = if ($monoStatus -eq "mono_items_collected") { $llvmWrapperReport.target_llvm_library_closure.first_error } else { $null }
-                llvm_module_created = $false
+                llvm_module_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
+                llvm_context_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_context_created } else { $false }
+                llvm_module_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
+                llvm_module_identity = $llvmModuleIdentity
                 llvm_module_identity_hash = $llvmModuleIdentityHash
-                target_machine_created = $false
-                object_emission_attempted = $false
-                object_bytes_emitted = $false
-                linker_handoff_created = $false
+                llvm_module_target_triple = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_module_target_triple } else { $null }
+                target_machine_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_setup_invoked } else { $false }
+                target_machine_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_created } else { $false }
+                target_machine_cpu = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_cpu } else { $null }
+                target_machine_features = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_features } else { $null }
+                target_machine_relocation_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_relocation_model } else { $null }
+                target_machine_code_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_code_model } else { $null }
+                target_machine_optimization_level = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_optimization_level } else { $null }
+                codegen_artifact_kind = $codegenArtifactKind
+                codegen_artifact_sha256 = $codegenArtifactSha256
+                codegen_artifact_size_bytes = $codegenArtifactSizeBytes
+                codegen_artifact_location = $codegenArtifactLocation
+                llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
+                bitcode_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.bitcode_emitted } else { $false }
+                object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+                object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
+                wasm_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.wasm_object_bytes_emitted } else { $false }
+                linker_handoff_created = $linkerHandoffCreated
+                linker_handoff = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.output_json.linker_handoff) { $codegenPayloadExecution.output_json.linker_handoff } else { $null }
             }
         )
         mir_payload = [ordered]@{
@@ -864,25 +1048,25 @@ try {
             host_probe_llvm_context_created = ($monoStatus -eq "mono_items_collected")
             host_probe_llvm_module_created = ($monoStatus -eq "mono_items_collected")
             host_probe_target_machine_created = ($monoStatus -eq "mono_items_collected")
-            llvm_module_setup_invoked = $false
-            llvm_context_created = $false
-            llvm_module_created = $false
+            llvm_module_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
+            llvm_context_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_context_created } else { $false }
+            llvm_module_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_module_created } else { $false }
             llvm_module_identity = $llvmModuleIdentity
             llvm_module_identity_hash = $llvmModuleIdentityHash
-            llvm_module_target_triple = $null
-            target_machine_setup_invoked = $false
-            target_machine_created = $false
-            target_machine_cpu = $null
-            target_machine_features = $null
-            target_machine_relocation_model = $null
-            target_machine_code_model = $null
-            target_machine_optimization_level = $null
+            llvm_module_target_triple = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.llvm_module_target_triple } else { $null }
+            target_machine_setup_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_setup_invoked } else { $false }
+            target_machine_created = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.target_machine_created } else { $false }
+            target_machine_cpu = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_cpu } else { $null }
+            target_machine_features = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_features } else { $null }
+            target_machine_relocation_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_relocation_model } else { $null }
+            target_machine_code_model = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_code_model } else { $null }
+            target_machine_optimization_level = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.target_machine_optimization_level } else { $null }
             backend_payload_name = if ($monoStatus -eq "mono_items_collected") { "rouwdi-llvm-codegen-backend-payload" } else { $null }
             backend_payload_kind = if ($monoStatus -eq "mono_items_collected") { "codegen_backend_payload" } else { $null }
             backend_payload_route = if ($monoStatus -eq "mono_items_collected") { "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route" } else { $null }
-            backend_payload_embedded_in_assembly = $false
-            backend_payload_instantiated = $false
-            backend_payload_executed = $false
+            backend_payload_embedded_in_assembly = ($monoStatus -eq "mono_items_collected")
+            backend_payload_instantiated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.module_instantiated } else { $false }
+            backend_payload_executed = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.start_called } else { $false }
             backend_payload_execution_status = $backendPayloadExecutionStatus
             backend_payload_blocker_kind = $backendPayloadBlockerKind
             check_only_target_loadable = if ($monoStatus -eq "mono_items_collected") { $wasmTargetReport.check_only_exit_code -eq 0 } else { $null }
@@ -892,7 +1076,7 @@ try {
             backend_payload_final_link_invoked = if ($monoStatus -eq "mono_items_collected") { [bool]$wasmTargetReport.backend_payload_final_link_invoked } else { $null }
             backend_payload_linker = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_linker } else { $null }
             backend_payload_first_undefined_symbol = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.backend_payload_first_undefined_symbol } else { $null }
-            backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { @($wasmTargetReport.backend_payload_llvm_undefined_symbols) } else { @() }
+            backend_payload_llvm_undefined_symbols = if ($monoStatus -eq "mono_items_collected") { To-JsonArray $wasmTargetReport.backend_payload_llvm_undefined_symbols } else { [object[]]@() }
             backend_payload_build_log_path = if ($monoStatus -eq "mono_items_collected") { [string]$wasmTargetReport.payload_build_log_path } else { $null }
             llvm_wrapper_target = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.llvm_wrapper_target } else { $null }
             llvm_wrapper_artifact_kind = if ($monoStatus -eq "mono_items_collected") { [string]$llvmWrapperReport.artifact_kind } else { $null }
@@ -914,10 +1098,14 @@ try {
             codegen_blocker_kind = $codegenBlockerKind
             codegen_blocker_component = $codegenBlockerComponent
             codegen_blocker_reason = $codegenBlockerReason
-            codegen_object_emission_attempted = $false
-            codegen_object_bytes_emitted = $false
-            codegen_llvm_ir_emitted = $false
-            linker_handoff_created = $false
+            codegen_artifact_kind = $codegenArtifactKind
+            codegen_artifact_sha256 = $codegenArtifactSha256
+            codegen_artifact_size_bytes = $codegenArtifactSizeBytes
+            codegen_artifact_location = $codegenArtifactLocation
+            codegen_object_emission_attempted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_emission_attempted } else { $false }
+            codegen_object_bytes_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_emitted } else { $false }
+            codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
+            linker_handoff_created = $linkerHandoffCreated
             next_frontier = $nextFrontier
             exact_blocker = $exactBlocker
             exists = $true
@@ -935,11 +1123,17 @@ try {
             payload_prefix_fingerprint_present = $true
             payload_middle_fingerprint_present = $true
             payload_suffix_fingerprint_present = $true
+            codegen_payload_prefix_fingerprint_present = $true
+            codegen_payload_middle_fingerprint_present = $true
+            codegen_payload_suffix_fingerprint_present = $true
             registry_identity_present = $true
             cdylib_stub_rejected = $true
             embedded_payload_execution_source_required = "embedded_registry"
             embedded_payload_instantiation_required = $true
             embedded_payload_execute_required = $true
+            embedded_codegen_payload_execution_source_required = "embedded_registry"
+            embedded_codegen_payload_execute_required = $true
+            embedded_codegen_payload_llvm_ir_required = $true
         }
     }
 
@@ -958,6 +1152,11 @@ try {
     Write-Host "mir_payload_instantiated=true"
     Write-Host "mir_payload_abi_verified=true"
     Write-Host "mir_payload_executed=true"
+    Write-Host "codegen_payload_embedded=true"
+    Write-Host "codegen_payload_executed=true"
+    Write-Host "codegen_contact_state=$($codegenPayloadExecution.codegen_contact_state)"
+    Write-Host "codegen_artifact_kind=$($codegenPayloadExecution.codegen_artifact_kind)"
+    Write-Host "codegen_artifact_sha256=$($codegenPayloadExecution.codegen_artifact_sha256)"
     $exitCode = 0
 } catch {
     Write-Error $_

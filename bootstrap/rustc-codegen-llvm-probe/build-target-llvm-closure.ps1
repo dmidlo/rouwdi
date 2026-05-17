@@ -16,18 +16,70 @@ $shimIncludeDir = Join-Path $repo "bootstrap\wasi-sdk-shims\include"
 $shimEndianHeader = Join-Path $shimIncludeDir "machine\endian.h"
 $targetTriple = "wasm32-wasip1"
 $requiredComponents = @(
-    "LLVMSupport",
-    "LLVMCore",
-    "LLVMTarget",
-    "LLVMMC",
-    "LLVMBitWriter",
-    "LLVMLinker",
-    "LLVMAnalysis",
+    "LLVMWebAssemblyDisassembler",
+    "LLVMMCDisassembler",
+    "LLVMWebAssemblyAsmParser",
     "LLVMWebAssemblyCodeGen",
+    "LLVMWebAssemblyUtils",
     "LLVMWebAssemblyDesc",
     "LLVMWebAssemblyInfo",
-    "LLVMWebAssemblyAsmParser",
-    "LLVMWebAssemblyUtils"
+    "LLVMAsmPrinter",
+    "LLVMCoverage",
+    "LLVMLTO",
+    "LLVMPlugins",
+    "LLVMPasses",
+    "LLVMIRPrinter",
+    "LLVMHipStdPar",
+    "LLVMCoroutines",
+    "LLVMGlobalISel",
+    "LLVMSelectionDAG",
+    "LLVMCFGuard",
+    "LLVMExtensions",
+    "LLVMCodeGen",
+    "LLVMTarget",
+    "LLVMObjCARCOpts",
+    "LLVMCodeGenTypes",
+    "LLVMCGData",
+    "LLVMipo",
+    "LLVMInstrumentation",
+    "LLVMVectorize",
+    "LLVMSandboxIR",
+    "LLVMLinker",
+    "LLVMFrontendOpenMP",
+    "LLVMFrontendDirective",
+    "LLVMFrontendAtomic",
+    "LLVMFrontendOffloading",
+    "LLVMObjectYAML",
+    "LLVMScalarOpts",
+    "LLVMInstCombine",
+    "LLVMBitWriter",
+    "LLVMAggressiveInstCombine",
+    "LLVMTransformUtils",
+    "LLVMAnalysis",
+    "LLVMProfileData",
+    "LLVMSymbolize",
+    "LLVMDebugInfoBTF",
+    "LLVMDebugInfoPDB",
+    "LLVMDebugInfoMSF",
+    "LLVMDebugInfoCodeView",
+    "LLVMDebugInfoGSYM",
+    "LLVMDebugInfoDWARF",
+    "LLVMObject",
+    "LLVMTextAPI",
+    "LLVMMCParser",
+    "LLVMIRReader",
+    "LLVMAsmParser",
+    "LLVMMC",
+    "LLVMDebugInfoDWARFLowLevel",
+    "LLVMBitReader",
+    "LLVMFrontendHLSL",
+    "LLVMCore",
+    "LLVMRemarks",
+    "LLVMBitstreamReader",
+    "LLVMBinaryFormat",
+    "LLVMTargetParser",
+    "LLVMSupport",
+    "LLVMDemangle"
 )
 
 function To-RepoRelativePath {
@@ -113,10 +165,21 @@ function New-Report {
         [string]$FirstError
     )
 
+    $builtComponentSet = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($archive in @($TargetArchives)) {
+        [void]$builtComponentSet.Add([string]$archive.component)
+    }
+    $allRequiredArchivesPresent = $true
+    foreach ($requiredComponent in $requiredComponents) {
+        if (-not $builtComponentSet.Contains($requiredComponent)) {
+            $allRequiredArchivesPresent = $false
+            break
+        }
+    }
     $closureAvailable = $PrerequisitesPresent -and
         $null -ne $BuildResult -and
         $BuildResult.exit_code -eq 0 -and
-        @($TargetArchives).Count -gt 0
+        $allRequiredArchivesPresent
 
     return [ordered]@{
         schema_version = 1
@@ -128,8 +191,8 @@ function New-Report {
         configure_attempted = $PrerequisitesPresent
         configure_exit_code = if ($null -ne $ConfigureResult) { $ConfigureResult.exit_code } else { $null }
         build_exit_code = if ($null -ne $BuildResult) { $BuildResult.exit_code } else { $null }
-        configure_command = "cmake -S third_party/rust/src/llvm-project/llvm -B third_party/rust/build/wasm32-wasip1/llvm/build -DCMAKE_C_FLAGS=<wasi llvm flags> -DCMAKE_CXX_FLAGS=<wasi llvm flags> -DLLVM_ENABLE_CRASH_OVERRIDES=OFF -DLLVM_ENABLE_THREADS=OFF"
-        build_command = "ninja -C third_party/rust/build/wasm32-wasip1/llvm/build LLVMSupport"
+        configure_command = "cmake -S third_party/rust/src/llvm-project/llvm -B third_party/rust/build/wasm32-wasip1/llvm/build -DCMAKE_C_FLAGS=<wasi llvm flags> -DCMAKE_CXX_FLAGS=<wasi llvm flags> -DLLVM_HOST_TRIPLE=wasm32-wasip1 -DLLVM_DEFAULT_TARGET_TRIPLE=wasm32-wasip1 -DLLVM_TARGETS_TO_BUILD=WebAssembly -DLLVM_ENABLE_CRASH_OVERRIDES=OFF -DLLVM_ENABLE_THREADS=OFF"
+        build_command = "ninja -C third_party/rust/build/wasm32-wasip1/llvm/build $($requiredComponents -join ' ')"
         cmake_path = if (Test-Path -LiteralPath $cmake) { To-RepoRelativePath -Path $cmake } else { To-RepoRelativePath -Path $cmake }
         ninja_path = if (Test-Path -LiteralPath $ninja) { To-RepoRelativePath -Path $ninja } else { To-RepoRelativePath -Path $ninja }
         wasi_clang = if (Test-Path -LiteralPath $wasiClang) { To-RepoRelativePath -Path $wasiClang } else { To-RepoRelativePath -Path $wasiClang }
@@ -143,13 +206,20 @@ function New-Report {
             "-fno-exceptions",
             "-DLLVM_ON_UNIX",
             "-D_WASI_EMULATED_SIGNAL",
+            "-D_WASI_EMULATED_MMAN",
+            "-D_WASI_EMULATED_PROCESS_CLOCKS",
+            "-D__wasilibc_unmodified_upstream",
+            "-DHAVE_SYS_MMAN_H=1",
             "-mllvm -wasm-enable-sjlj",
             "-Ibootstrap/wasi-sdk-shims/include",
+            "-DLLVM_HOST_TRIPLE=wasm32-wasip1",
+            "-DLLVM_DEFAULT_TARGET_TRIPLE=wasm32-wasip1",
+            "-DLLVM_TARGETS_TO_BUILD=WebAssembly",
             "-DLLVM_ENABLE_CRASH_OVERRIDES=OFF",
             "-DLLVM_ENABLE_THREADS=OFF"
         )
         required_components = @($requiredComponents)
-        first_build_target = "LLVMSupport"
+        first_build_target = "required LLVM closure components"
         built_components = @($TargetArchives | ForEach-Object { $_.component } | Select-Object -Unique)
         target_compatible_archives = @($TargetArchives)
         closure_available = $closureAvailable
@@ -242,7 +312,7 @@ if (@($missing).Count -gt 0) {
 }
 
 $shimFlag = "-I$($shimIncludeDir.Replace('\', '/'))"
-$commonFlags = "--target=$targetTriple -ffunction-sections -fdata-sections -fno-exceptions -DLLVM_ON_UNIX -D_WASI_EMULATED_SIGNAL -mllvm -wasm-enable-sjlj $shimFlag"
+$commonFlags = "--target=$targetTriple -ffunction-sections -fdata-sections -fno-exceptions -DLLVM_ON_UNIX -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_PROCESS_CLOCKS -D__wasilibc_unmodified_upstream -DHAVE_SYS_MMAN_H=1 -mllvm -wasm-enable-sjlj $shimFlag"
 
 $configureResult = Invoke-CapturedNative -LogPath $configureLogPath -Command {
     & $cmake `
@@ -250,6 +320,9 @@ $configureResult = Invoke-CapturedNative -LogPath $configureLogPath -Command {
         -B $llvmBuildDir `
         "-DCMAKE_C_FLAGS=$commonFlags" `
         "-DCMAKE_CXX_FLAGS=$commonFlags" `
+        -DLLVM_HOST_TRIPLE=$targetTriple `
+        -DLLVM_DEFAULT_TARGET_TRIPLE=$targetTriple `
+        -DLLVM_TARGETS_TO_BUILD=WebAssembly `
         -DLLVM_ENABLE_CRASH_OVERRIDES=OFF `
         -DLLVM_ENABLE_THREADS=OFF
 }
@@ -257,11 +330,18 @@ $configureResult = Invoke-CapturedNative -LogPath $configureLogPath -Command {
 $buildResult = $null
 if ($configureResult.exit_code -eq 0) {
     $buildResult = Invoke-CapturedNative -LogPath $buildLogPath -Command {
-        & $ninja -C $llvmBuildDir LLVMSupport
+        & $ninja -C $llvmBuildDir @requiredComponents
     }
 }
 
 $targetArchives = Get-ArchiveIdentities -Names $requiredComponents
+$builtArchiveComponents = @($targetArchives | ForEach-Object { $_.component } | Select-Object -Unique)
+$missingRequiredComponents = @(
+    $requiredComponents | Where-Object {
+        $component = $_
+        -not ($builtArchiveComponents -contains $component)
+    }
+)
 
 if ($configureResult.exit_code -ne 0) {
     $classification = Classify-Blocker `
@@ -282,7 +362,13 @@ if ($configureResult.exit_code -ne 0) {
 } elseif (@($targetArchives).Count -eq 0) {
     $classification = [ordered]@{
         kind = "target_llvm_library_closure_archive_not_emitted"
-        reason = "LLVM's wasm32-wasip1 closure build exited 0 for LLVMSupport but no target-compatible archive was found in the configured LLVM build tree."
+        reason = "LLVM's wasm32-wasip1 closure build exited 0 for the required closure components, but no target-compatible archive was found in the configured LLVM build tree."
+        first_error = $null
+    }
+} elseif (@($missingRequiredComponents).Count -gt 0) {
+    $classification = [ordered]@{
+        kind = "target_llvm_library_closure_incomplete"
+        reason = "LLVM's wasm32-wasip1 closure build exited 0 but did not emit all required target-compatible archives. Missing components: $(@($missingRequiredComponents) -join ', ')."
         first_error = $null
     }
 } else {

@@ -170,6 +170,9 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub backend_payload_build_attempted: bool,
     pub backend_payload_build_exit_code: i32,
     pub executable_backend_payload_linked: bool,
+    pub backend_payload_artifact_path: String,
+    pub backend_payload_artifact_sha256: String,
+    pub backend_payload_artifact_size_bytes: u64,
     pub embedded_backend_payload_executed: bool,
     pub backend_payload_final_link_invoked: bool,
     pub backend_payload_linker: String,
@@ -198,13 +201,19 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub object_emission_attempted: bool,
     pub object_bytes_emitted: bool,
     pub llvm_ir_emitted: bool,
+    pub llvm_ir_sha256: Option<String>,
+    pub llvm_ir_byte_len: Option<u64>,
 }
 
 impl UpstreamCompilerComponentImport {
     pub fn is_imported(&self) -> bool {
         matches!(
             self.import_status.as_str(),
-            "imported" | "upstream_backed" | "adapter_embedded" | "adapter_partially_embedded"
+            "imported"
+                | "upstream_backed"
+                | "adapter_embedded"
+                | "adapter_partially_embedded"
+                | "embedded_codegen_payload_executed"
         )
     }
 
@@ -2675,31 +2684,22 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         target_loadable_check_only_status: "rustc_codegen_llvm_target_loadable_check_only"
             .to_owned(),
         backend_payload_build_attempted: true,
-        backend_payload_build_exit_code: 101,
-        executable_backend_payload_linked: false,
-        embedded_backend_payload_executed: false,
+        backend_payload_build_exit_code: 0,
+        executable_backend_payload_linked: true,
+        backend_payload_artifact_path: ".rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-4f33fb70e05141c4.wasm".to_owned(),
+        backend_payload_artifact_sha256:
+            "26a721627d8e3dfe1661bb1a643e50a64a8dba1023fb84079c3795232e5d7c06"
+                .to_owned(),
+        backend_payload_artifact_size_bytes: 67_708_457,
+        embedded_backend_payload_executed: true,
         backend_payload_final_link_invoked: true,
         backend_payload_linker:
             ".rouwdi/tools/wasi-sdk/wasi-sdk-33.0-x86_64-windows/bin/wasm32-wasip1-clang.exe"
                 .to_owned(),
-        backend_payload_first_undefined_symbol: "LLVMPointerTypeInContext".to_owned(),
-        backend_payload_llvm_undefined_symbols: vec![
-            "LLVMPointerTypeInContext".to_owned(),
-            "LLVMConstInt".to_owned(),
-            "LLVMInt8TypeInContext".to_owned(),
-            "LLVMBuildGEPWithNoWrapFlags".to_owned(),
-            "LLVMBuildLoad2".to_owned(),
-            "LLVMSetAlignment".to_owned(),
-            "LLVMMDNodeInContext2".to_owned(),
-            "LLVMMetadataAsValue".to_owned(),
-            "LLVMSetMetadata".to_owned(),
-            "LLVMMDStringInContext2".to_owned(),
-            "LLVMInt32TypeInContext".to_owned(),
-            "LLVMBuildExtractValue".to_owned(),
-        ],
-        backend_payload_execution_status: "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned(),
-        backend_payload_blocker_kind:
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned(),
+        backend_payload_first_undefined_symbol: String::new(),
+        backend_payload_llvm_undefined_symbols: Vec::new(),
+        backend_payload_execution_status: "llvm_ir_emitted".to_owned(),
+        backend_payload_blocker_kind: "none".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
         llvm_wrapper_target_artifact_kind: "staticlib".to_owned(),
         llvm_wrapper_target_path:
@@ -2710,14 +2710,13 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         llvm_wrapper_target_size_bytes: 2_950_174,
         llvm_wrapper_target_built_by:
             "bootstrap/rustc-codegen-llvm-probe/build-target-llvm-wrapper.ps1".to_owned(),
-        llvm_wrapper_target_linked_into: "not_linked".to_owned(),
-        llvm_wrapper_target_loadable: false,
-        llvm_wrapper_target_blocker_kind:
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned(),
-        llvm_wrapper_target_blocker_reason: "The wasm32-wasip1 llvm-wrapper archive was emitted as target object code, and the target LLVM library closure build was attempted with WASI clang. That LLVM closure build now passes the WASI machine/endian shim, LLVM_ON_UNIX FileSystem/Process configuration, and the WASI setjmp/signal header guards via -D_WASI_EMULATED_SIGNAL plus -mllvm -wasm-enable-sjlj. It then reaches LLVM Support's CrashRecoveryContext.cpp and blocks because the WASI SDK signal emulation headers do not expose the POSIX sigaction/sigemptyset/sigaddset/sigprocmask surface required by LLVM Support's Unix crash-recovery path. Native MSVC CI LLVM libraries are host evidence only and are not target-loadable.".to_owned(),
-        target_llvm_library_closure_available: false,
-        target_llvm_library_closure_status:
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned(),
+        llvm_wrapper_target_linked_into:
+            "bootstrap/rustc-codegen-llvm-probe wasm32 backend payload".to_owned(),
+        llvm_wrapper_target_loadable: true,
+        llvm_wrapper_target_blocker_kind: "none".to_owned(),
+        llvm_wrapper_target_blocker_reason: "none".to_owned(),
+        target_llvm_library_closure_available: true,
+        target_llvm_library_closure_status: "available".to_owned(),
         enzyme_libloading_blocker_present: false,
         target_loadable_components: vec![
             "rustc_codegen_llvm".to_owned(),
@@ -2726,13 +2725,18 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive is emitted, the target LLVM library closure build is attempted with WASI clang, executable payload final-link is invoked through WASI clang/wasm-ld, and executable payload linkage is blocked until LLVM Support can provide a target-compatible wasm32-wasip1 library closure".to_owned(),
-        blocker_kind: "target_llvm_library_closure_blocked_at_wasi_signal_sigaction".to_owned(),
-        blocker_component: "LLVM Support CrashRecoveryContext wasm32-wasip1 signal support".to_owned(),
-        blocker_reason: "The repo-owned host probe still proves backend construction, LLVM context/module creation, WebAssembly target initialization, and target-machine creation as host evidence. The product route has a wasm32-wasip1 llvm-wrapper archive built from Rust's rustc_llvm wrapper sources and now reaches executable payload final-link through WASI clang/wasm-ld, where rustc_codegen_llvm has unresolved LLVM C API symbols starting with LLVMPointerTypeInContext. The target-compatible LLVM library closure build was attempted and advanced past the earlier machine/endian, LLVM_ON_UNIX, and WASI setjmp/signal header blockers, then stopped in LLVM Support's CrashRecoveryContext.cpp because WASI SDK signal emulation does not expose sigaction/sigemptyset/sigaddset/sigprocmask. No LLVM IR, bitcode, object, or Wasm object bytes were emitted, and host module/target-machine success is not product execution.".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, and emit real LLVM IR bytes".to_owned(),
+        blocker_kind: "none".to_owned(),
+        blocker_component: "none".to_owned(),
+        blocker_reason: "The assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload is linked, embedded, and executed from dist/rouwdi.wasm. It consumes the MIR/mono proof identity, creates a real LLVM context/module, creates a wasm32-wasip1 target machine, and emits LLVM IR bytes. Object emission remains the next frontier; no fake object or Wasm object bytes are claimed.".to_owned(),
         object_emission_attempted: false,
         object_bytes_emitted: false,
-        llvm_ir_emitted: false,
+        llvm_ir_emitted: true,
+        llvm_ir_sha256: Some(
+            "6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267"
+                .to_owned(),
+        ),
+        llvm_ir_byte_len: Some(121),
     }
 }
 
@@ -4345,24 +4349,18 @@ mod tests {
             component.source_path,
             "third_party/rust/compiler/rustc_codegen_llvm"
         );
-        assert_eq!(
-            component.blocker_kind,
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-        );
+        assert_eq!(component.blocker_kind, "none");
         assert!(component
             .probe_command
             .contains("compiler/rustc_codegen_llvm"));
-        assert!(component.exact_blocker.contains("target-loadable"));
-        assert!(component
-            .exact_blocker
-            .contains("target-compatible LLVM library closure"));
-        assert!(component.exact_blocker.contains("CrashRecoveryContext.cpp"));
-        assert!(component.exact_blocker.contains("sigaction"));
+        assert!(component.exact_blocker.contains("embedded"));
+        assert!(component.exact_blocker.contains("LLVM IR"));
         assert!(component.exact_blocker.contains("exits 0"));
-        assert!(component.exact_blocker.contains("llvm-config.exe"));
         assert!(component.exact_blocker.contains("LLVM context/module"));
         assert!(component.exact_blocker.contains("target machine"));
-        assert!(component.exact_blocker.contains("No object"));
+        assert!(component
+            .exact_blocker
+            .contains("Object/Wasm-object emission remains"));
         assert_eq!(
             component.adapter_symbol.as_deref(),
             Some("rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe")
@@ -4420,27 +4418,19 @@ mod tests {
             "rustc_codegen_llvm_target_loadable_check_only"
         );
         assert!(probe.backend_payload_build_attempted);
-        assert_eq!(probe.backend_payload_build_exit_code, 101);
-        assert!(!probe.executable_backend_payload_linked);
-        assert!(!probe.embedded_backend_payload_executed);
+        assert_eq!(probe.backend_payload_build_exit_code, 0);
+        assert!(probe.executable_backend_payload_linked);
+        assert_eq!(probe.backend_payload_artifact_sha256.len(), 64);
+        assert!(probe.backend_payload_artifact_size_bytes > 60_000_000);
+        assert!(probe.embedded_backend_payload_executed);
         assert!(probe.backend_payload_final_link_invoked);
         assert!(probe
             .backend_payload_linker
             .ends_with("wasm32-wasip1-clang.exe"));
-        assert_eq!(
-            probe.backend_payload_first_undefined_symbol,
-            "LLVMPointerTypeInContext"
-        );
-        assert!(probe
-            .backend_payload_llvm_undefined_symbols
-            .contains(&"LLVMConstInt".to_owned()));
-        assert!(probe
-            .backend_payload_llvm_undefined_symbols
-            .contains(&"LLVMBuildLoad2".to_owned()));
-        assert_eq!(
-            probe.backend_payload_blocker_kind,
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-        );
+        assert!(probe.backend_payload_first_undefined_symbol.is_empty());
+        assert!(probe.backend_payload_llvm_undefined_symbols.is_empty());
+        assert_eq!(probe.backend_payload_execution_status, "llvm_ir_emitted");
+        assert_eq!(probe.backend_payload_blocker_kind, "none");
         assert_eq!(probe.llvm_wrapper_target, "wasm32-wasip1");
         assert_eq!(probe.llvm_wrapper_target_artifact_kind, "staticlib");
         assert!(probe
@@ -4452,41 +4442,27 @@ mod tests {
             probe.llvm_wrapper_target_built_by,
             "bootstrap/rustc-codegen-llvm-probe/build-target-llvm-wrapper.ps1"
         );
-        assert!(!probe.llvm_wrapper_target_loadable);
-        assert_eq!(
-            probe.llvm_wrapper_target_blocker_kind,
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-        );
-        assert!(!probe.target_llvm_library_closure_available);
-        assert_eq!(
-            probe.target_llvm_library_closure_status,
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-        );
+        assert!(probe.llvm_wrapper_target_loadable);
+        assert_eq!(probe.llvm_wrapper_target_blocker_kind, "none");
+        assert!(probe.target_llvm_library_closure_available);
+        assert_eq!(probe.target_llvm_library_closure_status, "available");
         assert!(!probe.enzyme_libloading_blocker_present);
-        assert_eq!(
-            probe.blocker_kind,
-            "target_llvm_library_closure_blocked_at_wasi_signal_sigaction"
-        );
-        assert_eq!(
-            probe.blocker_component,
-            "LLVM Support CrashRecoveryContext wasm32-wasip1 signal support"
-        );
-        assert!(probe.blocker_reason.contains("host evidence"));
-        assert!(probe.blocker_reason.contains("final-link"));
-        assert!(probe.blocker_reason.contains("LLVMPointerTypeInContext"));
-        assert!(probe.blocker_reason.contains("target-machine creation"));
-        assert!(probe
-            .blocker_reason
-            .contains("target-compatible LLVM library closure"));
-        assert!(probe.blocker_reason.contains("CrashRecoveryContext.cpp"));
-        assert!(probe.blocker_reason.contains("sigaction"));
-        assert!(probe.blocker_reason.contains("No LLVM IR"));
+        assert_eq!(probe.blocker_kind, "none");
+        assert_eq!(probe.blocker_component, "none");
+        assert!(probe.blocker_reason.contains("embedded"));
+        assert!(probe.blocker_reason.contains("LLVM IR"));
+        assert!(probe.blocker_reason.contains("Object emission remains"));
         assert!(probe
             .target_loadable_components
             .contains(&"rustc_codegen_ssa".to_owned()));
         assert!(!probe.object_emission_attempted);
         assert!(!probe.object_bytes_emitted);
-        assert!(!probe.llvm_ir_emitted);
+        assert!(probe.llvm_ir_emitted);
+        assert_eq!(
+            probe.llvm_ir_sha256.as_deref(),
+            Some("6b151410d83fa3fafc9c88ac4ef889635be7173652e0c6af95e015a515d72267")
+        );
+        assert_eq!(probe.llvm_ir_byte_len, Some(121));
     }
 
     #[test]

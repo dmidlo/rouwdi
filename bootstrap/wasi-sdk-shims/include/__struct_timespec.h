@@ -1,0 +1,14 @@
+#ifndef __wasilibc___struct_timespec_h
+#define __wasilibc___struct_timespec_h
+
+#include <__typedef_time_t.h>
+
+#if !defined(__DEFINED_struct_timespec)
+struct timespec {
+  time_t tv_sec;
+  long tv_nsec;
+};
+#define __DEFINED_struct_timespec
+#endif
+
+#endif
