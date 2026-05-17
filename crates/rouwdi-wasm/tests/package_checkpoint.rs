@@ -275,7 +275,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_handoff_status"],
-                Value::String("target_machine_setup_invoked".to_owned())
+                Value::String(
+                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                        .to_owned()
+                )
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
             assert_eq!(
@@ -288,36 +291,76 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             );
             assert_eq!(
                 payload["codegen_blocker_kind"],
-                Value::String("object_emission_not_attempted".to_owned())
+                Value::String(
+                    "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned()
+                )
             );
             assert_eq!(
                 payload["codegen_contact_state"],
+                Value::String(
+                    "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                        .to_owned()
+                )
+            );
+            assert_eq!(
+                payload["host_probe_codegen_contact_state"],
                 Value::String("target_machine_created".to_owned())
             );
+            assert_eq!(payload["host_probe_llvm_module_created"], Value::Bool(true));
+            assert_eq!(
+                payload["host_probe_target_machine_created"],
+                Value::Bool(true)
+            );
             assert_eq!(payload["codegen_mono_proof_consumed"], Value::Bool(true));
-            assert_eq!(payload["llvm_module_setup_invoked"], Value::Bool(true));
-            assert_eq!(payload["llvm_context_created"], Value::Bool(true));
-            assert_eq!(payload["llvm_module_created"], Value::Bool(true));
-            assert!(payload["llvm_module_identity_hash"]
-                .as_str()
-                .is_some_and(|hash| hash.len() == 64));
-            assert_eq!(payload["target_machine_setup_invoked"], Value::Bool(true));
-            assert_eq!(payload["target_machine_created"], Value::Bool(true));
+            assert_eq!(payload["llvm_module_setup_invoked"], Value::Bool(false));
+            assert_eq!(payload["llvm_context_created"], Value::Bool(false));
+            assert_eq!(payload["llvm_module_created"], Value::Bool(false));
+            assert_eq!(payload["llvm_module_identity_hash"], Value::Null);
+            assert_eq!(payload["target_machine_setup_invoked"], Value::Bool(false));
+            assert_eq!(payload["target_machine_created"], Value::Bool(false));
             assert_eq!(
                 payload["backend_payload_kind"],
                 Value::String("codegen_backend_payload".to_owned())
             );
             assert_eq!(
                 payload["backend_payload_blocker_kind"],
-                Value::String("wasm32_llvm_wrapper_static_library_missing".to_owned())
+                Value::String(
+                    "wasm_codegen_payload_blocked_at_target_llvm_library_closure".to_owned()
+                )
+            );
+            assert_eq!(
+                payload["llvm_wrapper_target"],
+                Value::String("wasm32-wasip1".to_owned())
+            );
+            assert_eq!(
+                payload["llvm_wrapper_artifact_kind"],
+                Value::String("staticlib".to_owned())
+            );
+            assert!(payload["llvm_wrapper_path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("libllvm-wrapper.a")));
+            assert_eq!(
+                payload["llvm_wrapper_sha256"].as_str().map(str::len),
+                Some(64)
+            );
+            assert!(payload["llvm_wrapper_size_bytes"]
+                .as_u64()
+                .is_some_and(|size| size > 1_000_000));
+            assert_eq!(payload["llvm_wrapper_target_loadable"], Value::Bool(false));
+            assert_eq!(
+                payload["target_llvm_library_closure_available"],
+                Value::Bool(false)
+            );
+            assert_eq!(
+                payload["target_llvm_library_closure_status"],
+                Value::String("missing_target_compatible_llvm_libraries".to_owned())
             );
             assert!(
                 payload["codegen_blocker_reason"]
                     .as_str()
                     .is_some_and(|reason| {
-                        reason.contains("target-loadable")
-                            && reason.contains("LLVM context/module")
-                            && reason.contains("target machine")
+                        reason.contains("Host LLVM proof remains evidence only")
+                            && reason.contains("target-compatible LLVM library closure")
                     }),
                 "codegen handoff must retain exact rustc_codegen_llvm blocker"
             );
@@ -367,11 +410,28 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     == Value::String("rustc_codegen_llvm_target_loadable_check_only".to_owned())
                 && entry["host_probe_state"]
                     == Value::String("host_codegen_probe_backend_constructed".to_owned())
-                && entry["codegen_contact_state"]
+                && entry["host_probe_codegen_contact_state"]
                     == Value::String("target_machine_created".to_owned())
+                && entry["host_probe_llvm_module_created"] == Value::Bool(true)
+                && entry["host_probe_target_machine_created"] == Value::Bool(true)
+                && entry["codegen_contact_state"]
+                    == Value::String(
+                        "rustc_codegen_llvm_backend_payload_blocked_at_target_llvm_library_closure"
+                            .to_owned(),
+                    )
                 && entry["mono_proof_consumed"] == Value::Bool(true)
-                && entry["llvm_module_created"] == Value::Bool(true)
-                && entry["target_machine_created"] == Value::Bool(true)
+                && entry["llvm_wrapper_target"] == Value::String("wasm32-wasip1".to_owned())
+                && entry["llvm_wrapper_artifact_kind"] == Value::String("staticlib".to_owned())
+                && entry["llvm_wrapper_path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("libllvm-wrapper.a"))
+                && entry["llvm_wrapper_sha256"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64)
+                && entry["llvm_wrapper_target_loadable"] == Value::Bool(false)
+                && entry["target_llvm_library_closure_available"] == Value::Bool(false)
+                && entry["llvm_module_created"] == Value::Bool(false)
+                && entry["target_machine_created"] == Value::Bool(false)
                 && entry["object_bytes_emitted"] == Value::Bool(false)
                 && entry["linker_handoff_created"] == Value::Bool(false)
         }),

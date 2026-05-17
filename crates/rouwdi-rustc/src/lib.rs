@@ -673,6 +673,10 @@ pub struct RustCodegenHandoffRecord {
     pub codegen_backend_entrypoint: String,
     pub codegen_contact_points: Vec<String>,
     pub codegen_contact_state: String,
+    pub host_probe_codegen_contact_state: String,
+    pub host_probe_llvm_context_created: bool,
+    pub host_probe_llvm_module_created: bool,
+    pub host_probe_target_machine_created: bool,
     pub mono_proof_consumed: bool,
     pub crate_identity: String,
     pub target_spec_identity: String,
@@ -742,19 +746,21 @@ impl RustCodegenHandoffRecord {
         } else {
             "object"
         };
-        let blocker_kind = codegen_probe.blocker_kind.clone();
+        let blocker_kind = codegen_probe.backend_payload_blocker_kind.clone();
         let blocker_component = codegen_probe.blocker_component.clone();
         let blocker_reason = codegen_component
             .as_ref()
             .map(|component| component.exact_blocker.clone())
             .filter(|reason| !reason.trim().is_empty())
             .unwrap_or_else(|| codegen_probe.blocker_reason.clone());
-        let current_status = if codegen_probe.target_machine_created {
-            "target_machine_setup_invoked".to_owned()
-        } else if codegen_probe.llvm_module_created {
-            "llvm_module_setup_invoked".to_owned()
+        let current_status = if codegen_probe.object_bytes_emitted {
+            "wasm_object_bytes_emitted".to_owned()
+        } else if codegen_probe.llvm_ir_emitted {
+            "llvm_ir_emitted".to_owned()
+        } else if codegen_probe.backend_payload_blocker_kind != "none" {
+            codegen_probe.backend_payload_execution_status.clone()
         } else if codegen_probe.backend_constructed {
-            "rustc_codegen_llvm_backend_constructed".to_owned()
+            "rustc_codegen_llvm_backend_payload_ready_for_embedded_execution".to_owned()
         } else {
             format!("rustc_codegen_llvm_backend_blocked_at_{blocker_kind}")
         };
@@ -763,7 +769,12 @@ impl RustCodegenHandoffRecord {
             proof.package, proof.target, proof.profile
         );
         let target_spec_identity = format!("rustc_target::spec({})", proof.target_triple);
-        let llvm_module_identity = if codegen_probe.llvm_module_created {
+        let embedded_backend_created_module = codegen_probe.backend_payload_blocker_kind == "none"
+            && codegen_probe.backend_payload_execution_status == "embedded_llvm_module_created";
+        let embedded_backend_created_target_machine = codegen_probe.backend_payload_blocker_kind
+            == "none"
+            && codegen_probe.backend_payload_execution_status == "embedded_target_machine_created";
+        let llvm_module_identity = if embedded_backend_created_module {
             Some(format!(
                 "module={};target={};mir={};mono={}",
                 proof.compile_unit_id,
@@ -840,11 +851,15 @@ impl RustCodegenHandoffRecord {
                 "rustc_codegen_llvm::LlvmCodegenBackend::new".to_owned(),
                 "rustc_codegen_ssa::traits::CodegenBackend".to_owned(),
                 "rustc_codegen_llvm wasm32-wasip1 target-loadable check".to_owned(),
-                "LLVM context/module setup through rustc_llvm".to_owned(),
-                "LLVM target machine setup through rustc_llvm".to_owned(),
+                "target llvm-wrapper archive build through WASI clang++".to_owned(),
+                "target LLVM library closure resolution".to_owned(),
                 "assembly-owned wasm32-wasip1 backend payload route".to_owned(),
             ],
-            codegen_contact_state: codegen_probe.codegen_contact_state,
+            codegen_contact_state: codegen_probe.backend_payload_execution_status.clone(),
+            host_probe_codegen_contact_state: codegen_probe.codegen_contact_state,
+            host_probe_llvm_context_created: codegen_probe.llvm_context_created,
+            host_probe_llvm_module_created: codegen_probe.llvm_module_created,
+            host_probe_target_machine_created: codegen_probe.target_machine_created,
             mono_proof_consumed: true,
             crate_identity,
             target_spec_identity,
@@ -868,23 +883,43 @@ impl RustCodegenHandoffRecord {
             backend_payload_executed: false,
             backend_payload_execution_status: codegen_probe.backend_payload_execution_status,
             backend_payload_blocker_kind: codegen_probe.backend_payload_blocker_kind,
-            llvm_module_setup_invoked: codegen_probe.llvm_module_created,
-            llvm_context_created: codegen_probe.llvm_context_created,
-            llvm_module_created: codegen_probe.llvm_module_created,
+            llvm_module_setup_invoked: embedded_backend_created_module,
+            llvm_context_created: embedded_backend_created_module,
+            llvm_module_created: embedded_backend_created_module,
             llvm_module_identity,
             llvm_module_identity_hash,
-            llvm_module_target_triple: if codegen_probe.llvm_module_created {
+            llvm_module_target_triple: if embedded_backend_created_module {
                 Some(proof.target_triple.clone())
             } else {
-                codegen_probe.llvm_module_target_triple
+                None
             },
-            target_machine_setup_invoked: codegen_probe.target_machine_setup_invoked,
-            target_machine_created: codegen_probe.target_machine_created,
-            target_machine_cpu: codegen_probe.target_machine_cpu,
-            target_machine_features: codegen_probe.target_machine_features,
-            target_machine_relocation_model: codegen_probe.target_machine_relocation_model,
-            target_machine_code_model: codegen_probe.target_machine_code_model,
-            target_machine_optimization_level: codegen_probe.target_machine_optimization_level,
+            target_machine_setup_invoked: embedded_backend_created_target_machine,
+            target_machine_created: embedded_backend_created_target_machine,
+            target_machine_cpu: if embedded_backend_created_target_machine {
+                codegen_probe.target_machine_cpu
+            } else {
+                String::new()
+            },
+            target_machine_features: if embedded_backend_created_target_machine {
+                codegen_probe.target_machine_features
+            } else {
+                String::new()
+            },
+            target_machine_relocation_model: if embedded_backend_created_target_machine {
+                codegen_probe.target_machine_relocation_model
+            } else {
+                String::new()
+            },
+            target_machine_code_model: if embedded_backend_created_target_machine {
+                codegen_probe.target_machine_code_model
+            } else {
+                String::new()
+            },
+            target_machine_optimization_level: if embedded_backend_created_target_machine {
+                codegen_probe.target_machine_optimization_level
+            } else {
+                String::new()
+            },
             object_emission_attempted: codegen_probe.object_emission_attempted,
             current_status,
             blocker_kind,
@@ -1044,6 +1079,12 @@ impl RustCodegenHandoffRecord {
             );
         }
         if self.llvm_module_created {
+            if !self.backend_payload_executed {
+                return Err(
+                    "product LLVM module creation requires embedded backend payload execution"
+                        .to_owned(),
+                );
+            }
             if !self.llvm_module_setup_invoked || !self.llvm_context_created {
                 return Err("LLVM module creation requires context and setup invocation".to_owned());
             }
@@ -1067,6 +1108,12 @@ impl RustCodegenHandoffRecord {
             }
         }
         if self.target_machine_created {
+            if !self.backend_payload_executed {
+                return Err(
+                    "product target-machine creation requires embedded backend payload execution"
+                        .to_owned(),
+                );
+            }
             if !self.target_machine_setup_invoked {
                 return Err("target machine creation requires setup invocation".to_owned());
             }
