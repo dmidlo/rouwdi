@@ -4484,7 +4484,10 @@ mod tests {
             component.source_path,
             "third_party/rust/compiler/rustc_codegen_llvm"
         );
-        assert_eq!(component.blocker_kind, "lld_not_embedded");
+        assert_eq!(
+            component.blocker_kind,
+            "codegen_lowering_to_object_not_implemented"
+        );
         assert!(component
             .probe_command
             .contains("compiler/rustc_codegen_llvm"));
@@ -4497,6 +4500,10 @@ mod tests {
         assert!(component
             .exact_blocker
             .contains("LLVMTargetMachineEmitToMemoryBuffer"));
+        assert!(component.exact_blocker.contains("empty/probe-only"));
+        assert!(component
+            .exact_blocker
+            .contains("linker handoff remains closed"));
         assert!(component.exact_blocker.contains("wasm-ld"));
         assert_eq!(
             component.adapter_symbol.as_deref(),

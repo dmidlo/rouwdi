@@ -788,6 +788,47 @@ try {
     if ($codegenPayloadExecution.linker_handoff_created -eq $true -and $codegenPayloadExecution.wasm_object_bytes_emitted -ne $true) {
         throw "Canonical linker handoff requires real Wasm object bytes"
     }
+    if ($codegenPayloadExecution.linker_handoff_created -eq $true) {
+        $linkerHandoffProof = $codegenPayloadExecution.output_json.linker_handoff
+        if ($null -eq $linkerHandoffProof) {
+            throw "Canonical linker handoff requires linker proof JSON"
+        }
+        $linkerPayload = $linkerHandoffProof.linker_payload
+        if ($null -eq $linkerPayload) {
+            throw "Canonical linker handoff requires linker payload identity"
+        }
+        if ([string]$linkerPayload.kind -ne "linker_payload") {
+            throw "Canonical linker payload identity must use kind linker_payload"
+        }
+        if ([string]$linkerPayload.component -ne "wasm-ld" -and [string]$linkerPayload.component -ne "lld") {
+            throw "Canonical linker payload identity must name wasm-ld/lld"
+        }
+        if ([string]$linkerPayload.target -ne [string]$linkerHandoffProof.target_triple) {
+            throw "Canonical linker payload target must match linker handoff target"
+        }
+        if ([string]$linkerPayload.supported_input_kind -ne [string]$linkerHandoffProof.codegen_artifact_kind) {
+            throw "Canonical linker payload supported input kind must match codegen object kind"
+        }
+        $linkerPayloadPath = [string]$linkerPayload.artifact_path
+        $linkerPayloadPathLower = $linkerPayloadPath.ToLowerInvariant()
+        $linkerPathIsAssemblyOwned = $linkerPayloadPath.StartsWith("embedded_registry:") `
+            -or $linkerPayloadPath.StartsWith("vfs:/") `
+            -or $linkerPayloadPath.StartsWith("memory:") `
+            -or $linkerPayloadPath.StartsWith("dist/rouwdi.wasm#")
+        if (-not $linkerPathIsAssemblyOwned `
+            -or $linkerPayloadPathLower.EndsWith(".exe") `
+            -or $linkerPayloadPathLower.Contains(".rouwdi/tools") `
+            -or $linkerPayloadPathLower.Contains("wasi-sdk") `
+            -or $linkerPayloadPathLower.Contains("third_party/rust/build")) {
+            throw "Canonical linker payload must be assembly-owned, not a host linker sidecar: $linkerPayloadPath"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$linkerPayload.sha256) -or ([string]$linkerPayload.sha256).Length -ne 64) {
+            throw "Canonical linker payload identity requires SHA-256"
+        }
+        if ([int64]$linkerPayload.size_bytes -le 0) {
+            throw "Canonical linker payload identity requires non-empty size"
+        }
+    }
     $monoInvoked = $null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_invoked -eq $true
     $monoStatus = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_status } else { $null }
     $monoBlockerKind = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_blocker_kind } else { $null }

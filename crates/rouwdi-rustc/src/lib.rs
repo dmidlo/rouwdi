@@ -630,6 +630,22 @@ impl RustMonomorphizationProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustLinkerPayloadIdentity {
+    pub payload_name: String,
+    pub kind: String,
+    pub component: String,
+    pub target: String,
+    pub artifact_path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub embedding_method: String,
+    pub execution_method: String,
+    pub linker_version: Option<String>,
+    pub supported_input_kind: String,
+    pub supported_output_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustLinkerHandoffRecord {
     pub compile_unit_id: String,
     pub target_triple: String,
@@ -637,6 +653,7 @@ pub struct RustLinkerHandoffRecord {
     pub codegen_artifact_hash: String,
     pub codegen_artifact_size: u64,
     pub codegen_backend_identity: String,
+    pub linker_payload: RustLinkerPayloadIdentity,
     pub required_linker_component: String,
     pub expected_final_artifact_kind: String,
     pub linker_input_count: u64,
@@ -853,6 +870,11 @@ impl RustCodegenHandoffRecord {
         let llvm_module_identity_hash = llvm_module_identity
             .as_ref()
             .map(|identity| hex::encode(Sha256::digest(identity.as_bytes())));
+        let linker_payload_identity = if rust_mono_item_wasm_object_emitted {
+            assembly_owned_linker_payload_identity_for_target(&proof.target_triple)
+        } else {
+            None
+        };
 
         let record = Self {
             compile_unit_id: proof.compile_unit_id.clone(),
@@ -1055,52 +1077,60 @@ impl RustCodegenHandoffRecord {
             llvm_ir_emitted: codegen_probe.llvm_ir_emitted,
             llvm_ir_sha256: codegen_probe.llvm_ir_sha256.clone(),
             llvm_ir_size_bytes: codegen_probe.llvm_ir_byte_len,
-            linker_handoff_created: rust_mono_item_wasm_object_emitted,
+            linker_handoff_created: linker_payload_identity.is_some(),
             linker_handoff: if rust_mono_item_wasm_object_emitted {
                 match (
                     codegen_probe.object_artifact_sha256.clone(),
                     codegen_probe.object_artifact_size_bytes,
+                    linker_payload_identity.clone(),
                 ) {
-                    (Some(object_sha256), Some(object_size)) => Some(RustLinkerHandoffRecord {
-                        compile_unit_id: proof.compile_unit_id.clone(),
-                        target_triple: proof.target_triple.clone(),
-                        codegen_artifact_kind: codegen_probe
-                            .object_artifact_kind
-                            .clone()
-                            .unwrap_or_else(|| expected_output_kind.to_owned()),
-                        codegen_artifact_hash: object_sha256,
-                        codegen_artifact_size: object_size,
-                        codegen_backend_identity:
-                            "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
-                        required_linker_component: if proof.target_triple.starts_with("wasm32") {
-                            "wasm-ld".to_owned()
-                        } else {
-                            "lld".to_owned()
-                        },
-                        expected_final_artifact_kind: if proof.target_triple.starts_with("wasm32")
-                        {
-                            "wasm32-wasip1 module".to_owned()
-                        } else {
-                            "native_executable".to_owned()
-                        },
-                        linker_input_count: 1,
-                        required_runtime_objects: if proof.target_triple.starts_with("wasm32") {
-                            vec!["crt1-command.o".to_owned()]
-                        } else {
-                            Vec::new()
-                        },
-                        required_std_core_alloc_objects_or_archives: vec![
-                            "libcore.rlib".to_owned(),
-                            "liballoc.rlib".to_owned(),
-                            "libstd.rlib".to_owned(),
-                            "libwasip1.rlib".to_owned(),
-                            "libc.a".to_owned(),
-                        ],
-                        current_status: "wasm_ld_payload_required".to_owned(),
-                        blocker_kind: "lld_not_embedded".to_owned(),
-                        next_command: "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus target-pack runtime objects".to_owned(),
-                        proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
-                    }),
+                    (Some(object_sha256), Some(object_size), Some(linker_payload)) => {
+                        Some(RustLinkerHandoffRecord {
+                            compile_unit_id: proof.compile_unit_id.clone(),
+                            target_triple: proof.target_triple.clone(),
+                            codegen_artifact_kind: codegen_probe
+                                .object_artifact_kind
+                                .clone()
+                                .unwrap_or_else(|| expected_output_kind.to_owned()),
+                            codegen_artifact_hash: object_sha256,
+                            codegen_artifact_size: object_size,
+                            codegen_backend_identity:
+                                "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
+                            linker_payload,
+                            required_linker_component: if proof.target_triple.starts_with("wasm32")
+                            {
+                                "wasm-ld".to_owned()
+                            } else {
+                                "lld".to_owned()
+                            },
+                            expected_final_artifact_kind: if proof
+                                .target_triple
+                                .starts_with("wasm32")
+                            {
+                                "wasm32-wasip1 module".to_owned()
+                            } else {
+                                "native_executable".to_owned()
+                            },
+                            linker_input_count: 1,
+                            required_runtime_objects: if proof.target_triple.starts_with("wasm32")
+                            {
+                                vec!["crt1-command.o".to_owned()]
+                            } else {
+                                Vec::new()
+                            },
+                            required_std_core_alloc_objects_or_archives: vec![
+                                "libcore.rlib".to_owned(),
+                                "liballoc.rlib".to_owned(),
+                                "libstd.rlib".to_owned(),
+                                "libwasip1.rlib".to_owned(),
+                                "libc.a".to_owned(),
+                            ],
+                            current_status: "wasm_ld_payload_required".to_owned(),
+                            blocker_kind: "lld_not_embedded".to_owned(),
+                            next_command: "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus target-pack runtime objects".to_owned(),
+                            proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
+                        })
+                    }
                     _ => None,
                 }
             } else {
@@ -1506,6 +1536,9 @@ impl RustCodegenHandoffRecord {
                 "linker handoff is forbidden without mono-item-derived object bytes".to_owned(),
             );
         }
+        if self.linker_handoff_created != self.linker_handoff.is_some() {
+            return Err("linker handoff flag must match linker handoff proof presence".to_owned());
+        }
         if let Some(linker_handoff) = &self.linker_handoff {
             let codegen_sha = self
                 .object_sha256
@@ -1528,9 +1561,97 @@ impl RustCodegenHandoffRecord {
             {
                 return Err("linker handoff must name wasm-ld/lld".to_owned());
             }
+            validate_linker_payload_identity(linker_handoff)?;
         }
         Ok(())
     }
+}
+
+fn assembly_owned_linker_payload_identity_for_target(
+    _target_triple: &str,
+) -> Option<RustLinkerPayloadIdentity> {
+    None
+}
+
+fn validate_linker_payload_identity(handoff: &RustLinkerHandoffRecord) -> Result<(), String> {
+    let payload = &handoff.linker_payload;
+    if payload.payload_name.trim().is_empty() {
+        return Err("linker payload identity requires a payload name".to_owned());
+    }
+    if payload.kind != "linker_payload" {
+        return Err("linker payload identity must use kind linker_payload".to_owned());
+    }
+    if payload.component != "wasm-ld" && payload.component != "lld" {
+        return Err("linker payload identity must name wasm-ld/lld".to_owned());
+    }
+    if handoff.required_linker_component == "wasm-ld" && payload.component != "wasm-ld" {
+        return Err("wasm linker handoff requires a wasm-ld payload identity".to_owned());
+    }
+    if payload.target != handoff.target_triple {
+        return Err("linker payload target must match linker handoff target".to_owned());
+    }
+    if payload.supported_input_kind != handoff.codegen_artifact_kind {
+        return Err(
+            "linker payload supported input kind must match codegen object kind".to_owned(),
+        );
+    }
+    if normalize_artifact_kind(&payload.supported_output_kind)
+        != normalize_artifact_kind(&handoff.expected_final_artifact_kind)
+    {
+        return Err(
+            "linker payload supported output kind must match expected final artifact kind"
+                .to_owned(),
+        );
+    }
+    if !is_sha256_hex(&payload.sha256) {
+        return Err("linker payload identity requires a SHA-256 hash".to_owned());
+    }
+    if payload.size_bytes == 0 {
+        return Err("linker payload identity requires a non-empty artifact size".to_owned());
+    }
+    if !is_assembly_owned_payload_path(&payload.artifact_path) {
+        return Err("linker payload must be assembly-owned, not a host linker sidecar".to_owned());
+    }
+    let lower_path = payload.artifact_path.to_ascii_lowercase();
+    if lower_path.ends_with(".exe")
+        || lower_path.contains(".rouwdi/tools")
+        || lower_path.contains("wasi-sdk")
+        || lower_path.contains("third_party/rust/build")
+    {
+        return Err("linker payload must be assembly-owned, not a host linker sidecar".to_owned());
+    }
+    let embedding = payload.embedding_method.to_ascii_lowercase();
+    if !(embedding.contains("embedded")
+        || embedding.contains("assembly")
+        || embedding.contains("component"))
+        || embedding.contains("host")
+        || embedding.contains("sidecar")
+    {
+        return Err("linker payload embedding method must be assembly-owned".to_owned());
+    }
+    let execution = payload.execution_method.to_ascii_lowercase();
+    if execution.contains("host_process") || execution.contains("sidecar") {
+        return Err("linker payload execution method must not be a host process".to_owned());
+    }
+    Ok(())
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_assembly_owned_payload_path(path: &str) -> bool {
+    path.starts_with("embedded_registry:")
+        || path.starts_with("vfs:/")
+        || path.starts_with("memory:")
+        || path.starts_with("dist/rouwdi.wasm#")
+}
+
+fn normalize_artifact_kind(kind: &str) -> String {
+    kind.chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-' && *ch != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 impl RustEmbeddedMirPayloadExecution {

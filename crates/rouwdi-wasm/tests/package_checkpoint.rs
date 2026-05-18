@@ -76,6 +76,35 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
     {
         return Some("linker handoff requires mono-item-derived Wasm object".to_owned());
     }
+    if payload["linker_handoff_created"] == Value::Bool(true) {
+        let linker_handoff = &payload["codegen_payloads"][0]["linker_handoff"];
+        if !linker_handoff.is_object() {
+            return Some("linker handoff requires linker proof JSON".to_owned());
+        }
+        let linker_payload = &linker_handoff["linker_payload"];
+        if linker_payload["kind"] != Value::String("linker_payload".to_owned()) {
+            return Some("linker payload identity must use kind linker_payload".to_owned());
+        }
+        if linker_payload["component"] != Value::String("wasm-ld".to_owned())
+            && linker_payload["component"] != Value::String("lld".to_owned())
+        {
+            return Some("linker payload identity must name wasm-ld/lld".to_owned());
+        }
+        let path = linker_payload["artifact_path"].as_str().unwrap_or_default();
+        let lower_path = path.to_ascii_lowercase();
+        let assembly_owned = path.starts_with("embedded_registry:")
+            || path.starts_with("vfs:/")
+            || path.starts_with("memory:")
+            || path.starts_with("dist/rouwdi.wasm#");
+        if !assembly_owned
+            || lower_path.ends_with(".exe")
+            || lower_path.contains(".rouwdi/tools")
+            || lower_path.contains("wasi-sdk")
+            || lower_path.contains("third_party/rust/build")
+        {
+            return Some("linker payload must be assembly-owned, not a host sidecar".to_owned());
+        }
+    }
     if payload["instantiated"] != Value::Bool(true) {
         return Some("MIR payload must be instantiated".to_owned());
     }
@@ -540,6 +569,26 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     Value::String("mono_item_graph".to_owned())
                 );
                 assert_eq!(payload["linker_handoff_created"], Value::Bool(true));
+                let linker_handoff = &payload["codegen_payloads"][0]["linker_handoff"];
+                assert_eq!(
+                    linker_handoff["required_linker_component"],
+                    Value::String("wasm-ld".to_owned())
+                );
+                let linker_payload = &linker_handoff["linker_payload"];
+                assert_eq!(
+                    linker_payload["kind"],
+                    Value::String("linker_payload".to_owned())
+                );
+                assert_eq!(
+                    linker_payload["component"],
+                    Value::String("wasm-ld".to_owned())
+                );
+                assert!(linker_payload["artifact_path"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with("embedded_registry:")
+                        || path.starts_with("vfs:/")
+                        || path.starts_with("memory:")
+                        || path.starts_with("dist/rouwdi.wasm#")));
             } else {
                 assert_eq!(
                     payload["object_contains_codegened_function"],
