@@ -51,9 +51,21 @@ pub struct HashEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactManifestEntry {
     pub target: String,
+    pub target_triple: String,
     pub path: String,
     pub artifact_kind: String,
-    pub sha256: Option<String>,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub producer_stage: String,
+    pub input_object_hash: String,
+    pub linker_payload_hash: String,
+    pub compile_unit_id: String,
+    pub mir_hash: String,
+    pub mono_graph_hash: String,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub codegen_input_sha256: String,
+    pub codegen_input_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,9 +141,18 @@ pub struct ArtifactInterfaceProof {
     pub triple: String,
     pub artifact_kind: String,
     pub artifact_path: Option<String>,
+    pub artifact_sha256: Option<String>,
+    pub artifact_size_bytes: Option<u64>,
     pub artifact_built: bool,
+    pub wasm_magic_valid: Option<bool>,
+    pub wasm_version_valid: Option<bool>,
+    pub exports: Vec<String>,
+    pub imports: Vec<String>,
+    pub start_export_present: Option<bool>,
     pub required_exports: Vec<String>,
     pub missing_exports: Vec<String>,
+    pub required_exports_satisfied: bool,
+    pub wasi_imports_classified: bool,
     pub require_executable: bool,
     pub executable_detected: Option<bool>,
     pub status: ProofStatus,
@@ -142,10 +163,18 @@ pub struct ArtifactInterfaceProof {
 pub struct RuntimeProof {
     pub target_name: String,
     pub triple: String,
+    pub artifact_path: Option<String>,
+    pub artifact_hash: Option<String>,
+    pub runtime_used: Option<String>,
     pub required: bool,
     pub kind: Option<String>,
     pub mode: String,
+    pub command_args: Vec<String>,
+    pub stdin: String,
+    pub stdout: String,
+    pub stderr: String,
     pub executed: bool,
+    pub timeout_seconds: u64,
     pub expected_exit_code: Option<i32>,
     pub actual_exit_code: Option<i32>,
     pub timed_out: Option<bool>,
@@ -160,6 +189,13 @@ pub struct WasmModuleExport {
     pub name: String,
     pub kind: WasmExportKind,
     pub index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WasmModuleImport {
+    pub module: String,
+    pub name: String,
+    pub kind: WasmExportKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +515,31 @@ pub fn verify_manifest_references(
             "manifest contains malformed sha256 fields".to_owned(),
         ));
     }
+    if manifest.status == RunStatus::Succeeded && manifest.artifacts.is_empty() {
+        return Err(ProofError::Verification(
+            "successful manifest must contain at least one artifact".to_owned(),
+        ));
+    }
+    for artifact in &manifest.artifacts {
+        let bytes = storage.read(&artifact.path).map_err(|err| {
+            ProofError::Verification(format!("missing artifact {}: {err}", artifact.path))
+        })?;
+        let actual_hash = hash_bytes(&bytes);
+        if actual_hash != artifact.sha256 {
+            return Err(ProofError::Verification(format!(
+                "artifact hash mismatch for {}: expected {}, got {}",
+                artifact.path, artifact.sha256, actual_hash
+            )));
+        }
+        if bytes.len() as u64 != artifact.byte_length {
+            return Err(ProofError::Verification(format!(
+                "artifact size mismatch for {}: expected {}, got {}",
+                artifact.path,
+                artifact.byte_length,
+                bytes.len()
+            )));
+        }
+    }
     for proof_file in &manifest.proof_files {
         storage.read(proof_file).map_err(|err| {
             ProofError::Verification(format!("missing referenced proof file {proof_file}: {err}"))
@@ -509,6 +570,34 @@ pub fn parse_wasm_exports(bytes: &[u8]) -> Result<Vec<WasmModuleExport>, ProofEr
         }
         if section_id == 7 {
             return parse_export_section(bytes, offset, section_end);
+        }
+        offset = section_end;
+    }
+    Ok(Vec::new())
+}
+
+pub fn parse_wasm_imports(bytes: &[u8]) -> Result<Vec<WasmModuleImport>, ProofError> {
+    if bytes.len() < 8 || &bytes[..4] != b"\0asm" || &bytes[4..8] != b"\x01\0\0\0" {
+        return Err(ProofError::Verification(
+            "not a WebAssembly 1.0 module".to_owned(),
+        ));
+    }
+    let mut offset = 8;
+    while offset < bytes.len() {
+        let section_id = bytes[offset];
+        offset += 1;
+        let (section_len, next) = read_varuint(bytes, offset)?;
+        offset = next;
+        let section_end = offset
+            .checked_add(section_len as usize)
+            .ok_or_else(|| ProofError::Verification("WASM section length overflow".to_owned()))?;
+        if section_end > bytes.len() {
+            return Err(ProofError::Verification(
+                "WASM section extends past end of module".to_owned(),
+            ));
+        }
+        if section_id == 2 {
+            return parse_import_section(bytes, offset, section_end);
         }
         offset = section_end;
     }
@@ -580,6 +669,114 @@ fn parse_export_section(
     Ok(exports)
 }
 
+fn parse_import_section(
+    bytes: &[u8],
+    mut offset: usize,
+    section_end: usize,
+) -> Result<Vec<WasmModuleImport>, ProofError> {
+    let (count, next) = read_varuint(bytes, offset)?;
+    offset = next;
+    let mut imports = Vec::new();
+    for _ in 0..count {
+        let (module_len, module_start) = read_varuint(bytes, offset)?;
+        let module_end = module_start
+            .checked_add(module_len as usize)
+            .ok_or_else(|| ProofError::Verification("WASM import module overflow".to_owned()))?;
+        if module_end > section_end {
+            return Err(ProofError::Verification(
+                "WASM import module extends past import section".to_owned(),
+            ));
+        }
+        let module = std::str::from_utf8(&bytes[module_start..module_end])
+            .map_err(|err| ProofError::Verification(format!("invalid import module UTF-8: {err}")))?
+            .to_owned();
+        offset = module_end;
+
+        let (name_len, name_start) = read_varuint(bytes, offset)?;
+        let name_end = name_start
+            .checked_add(name_len as usize)
+            .ok_or_else(|| ProofError::Verification("WASM import name overflow".to_owned()))?;
+        if name_end > section_end {
+            return Err(ProofError::Verification(
+                "WASM import name extends past import section".to_owned(),
+            ));
+        }
+        let name = std::str::from_utf8(&bytes[name_start..name_end])
+            .map_err(|err| ProofError::Verification(format!("invalid import name UTF-8: {err}")))?
+            .to_owned();
+        offset = name_end;
+
+        let kind_byte = *bytes
+            .get(offset)
+            .ok_or_else(|| ProofError::Verification("missing WASM import kind".to_owned()))?;
+        offset += 1;
+        match kind_byte {
+            0 => {
+                let (_, next) = read_varuint(bytes, offset)?;
+                offset = next;
+            }
+            1 => offset = skip_table_type(bytes, offset, section_end)?,
+            2 => offset = skip_limits(bytes, offset, section_end)?,
+            3 => {
+                offset = offset
+                    .checked_add(2)
+                    .ok_or_else(|| ProofError::Verification("global import overflow".to_owned()))?;
+                if offset > section_end {
+                    return Err(ProofError::Verification(
+                        "global import extends past import section".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ProofError::Verification(format!(
+                    "unsupported import kind {kind_byte}"
+                )));
+            }
+        }
+        imports.push(WasmModuleImport {
+            module,
+            name,
+            kind: export_kind(kind_byte),
+        });
+    }
+    Ok(imports)
+}
+
+fn skip_table_type(bytes: &[u8], offset: usize, section_end: usize) -> Result<usize, ProofError> {
+    let element_type_end = offset
+        .checked_add(1)
+        .ok_or_else(|| ProofError::Verification("table import overflow".to_owned()))?;
+    if element_type_end > section_end {
+        return Err(ProofError::Verification(
+            "table import extends past import section".to_owned(),
+        ));
+    }
+    skip_limits(bytes, element_type_end, section_end)
+}
+
+fn skip_limits(bytes: &[u8], offset: usize, section_end: usize) -> Result<usize, ProofError> {
+    let flags = *bytes
+        .get(offset)
+        .ok_or_else(|| ProofError::Verification("missing limits flags".to_owned()))?;
+    let (min, next) = read_varuint(bytes, offset + 1)?;
+    let _ = min;
+    if flags & 0x01 != 0 {
+        let (_, next) = read_varuint(bytes, next)?;
+        if next > section_end {
+            return Err(ProofError::Verification(
+                "limits extend past import section".to_owned(),
+            ));
+        }
+        Ok(next)
+    } else if next > section_end {
+        Err(ProofError::Verification(
+            "limits extend past import section".to_owned(),
+        ))
+    } else {
+        Ok(next)
+    }
+}
+
 fn read_varuint(bytes: &[u8], mut offset: usize) -> Result<(u32, usize), ProofError> {
     let mut result = 0u32;
     let mut shift = 0;
@@ -648,6 +845,31 @@ mod tests {
         module
     }
 
+    fn wasm_with_imports(imports: &[(&str, &str, u8)]) -> Vec<u8> {
+        let mut section = Vec::new();
+        section.extend(varuint(imports.len() as u32));
+        for (module, name, kind) in imports {
+            section.extend(varuint(module.len() as u32));
+            section.extend(module.as_bytes());
+            section.extend(varuint(name.len() as u32));
+            section.extend(name.as_bytes());
+            section.push(*kind);
+            match kind {
+                0 => section.extend(varuint(0)),
+                2 => {
+                    section.push(0);
+                    section.extend(varuint(1));
+                }
+                _ => {}
+            }
+        }
+        let mut module = b"\0asm\x01\0\0\0".to_vec();
+        module.push(2);
+        module.extend(varuint(section.len() as u32));
+        module.extend(section);
+        module
+    }
+
     #[test]
     fn verifies_hash_entries_against_storage() {
         let mut storage = MemoryStorage::new();
@@ -693,6 +915,20 @@ mod tests {
             missing_wasm_exports(&exports, &["_start".to_owned(), "missing".to_owned()]),
             vec!["missing".to_owned()]
         );
+    }
+
+    #[test]
+    fn parses_wasm_imports_without_host_runtime() {
+        let module = wasm_with_imports(&[
+            ("wasi_snapshot_preview1", "fd_write", 0),
+            ("env", "memory", 2),
+        ]);
+        let imports = parse_wasm_imports(&module).unwrap();
+
+        assert_eq!(imports[0].module, "wasi_snapshot_preview1");
+        assert_eq!(imports[0].name, "fd_write");
+        assert_eq!(imports[0].kind, WasmExportKind::Function);
+        assert_eq!(imports[1].kind, WasmExportKind::Memory);
     }
 
     #[test]

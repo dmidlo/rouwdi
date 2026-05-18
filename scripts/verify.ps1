@@ -10,6 +10,29 @@ try {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+    $manifestPath = Join-Path $RepoRoot "dist\manifest.json"
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    if ($manifest.final_module_artifact.exists -ne $true) {
+        throw "dist/manifest.json does not record a promoted final module artifact"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.final_module_artifact.path)) {
+        throw "dist/manifest.json final module artifact path is empty"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.final_module_artifact.sha256) -or ([string]$manifest.final_module_artifact.sha256).Length -ne 64) {
+        throw "dist/manifest.json final module artifact hash is missing or malformed"
+    }
+    if ([int64]$manifest.final_module_artifact.size_bytes -le 0) {
+        throw "dist/manifest.json final module artifact size is not positive"
+    }
+    if ($manifest.interface_proof.passed -ne $true) {
+        throw "dist/manifest.json interface proof did not pass"
+    }
+    if ($manifest.runtime_proof_attempted -ne $true -or $manifest.runtime_proof.passed -ne $true) {
+        throw "dist/manifest.json runtime proof was not attempted and passed"
+    }
+    if ([int]$manifest.runtime_proof.exit_code -ne 0) {
+        throw "dist/manifest.json runtime proof exit code is not 0"
+    }
 
     $targetDir = Join-Path $RepoRoot ".rouwdi\t"
 

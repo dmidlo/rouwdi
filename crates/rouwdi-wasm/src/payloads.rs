@@ -238,6 +238,15 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub codegen_artifact_location: Option<String>,
     pub linker_required: bool,
     pub linker_handoff_created: bool,
+    #[serde(skip_serializing)]
+    pub final_module_bytes: Option<Vec<u8>>,
+    pub final_module_artifact_path: Option<String>,
+    pub final_module_sha256: Option<String>,
+    pub final_module_size_bytes: Option<u64>,
+    pub final_module_input_object_hash: Option<String>,
+    pub final_module_linker_payload_hash: Option<String>,
+    pub runtime_proof_attempted: bool,
+    pub runtime_proof_passed: bool,
     pub blocker_kind: Option<String>,
     pub blocker_component: Option<String>,
     pub blocker_reason: Option<String>,
@@ -652,6 +661,41 @@ pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMi
     })
 }
 
+pub fn linked_wasi_module_artifact_for_engine(
+) -> Option<rouwdi_engine::EmbeddedLinkedWasiModuleArtifact> {
+    let report = load_codegen_backend_payload().ok()?;
+    let bytes = report.final_module_bytes?;
+    let sha256 = report.final_module_sha256?;
+    if sha256 != sha256_hex(&bytes) {
+        return None;
+    }
+    let size_bytes = report.final_module_size_bytes?;
+    if size_bytes != bytes.len() as u64 {
+        return None;
+    }
+    if !report.linker_handoff_created
+        || !report.runtime_proof_attempted
+        || !report.runtime_proof_passed
+    {
+        return None;
+    }
+    let codegen_input_source = "fn main() {}\n".to_owned();
+    let codegen_input_sha256 = sha256_hex(codegen_input_source.as_bytes());
+    Some(rouwdi_engine::EmbeddedLinkedWasiModuleArtifact {
+        target_triple: report.target_triple,
+        payload_artifact_path: report
+            .final_module_artifact_path
+            .unwrap_or_else(|| "rouwdi-codegen-wasm32-wasip1-linked.wasm".to_owned()),
+        bytes,
+        sha256,
+        size_bytes,
+        codegen_input_sha256,
+        codegen_input_source,
+        reported_input_object_hash: report.final_module_input_object_hash,
+        reported_linker_payload_hash: report.final_module_linker_payload_hash,
+    })
+}
+
 fn execute_embedded_codegen_payload(
     payload: &EmbeddedCodegenPayload,
 ) -> Result<EmbeddedCodegenPayloadExecutionReport, String> {
@@ -852,6 +896,35 @@ fn execute_embedded_codegen_payload(
     } else {
         json_string_field(codegen_artifact, "embedded_artifact_location")
     };
+    let final_module_artifact = final_module_artifact_value(output_json.as_ref());
+    let final_module_artifact_path = final_module_artifact
+        .and_then(|artifact| json_string_field(Some(artifact), "artifact_path"))
+        .map(|path| normalize_reported_vfs_path(&path));
+    let final_module_bytes = final_module_artifact_path
+        .as_ref()
+        .and_then(|path| store.data().written_files.get(path).cloned());
+    let final_module_sha256 = final_module_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let final_module_size_bytes = final_module_bytes.as_ref().map(|bytes| bytes.len() as u64);
+    let final_module_input_object_hash = final_module_artifact
+        .and_then(|artifact| json_string_field(Some(artifact), "input_object_hash"))
+        .or_else(|| {
+            output_json
+                .as_ref()
+                .and_then(|value| value.get("linker_handoff"))
+                .and_then(|handoff| json_string_field(Some(handoff), "codegen_artifact_hash"))
+        });
+    let final_module_linker_payload_hash = output_json
+        .as_ref()
+        .and_then(|value| value.get("linker_handoff"))
+        .and_then(|handoff| handoff.get("linker_payload"))
+        .and_then(|payload| json_string_field(Some(payload), "sha256"));
+    let runtime_proof_attempted = json_bool(output_json.as_ref(), "runtime_proof_attempted");
+    let runtime_proof_passed = output_json
+        .as_ref()
+        .and_then(|value| value.get("runtime_proof"))
+        .and_then(|proof| proof.get("passed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
 
     Ok(EmbeddedCodegenPayloadExecutionReport {
         name: payload.name.to_owned(),
@@ -1007,11 +1080,31 @@ fn execute_embedded_codegen_payload(
         linker_required: json_bool(output_json.as_ref(), "linker_required"),
         linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created")
             && rust_mono_item_wasm_object_emitted,
+        final_module_bytes,
+        final_module_artifact_path,
+        final_module_sha256,
+        final_module_size_bytes,
+        final_module_input_object_hash,
+        final_module_linker_payload_hash,
+        runtime_proof_attempted,
+        runtime_proof_passed,
         blocker_kind,
         blocker_component,
         blocker_reason,
         output_json,
     })
+}
+
+fn final_module_artifact_value(
+    output_json: Option<&serde_json::Value>,
+) -> Option<&serde_json::Value> {
+    output_json
+        .and_then(|value| value.get("final_module_artifact"))
+        .or_else(|| {
+            output_json
+                .and_then(|value| value.get("linker_handoff"))
+                .and_then(|handoff| handoff.get("final_module_artifact"))
+        })
 }
 
 fn normalize_reported_vfs_path(path: &str) -> String {

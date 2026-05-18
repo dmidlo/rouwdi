@@ -828,6 +828,50 @@ try {
         if ([int64]$linkerPayload.size_bytes -le 0) {
             throw "Canonical linker payload identity requires non-empty size"
         }
+        $finalModuleProof = $linkerHandoffProof.final_module_artifact
+        if ($null -eq $finalModuleProof) {
+            throw "Canonical linker handoff must expose a final module artifact, not JSON-only linker output"
+        }
+        $finalModulePath = [string]$finalModuleProof.artifact_path
+        $finalModulePathLower = $finalModulePath.ToLowerInvariant()
+        $finalModulePathIsAssemblyOwned = $finalModulePath.StartsWith("embedded_registry:") `
+            -or $finalModulePath.StartsWith("vfs:/") `
+            -or $finalModulePath.StartsWith("memory:") `
+            -or $finalModulePath.StartsWith("dist/rouwdi.wasm#")
+        if (-not $finalModulePathIsAssemblyOwned `
+            -or $finalModulePathLower.EndsWith(".json") `
+            -or $finalModulePathLower.EndsWith(".exe") `
+            -or $finalModulePathLower.Contains(".rouwdi/tools") `
+            -or $finalModulePathLower.Contains("wasi-sdk")) {
+            throw "Canonical final module artifact must be an assembly-owned wasm artifact path, not a host sidecar: $finalModulePath"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$finalModuleProof.sha256) -or ([string]$finalModuleProof.sha256).Length -ne 64) {
+            throw "Canonical final module artifact requires SHA-256"
+        }
+        if ([int64]$finalModuleProof.size_bytes -le 0) {
+            throw "Canonical final module artifact requires non-empty size"
+        }
+        if ([string]$finalModuleProof.input_object_hash -ne [string]$codegenPayloadExecution.object_artifact_sha256) {
+            throw "Canonical final module input hash must match the mono-item object hash"
+        }
+        if ($linkerHandoffProof.interface_proof.passed -ne $true) {
+            throw "Canonical final module requires interface proof passed against module bytes"
+        }
+        if ($codegenPayloadExecution.runtime_proof_attempted -ne $true -or $codegenPayloadExecution.runtime_proof_passed -ne $true) {
+            throw "Canonical codegen payload must attempt and pass runtime proof for the final linked module"
+        }
+        if ($codegenPayloadExecution.output_json.runtime_proof_attempted -ne $true -or $codegenPayloadExecution.output_json.runtime_proof.passed -ne $true) {
+            throw "Canonical payload output JSON must carry attempted and passed runtime proof"
+        }
+        if ($linkerHandoffProof.runtime_proof_attempted -ne $true -or $linkerHandoffProof.runtime_proof.passed -ne $true) {
+            throw "Canonical linker handoff must carry attempted and passed runtime proof"
+        }
+        if ([string]$linkerHandoffProof.runtime_proof.module_hash -ne [string]$finalModuleProof.sha256) {
+            throw "Canonical runtime proof module hash must match the final module artifact hash"
+        }
+        if ([int]$linkerHandoffProof.runtime_proof.exit_code -ne 0) {
+            throw "Canonical runtime proof must record real exit code 0"
+        }
     }
     $monoInvoked = $null -ne $payloadOutput -and $payloadOutput.rustc_monomorphize_invoked -eq $true
     $monoStatus = if ($null -ne $payloadOutput) { [string]$payloadOutput.monomorphization_status } else { $null }
@@ -930,6 +974,44 @@ try {
     $codegenLoweringRequiredPath = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.codegen_lowering_required_path) { @($codegenPayloadExecution.codegen_lowering_required_path) } else { @() }
     $codegenLoweringMissingInputs = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.codegen_lowering_missing_inputs) { @($codegenPayloadExecution.codegen_lowering_missing_inputs) } else { @() }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
+    $finalModuleArtifactRoot = [ordered]@{
+        exists = $false
+        path = $null
+        sha256 = $null
+        size_bytes = $null
+    }
+    $interfaceProofRoot = [ordered]@{
+        passed = $false
+    }
+    $runtimeProofRoot = [ordered]@{
+        attempted = $false
+        passed = $false
+    }
+    if ($linkerHandoffCreated -eq $true -and $null -ne $codegenPayloadExecution.output_json.linker_handoff.final_module_artifact) {
+        $linkedFinalModule = $codegenPayloadExecution.output_json.linker_handoff.final_module_artifact
+        $linkedInterfaceProof = $codegenPayloadExecution.output_json.linker_handoff.interface_proof
+        $linkedRuntimeProof = $codegenPayloadExecution.output_json.linker_handoff.runtime_proof
+        $finalModuleArtifactRoot = [ordered]@{
+            exists = $true
+            path = [string]$linkedFinalModule.artifact_path
+            sha256 = [string]$linkedFinalModule.sha256
+            size_bytes = [int64]$linkedFinalModule.size_bytes
+        }
+        $interfaceProofRoot = [ordered]@{
+            passed = [bool]$linkedInterfaceProof.passed
+            artifact_path = [string]$linkedFinalModule.artifact_path
+            sha256 = [string]$linkedInterfaceProof.module_sha256
+            _start_present = [bool]$linkedInterfaceProof._start_present
+        }
+        $runtimeProofRoot = [ordered]@{
+            attempted = [bool]$codegenPayloadExecution.output_json.linker_handoff.runtime_proof_attempted
+            passed = [bool]$linkedRuntimeProof.passed
+            artifact_path = [string]$linkedFinalModule.artifact_path
+            sha256 = [string]$linkedRuntimeProof.module_hash
+            exit_code = $linkedRuntimeProof.exit_code
+            timeout = [bool]$linkedRuntimeProof.timeout
+        }
+    }
 
     $embeddedPayload = [ordered]@{
         name = "rouwdi-mir-handoff-payload"
@@ -1119,6 +1201,11 @@ try {
         source_build_artifact_path = "target/wasm32-wasip1/release/rouwdi-assembly.wasm"
         single_file_product = $true
         not_product_complete = $false
+        final_module_artifact = $finalModuleArtifactRoot
+        interface_proof = $interfaceProofRoot
+        runtime_proof_attempted = [bool]$runtimeProofRoot.attempted
+        runtime_proof = $runtimeProofRoot
+        next_frontier = if ([bool]$runtimeProofRoot.passed) { "dependency_crate_graph" } else { $nextFrontier }
         artifact = $canonicalIdentity
         source_build_artifact = $sourceIdentity
         rejected_cdylib_stub = [ordered]@{

@@ -10,6 +10,7 @@ rust-version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+wasmi.workspace = true
 rouwdi-cargo = { path = "../rouwdi-cargo" }
 rouwdi-compiletime = { path = "../rouwdi-compiletime" }
 rouwdi-contract = { path = "../rouwdi-contract" }

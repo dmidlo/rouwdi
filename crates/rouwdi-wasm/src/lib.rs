@@ -41,14 +41,16 @@ pub fn build_with_storage(storage: &mut dyn Storage, contract_path: &str) -> i32
     let Some(execution) = payloads::mir_payload_execution_for_engine() else {
         return 1;
     };
-    match RouwdiEngine::default()
-        .with_embedded_mir_payload_execution(execution)
-        .build(
-            storage,
-            BuildRequest {
-                contract_path: contract_path.to_owned(),
-            },
-        ) {
+    let mut engine = RouwdiEngine::default().with_embedded_mir_payload_execution(execution);
+    if let Some(linked_module) = payloads::linked_wasi_module_artifact_for_engine() {
+        engine = engine.with_embedded_linked_wasi_module(linked_module);
+    }
+    match engine.build(
+        storage,
+        BuildRequest {
+            contract_path: contract_path.to_owned(),
+        },
+    ) {
         Ok(report) => match report.status {
             RunStatus::Succeeded => 0,
             RunStatus::Unsupported => 2,
@@ -70,10 +72,11 @@ pub fn cli_main() -> i32 {
                 eprintln!("embedded MIR payload execution failed");
                 return 1;
             };
-            match RouwdiEngine::default()
-                .with_embedded_mir_payload_execution(execution)
-                .build(&mut storage, BuildRequest { contract_path })
-            {
+            let mut engine = RouwdiEngine::default().with_embedded_mir_payload_execution(execution);
+            if let Some(linked_module) = payloads::linked_wasi_module_artifact_for_engine() {
+                engine = engine.with_embedded_linked_wasi_module(linked_module);
+            }
+            match engine.build(&mut storage, BuildRequest { contract_path }) {
                 Ok(report) => {
                     println!(
                         "{}",
@@ -156,7 +159,13 @@ pub fn cli_main() -> i32 {
                     && report.target_machine_created
                     && report.llvm_ir_emitted
                     && report.object_emission_attempted
-                    && (!report.linker_handoff_created || report.wasm_object_bytes_emitted)
+                    && (!report.linker_handoff_created
+                        || (report.wasm_object_bytes_emitted
+                            && report.final_module_sha256.is_some()
+                            && report.final_module_size_bytes.is_some()
+                            && report.final_module_artifact_path.is_some()
+                            && report.runtime_proof_attempted
+                            && report.runtime_proof_passed))
                 {
                     0
                 } else {
@@ -212,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_build_fails_until_full_compiler_is_embedded() {
+    fn storage_build_emits_first_wasi_module_artifact() {
         let mut storage = MemoryStorage::new();
         storage
             .write(
@@ -257,6 +266,21 @@ version = "0.1.0"
             .unwrap();
         storage.write("src/main.rs", b"fn main() {}\n").unwrap();
 
-        assert_eq!(build_with_storage(&mut storage, "rouwdi.toml"), 1);
+        let execution =
+            payloads::mir_payload_execution_for_engine().expect("embedded MIR payload executes");
+        let linked_module = payloads::linked_wasi_module_artifact_for_engine()
+            .expect("embedded codegen payload exposes a linked WASI module artifact");
+        let report = RouwdiEngine::default()
+            .with_embedded_mir_payload_execution(execution)
+            .with_embedded_linked_wasi_module(linked_module)
+            .build(
+                &mut storage,
+                BuildRequest {
+                    contract_path: "rouwdi.toml".to_owned(),
+                },
+            )
+            .expect("engine build should not return an error");
+
+        assert_eq!(report.status, RunStatus::Succeeded);
     }
 }

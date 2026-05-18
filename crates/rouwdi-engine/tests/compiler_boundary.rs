@@ -1,7 +1,8 @@
 use rouwdi_cargo::{CargoBuildPlan, CompilePhase};
-use rouwdi_engine::{BuildRequest, RouwdiEngine};
+use rouwdi_engine::{BuildRequest, EmbeddedLinkedWasiModuleArtifact, RouwdiEngine};
 use rouwdi_proof::{
-    ArtifactPipelineRecord, ArtifactPipelineStageStatus, RouwdiRunManifest, RunStatus,
+    hash_bytes, ArtifactInterfaceProof, ArtifactPipelineRecord, ArtifactPipelineStageStatus,
+    ProofStatus, RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
     RustBorrowCheckDiagnosticCode, RustBorrowCheckStageRecord, RustBorrowCheckStageStatus,
@@ -74,6 +75,33 @@ version = "0.1.0"
         .unwrap();
     storage.write("src/main.rs", b"fn main() {}\n").unwrap();
     storage
+}
+
+fn minimal_wasi_start_module() -> Vec<u8> {
+    vec![
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
+        0x02, 0x01, 0x00, 0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x00,
+        0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+    ]
+}
+
+fn synthetic_linked_wasi_module_artifact(
+    input_object_hash: String,
+    linker_payload_hash: String,
+) -> EmbeddedLinkedWasiModuleArtifact {
+    let bytes = minimal_wasi_start_module();
+    let source = "fn main() {}\n".to_owned();
+    EmbeddedLinkedWasiModuleArtifact {
+        target_triple: "wasm32-wasip1".to_owned(),
+        payload_artifact_path: "rouwdi-codegen-wasm32-wasip1-linked.wasm".to_owned(),
+        sha256: hash_bytes(&bytes),
+        size_bytes: bytes.len() as u64,
+        bytes,
+        codegen_input_sha256: hash_bytes(source.as_bytes()),
+        codegen_input_source: source,
+        reported_input_object_hash: Some(input_object_hash),
+        reported_linker_payload_hash: Some(linker_payload_hash),
+    }
 }
 
 fn synthetic_embedded_mir_payload_execution() -> RustEmbeddedMirPayloadExecution {
@@ -1004,6 +1032,161 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
                 && unit.codegen_handoff_status.as_deref()
                     == Some("rust_mono_item_wasm_object_emitted")
         }));
+}
+
+#[test]
+fn linked_mono_item_wasi_module_is_promoted_to_engine_artifact_and_runtime_proven() {
+    let mut storage = no_deps_wasi_binary_storage();
+    let (_mono_proof, codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    let linker_handoff = codegen_handoff
+        .linker_handoff
+        .as_ref()
+        .expect("mono item object opens a linker handoff");
+    let linked_module = synthetic_linked_wasi_module_artifact(
+        linker_handoff.codegen_artifact_hash.clone(),
+        linker_handoff.linker_payload.sha256.clone(),
+    );
+    let expected_module_hash = linked_module.sha256.clone();
+    let expected_module_size = linked_module.size_bytes;
+    let source_hash = hash_bytes(b"fn main() {}\n");
+
+    let report = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution(synthetic_embedded_mono_items_collected_execution())
+        .with_embedded_linked_wasi_module(linked_module)
+        .build(&mut storage, BuildRequest::default())
+        .unwrap();
+
+    assert_eq!(report.status, RunStatus::Succeeded);
+    assert!(report.bootstrap_diagnostics.is_empty());
+    let manifest: RouwdiRunManifest =
+        serde_json::from_slice(&storage.read(&report.manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest.status, RunStatus::Succeeded);
+    assert_eq!(manifest.artifacts.len(), 1);
+
+    let artifact = &manifest.artifacts[0];
+    assert_eq!(artifact.target, "wasi");
+    assert_eq!(artifact.target_triple, "wasm32-wasip1");
+    assert_eq!(artifact.artifact_kind, "Module");
+    assert_eq!(
+        artifact.path,
+        format!("{}/artifacts/app-wasm32-wasip1.wasm", report.run_root)
+    );
+    assert_eq!(artifact.byte_length, expected_module_size);
+    assert_eq!(artifact.sha256, expected_module_hash);
+    assert_eq!(
+        artifact.producer_stage,
+        "embedded_codegen_payload + embedded_wasm_ld"
+    );
+    assert_eq!(
+        artifact.input_object_hash,
+        linker_handoff.codegen_artifact_hash
+    );
+    assert_eq!(
+        artifact.linker_payload_hash,
+        linker_handoff.linker_payload.sha256
+    );
+    assert_eq!(artifact.compile_unit_id, "app:rust:app:wasm32-wasip1");
+    assert_eq!(artifact.mir_hash, "feedfacecafebeef");
+    assert_eq!(artifact.mono_graph_hash, "0123456789abcdef");
+    assert_eq!(artifact.source_path, "src/main.rs");
+    assert_eq!(artifact.source_sha256, source_hash);
+    assert_eq!(artifact.codegen_input_sha256, source_hash);
+    assert_eq!(artifact.codegen_input_source, "fn main() {}\n");
+    assert_eq!(
+        hash_bytes(&storage.read(&artifact.path).unwrap()),
+        artifact.sha256
+    );
+
+    let pipeline = &manifest.artifact_pipeline[0];
+    assert!(pipeline.artifact_emitted);
+    assert_eq!(pipeline.blocked_at_stage, None);
+    assert_eq!(pipeline.blocker_category, None);
+    assert_eq!(pipeline.blocker_component, None);
+    assert_eq!(pipeline.blocker_reason, None);
+    for stage in [
+        RustCompilerStage::Codegen,
+        RustCompilerStage::Linking,
+        RustCompilerStage::ArtifactEmission,
+    ] {
+        assert!(pipeline.remaining_stages.iter().any(|record| {
+            record.stage == stage && record.status == ArtifactPipelineStageStatus::Completed
+        }));
+    }
+    assert!(pipeline
+        .compile_units
+        .iter()
+        .any(|unit| { unit.codegen_handoff_status.as_deref() == Some("runtime_proof_passed") }));
+
+    let compiler_record = &manifest.compiler_pipeline[0];
+    assert_eq!(compiler_record.status, RustCompilerPipelineStatus::Artifact);
+    assert_eq!(compiler_record.missing_stage, None);
+    assert_eq!(
+        compiler_record
+            .mir_handoff
+            .as_ref()
+            .unwrap()
+            .codegen_handoff
+            .as_ref()
+            .unwrap()
+            .linker_handoff
+            .as_ref()
+            .unwrap()
+            .current_status,
+        "wasm_ld_invoked"
+    );
+    assert_eq!(
+        compiler_record.artifact.as_ref().unwrap().path,
+        artifact.path
+    );
+
+    let interface_proof: ArtifactInterfaceProof = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/proofs/interface-wasi.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(interface_proof.status, ProofStatus::Succeeded);
+    assert_eq!(
+        interface_proof.artifact_path.as_deref(),
+        Some(artifact.path.as_str())
+    );
+    assert_eq!(
+        interface_proof.artifact_sha256.as_deref(),
+        Some(artifact.sha256.as_str())
+    );
+    assert_eq!(
+        interface_proof.artifact_size_bytes,
+        Some(artifact.byte_length)
+    );
+    assert_eq!(interface_proof.wasm_magic_valid, Some(true));
+    assert_eq!(interface_proof.wasm_version_valid, Some(true));
+    assert_eq!(interface_proof.start_export_present, Some(true));
+    assert!(interface_proof.required_exports_satisfied);
+    assert!(interface_proof.wasi_imports_classified);
+    assert!(interface_proof.exports.contains(&"_start".to_owned()));
+    assert!(interface_proof.missing_exports.is_empty());
+
+    let runtime_proof: RuntimeProof = serde_json::from_slice(
+        &storage
+            .read(&format!("{}/proofs/runtime-wasi.json", report.run_root))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(runtime_proof.status, ProofStatus::Succeeded);
+    assert_eq!(
+        runtime_proof.artifact_path.as_deref(),
+        Some(artifact.path.as_str())
+    );
+    assert_eq!(
+        runtime_proof.artifact_hash.as_deref(),
+        Some(artifact.sha256.as_str())
+    );
+    assert!(runtime_proof.executed);
+    assert_eq!(runtime_proof.expected_exit_code, Some(0));
+    assert_eq!(runtime_proof.actual_exit_code, Some(0));
+    assert_eq!(runtime_proof.timed_out, Some(false));
+    assert_eq!(runtime_proof.stdout, "");
+    assert_eq!(runtime_proof.stderr, "");
 }
 
 #[test]

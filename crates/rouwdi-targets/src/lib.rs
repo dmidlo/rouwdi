@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 const WASM32_WASIP1_LINKER_PAYLOAD_SHA256: &str =
-    "b04d1efd1d7a2f39f774f641e4a2e9e98350816aa19a36de57c46d59f0026dcd";
+    "7c14e9cc2adca94634dd2371e516aa5a8b3f5150a5b078fde86e25fd9c0f7998";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TargetError {
@@ -144,6 +144,10 @@ impl TargetPackRegistry {
             vec![ArtifactKind::Module, ArtifactKind::Component],
             RuntimeExecutionCapability::Wasi,
         );
+        wasm32_wasip1.std_pack_hash = Some(hash_bytes(
+            b"embedded-wasm32-wasip1-std-core-alloc-proc-macro-pack",
+        ));
+        wasm32_wasip1.std_pack_embedded = true;
         wasm32_wasip1.linker_pack_hash = Some(WASM32_WASIP1_LINKER_PAYLOAD_SHA256.to_owned());
         wasm32_wasip1.linker_pack_embedded = true;
         packs.insert("wasm32-wasip1".to_owned(), wasm32_wasip1);
@@ -414,14 +418,20 @@ mod tests {
             "eaab4d9841b9a8a12783d927b2df2291c1c79269"
         );
         assert!(registry.packs["wasm32-wasip1"].target_pack_embedded);
-        assert!(!registry.packs["wasm32-wasip1"].std_pack_embedded);
+        assert!(registry.packs["wasm32-wasip1"].std_pack_embedded);
         assert!(registry.packs["wasm32-wasip1"].linker_pack_embedded);
         assert_eq!(registry.packs["wasm32-wasip1"].target_pack_hash.len(), 64);
         assert_eq!(
             registry.packs["wasm32-wasip1"].target_abi.object_formats,
             vec!["wasm".to_owned()]
         );
-        assert!(registry.packs["wasm32-wasip1"].std_pack_hash.is_none());
+        assert_eq!(
+            registry.packs["wasm32-wasip1"]
+                .std_pack_hash
+                .as_deref()
+                .map(str::len),
+            Some(64)
+        );
         assert_eq!(
             registry.packs["wasm32-wasip1"].linker_pack_hash.as_deref(),
             Some(WASM32_WASIP1_LINKER_PAYLOAD_SHA256)

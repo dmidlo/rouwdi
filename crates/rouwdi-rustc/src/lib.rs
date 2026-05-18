@@ -1616,7 +1616,7 @@ fn assembly_owned_linker_payload_identity_for_target(
         component: "wasm-ld".to_owned(),
         target: target_triple.to_owned(),
         artifact_path: "embedded_registry:linker-payloads/rouwdi-wasm-ld".to_owned(),
-        sha256: "b04d1efd1d7a2f39f774f641e4a2e9e98350816aa19a36de57c46d59f0026dcd".to_owned(),
+        sha256: "7c14e9cc2adca94634dd2371e516aa5a8b3f5150a5b078fde86e25fd9c0f7998".to_owned(),
         size_bytes: 1_062_842,
         embedding_method: "embedded_registry_static_linked_lld_archives".to_owned(),
         execution_method: "embedded_wasi_component_in_process_lld_wasm_link".to_owned(),

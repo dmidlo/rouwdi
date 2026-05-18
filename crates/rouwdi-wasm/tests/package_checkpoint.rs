@@ -179,6 +179,26 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
                     .to_owned(),
             );
         }
+        if manifest["final_module_artifact"]["exists"] != Value::Bool(true) {
+            return Some("root manifest must expose the final module artifact".to_owned());
+        }
+        if manifest["final_module_artifact"]["sha256"]
+            != linker_handoff["final_module_artifact"]["sha256"]
+        {
+            return Some("root final module hash must match linker handoff".to_owned());
+        }
+        if manifest["interface_proof"]["passed"] != Value::Bool(true) {
+            return Some("root interface proof must pass".to_owned());
+        }
+        if manifest["runtime_proof_attempted"] != Value::Bool(true) {
+            return Some("root runtime_proof_attempted must be true".to_owned());
+        }
+        if manifest["runtime_proof"]["passed"] != Value::Bool(true) {
+            return Some("root runtime proof must pass".to_owned());
+        }
+        if manifest["next_frontier"] != Value::String("dependency_crate_graph".to_owned()) {
+            return Some("root next_frontier must advance past runtime proof".to_owned());
+        }
     }
     if payload["instantiated"] != Value::Bool(true) {
         return Some("MIR payload must be instantiated".to_owned());

@@ -4,16 +4,18 @@ use rouwdi_cargo::{
     CompilePhase,
 };
 use rouwdi_compiletime::plan_compile_time;
-use rouwdi_contract::{ArtifactKind, ContractError, RouwdiContract};
+use rouwdi_contract::{ArtifactKind, ContractError, RouwdiContract, RuntimeKind};
 use rouwdi_proof::{
-    hash_bytes, verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
+    hash_bytes, missing_wasm_exports, parse_wasm_exports, parse_wasm_imports,
+    verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
     ArtifactManifestEntry, ArtifactPipelineCompileUnit, ArtifactPipelineRecord,
     ArtifactPipelineStageRecord, ArtifactPipelineStageStatus, BootstrapDiagnostic, HashEntry,
     ProofBundle, ProofError, ProofStatus, RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
     lex_rust_source_with_diagnostics, run_rust_compiler_pipeline_record_with_embedded_mir_payload,
-    RustBorrowCheckStageStatus, RustCompileRequest, RustCompilerPipelineRecord, RustCompilerStage,
+    RustBorrowCheckStageStatus, RustCompileArtifactKind, RustCompileArtifactRecord,
+    RustCompileRequest, RustCompilerPipelineRecord, RustCompilerPipelineStatus, RustCompilerStage,
     RustEmbeddedMirPayloadExecution, RustExpansionStageStatus, RustExternCrate,
     RustNameResolutionStageStatus, RustParseStageStatus, RustSourceLexProof,
     RustTypeCheckStageStatus,
@@ -26,6 +28,7 @@ use rouwdi_targets::{TargetError, TargetPackRegistry};
 use rouwdi_vfs::{join_path, normalize_path, Storage, VfsError};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -68,6 +71,19 @@ pub struct BuildReport {
     pub bootstrap_diagnostics: Vec<BootstrapDiagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedLinkedWasiModuleArtifact {
+    pub target_triple: String,
+    pub payload_artifact_path: String,
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub codegen_input_sha256: String,
+    pub codegen_input_source: String,
+    pub reported_input_object_hash: Option<String>,
+    pub reported_linker_payload_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyReport {
     pub run_root: String,
@@ -79,6 +95,7 @@ pub struct VerifyReport {
 pub struct RouwdiEngine {
     target_registry: TargetPackRegistry,
     embedded_mir_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
+    embedded_linked_wasi_module: Option<EmbeddedLinkedWasiModuleArtifact>,
 }
 
 impl RouwdiEngine {
@@ -86,6 +103,7 @@ impl RouwdiEngine {
         Self {
             target_registry,
             embedded_mir_payload_execution: None,
+            embedded_linked_wasi_module: None,
         }
     }
 
@@ -94,6 +112,14 @@ impl RouwdiEngine {
         execution: RustEmbeddedMirPayloadExecution,
     ) -> Self {
         self.embedded_mir_payload_execution = Some(execution);
+        self
+    }
+
+    pub fn with_embedded_linked_wasi_module(
+        mut self,
+        artifact: EmbeddedLinkedWasiModuleArtifact,
+    ) -> Self {
+        self.embedded_linked_wasi_module = Some(artifact);
         self
     }
 
@@ -170,7 +196,7 @@ impl RouwdiEngine {
         )?;
         let compile_time_plan = plan_compile_time(&build_plan);
         let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
-        let compiler_pipeline = run_compiler_pipeline(
+        let mut compiler_pipeline = run_compiler_pipeline(
             storage,
             &build_plan,
             self.embedded_mir_payload_execution.as_ref(),
@@ -214,7 +240,7 @@ impl RouwdiEngine {
         let target_packs = self.target_registry.validate_contract(&contract)?;
         let run_id = deterministic_run_id(&normalized.sha256, &source_snapshot.tree_sha256);
         let run_root = source_relative_path(&source_root, &format!(".rouwdi/runs/{run_id}"))?;
-        let artifact_pipeline = plan_artifact_pipeline(
+        let mut artifact_pipeline = plan_artifact_pipeline(
             &contract,
             &compiler_pipeline,
             &run_root,
@@ -222,6 +248,13 @@ impl RouwdiEngine {
             &selected_target,
             selected_target_kind,
         );
+        let artifact_outputs = promote_linked_wasi_module_artifacts(
+            storage,
+            &contract,
+            &mut compiler_pipeline,
+            &mut artifact_pipeline,
+            self.embedded_linked_wasi_module.as_ref(),
+        )?;
 
         let mut assembly_diagnostics = Vec::new();
         let mut host_diagnostics = Vec::new();
@@ -248,14 +281,22 @@ impl RouwdiEngine {
                         .to_owned(),
                 });
             }
-            if !pack.std_pack_embedded {
+            if !pack.std_pack_embedded
+                && !artifact_outputs
+                    .promoted_target_triples
+                    .contains(&pack.triple)
+            {
                 assembly_diagnostics.push(BootstrapDiagnostic {
                     component: format!("{} std/core/alloc pack", pack.triple),
                     required_by: format!("Rust standard library resolution for {}", pack.triple),
                     reason: "std/core/alloc artifacts are not embedded in this assembly".to_owned(),
                 });
             }
-            if !pack.linker_pack_embedded {
+            if !pack.linker_pack_embedded
+                && !artifact_outputs
+                    .promoted_target_triples
+                    .contains(&pack.triple)
+            {
                 assembly_diagnostics.push(BootstrapDiagnostic {
                     component: format!("{} linker pack", pack.triple),
                     required_by: format!("final link for {}", pack.triple),
@@ -364,6 +405,13 @@ impl RouwdiEngine {
         }
         for record in &compiler_pipeline {
             if let Some(missing_stage) = &record.missing_stage {
+                if missing_stage.stage == RustCompilerStage::ArtifactEmission
+                    && artifact_outputs
+                        .promoted_compile_units
+                        .contains(&missing_stage.unit_id)
+                {
+                    continue;
+                }
                 assembly_diagnostics.push(BootstrapDiagnostic {
                     component: missing_stage.component(),
                     required_by: missing_stage.required_by(),
@@ -414,67 +462,8 @@ impl RouwdiEngine {
         } else {
             RunStatus::Succeeded
         };
-        let interface_proofs = contract
-            .targets
-            .iter()
-            .map(|target| ArtifactInterfaceProof {
-                target_name: target.name.clone(),
-                triple: target.triple.clone(),
-                artifact_kind: format!("{:?}", target.artifact),
-                artifact_path: None,
-                artifact_built: false,
-                required_exports: target.interface.required_exports.clone(),
-                missing_exports: target.interface.required_exports.clone(),
-                require_executable: target.interface.require_executable,
-                executable_detected: None,
-                status: if has_assembly_diagnostics {
-                    ProofStatus::Failed
-                } else {
-                    ProofStatus::Unsupported
-                },
-                reason: artifact_pipeline
-                    .iter()
-                    .find(|record| record.target_name == target.name)
-                    .and_then(|record| record.blocker_reason.clone())
-                    .or_else(|| {
-                        Some(
-                            "artifact was not emitted because upstream compiler payload stages are not embedded"
-                                .to_owned(),
-                        )
-                    }),
-            })
-            .collect::<Vec<_>>();
-        let runtime_proofs = contract
-            .targets
-            .iter()
-            .map(|target| RuntimeProof {
-                target_name: target.name.clone(),
-                triple: target.triple.clone(),
-                required: target.runtime.required,
-                kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
-                mode: format!("{:?}", target.runtime.mode),
-                executed: false,
-                expected_exit_code: target.runtime.expected_exit_code,
-                actual_exit_code: None,
-                timed_out: None,
-                stdout_contains: target.runtime.stdout_contains.clone(),
-                stdout_matched: None,
-                status: if target.runtime.required {
-                    if has_assembly_diagnostics {
-                        ProofStatus::Failed
-                    } else {
-                        ProofStatus::Unsupported
-                    }
-                } else {
-                    ProofStatus::Succeeded
-                },
-                reason: if target.runtime.required {
-                    Some("runtime proof cannot execute until the artifact exists".to_owned())
-                } else {
-                    None
-                },
-            })
-            .collect::<Vec<_>>();
+        let interface_proofs = artifact_outputs.interface_proofs;
+        let runtime_proofs = artifact_outputs.runtime_proofs;
         let mut hashes = Vec::new();
         hashes.push(HashEntry {
             label: "contract".to_owned(),
@@ -500,6 +489,7 @@ impl RouwdiEngine {
                 });
             }
         }
+        hashes.extend(artifact_outputs.hashes);
 
         let mut manifest = RouwdiRunManifest {
             run_id: run_id.clone(),
@@ -510,7 +500,7 @@ impl RouwdiEngine {
             target_packs,
             compiler_pipeline,
             artifact_pipeline: artifact_pipeline.clone(),
-            artifacts: Vec::<ArtifactManifestEntry>::new(),
+            artifacts: artifact_outputs.artifacts,
             bootstrap_diagnostics: bootstrap_diagnostics.clone(),
             proof_files: Vec::new(),
         };
@@ -572,6 +562,1133 @@ impl RouwdiEngine {
             checked_hashes: hashes.len(),
         })
     }
+}
+
+struct ArtifactPromotionOutput {
+    artifacts: Vec<ArtifactManifestEntry>,
+    interface_proofs: Vec<ArtifactInterfaceProof>,
+    runtime_proofs: Vec<RuntimeProof>,
+    hashes: Vec<HashEntry>,
+    promoted_compile_units: BTreeSet<String>,
+    promoted_target_triples: BTreeSet<String>,
+}
+
+fn promote_linked_wasi_module_artifacts(
+    storage: &mut dyn Storage,
+    contract: &RouwdiContract,
+    compiler_pipeline: &mut [RustCompilerPipelineRecord],
+    artifact_pipeline: &mut [ArtifactPipelineRecord],
+    linked_module: Option<&EmbeddedLinkedWasiModuleArtifact>,
+) -> Result<ArtifactPromotionOutput, EngineError> {
+    let mut artifacts = Vec::new();
+    let mut interface_proofs = Vec::new();
+    let mut runtime_proofs = Vec::new();
+    let mut hashes = Vec::new();
+    let mut promoted_compile_units = BTreeSet::new();
+    let mut promoted_target_triples = BTreeSet::new();
+
+    for target in &contract.targets {
+        let Some(pipeline_record) = artifact_pipeline
+            .iter_mut()
+            .find(|record| record.target_name == target.name)
+        else {
+            continue;
+        };
+        let promotion = linked_module.and_then(|module| {
+            if target.triple != "wasm32-wasip1"
+                || target.artifact != ArtifactKind::Module
+                || module.target_triple != target.triple
+            {
+                return None;
+            }
+            compiler_pipeline.iter().find_map(|record| {
+                if record.triple != target.triple {
+                    return None;
+                }
+                let handoff = record.mir_handoff.as_ref()?.codegen_handoff.as_ref()?;
+                let linker = handoff.linker_handoff.as_ref()?;
+                if !handoff.rust_mono_item_wasm_object_emitted
+                    || !linker.linker_invoked
+                    || linker.exit_code != Some(0)
+                    || linker.required_linker_component != "wasm-ld"
+                {
+                    return None;
+                }
+                Some((record.unit_id.clone(), handoff.clone(), linker.clone()))
+            })
+        });
+
+        let Some((unit_id, codegen_handoff, linker_handoff)) = promotion else {
+            interface_proofs.push(blocked_interface_proof(target, pipeline_record));
+            runtime_proofs.push(blocked_runtime_proof(target));
+            continue;
+        };
+        let module = linked_module.expect("promotion is only present with linked module input");
+        let expected_hash = module.sha256.clone();
+        let expected_size = module.size_bytes;
+        if expected_hash != hash_bytes(&module.bytes) {
+            return Err(ProofError::Verification(format!(
+                "embedded codegen payload final module hash mismatch: expected {}, got {}",
+                expected_hash,
+                hash_bytes(&module.bytes)
+            ))
+            .into());
+        }
+        if expected_size != module.bytes.len() as u64 {
+            return Err(ProofError::Verification(format!(
+                "embedded codegen payload final module size mismatch: expected {}, got {}",
+                expected_size,
+                module.bytes.len()
+            ))
+            .into());
+        }
+
+        let source_bytes = storage.read(&codegen_handoff.source_path)?;
+        let source_sha256 = hash_bytes(&source_bytes);
+        if source_sha256 != module.codegen_input_sha256 {
+            return Err(ProofError::Verification(format!(
+                "source hash mismatch for {}: source {}, codegen input {}",
+                codegen_handoff.source_path, source_sha256, module.codegen_input_sha256
+            ))
+            .into());
+        }
+        let source_text = String::from_utf8_lossy(&source_bytes);
+        if source_text.as_ref() != module.codegen_input_source {
+            return Err(ProofError::Verification(format!(
+                "codegen input text does not match compile unit source {}",
+                codegen_handoff.source_path
+            ))
+            .into());
+        }
+
+        let artifact_path = pipeline_record.expected_output_path.clone();
+        storage.write(&artifact_path, &module.bytes)?;
+        let written_bytes = storage.read(&artifact_path)?;
+        let written_hash = hash_bytes(&written_bytes);
+        if written_hash != expected_hash {
+            return Err(ProofError::Verification(format!(
+                "written artifact hash mismatch for {artifact_path}: expected {expected_hash}, got {written_hash}"
+            ))
+            .into());
+        }
+
+        let input_object_hash = module
+            .reported_input_object_hash
+            .clone()
+            .unwrap_or_else(|| linker_handoff.codegen_artifact_hash.clone());
+        if input_object_hash != linker_handoff.codegen_artifact_hash {
+            return Err(ProofError::Verification(format!(
+                "final module input object hash mismatch: payload {}, codegen handoff {}",
+                input_object_hash, linker_handoff.codegen_artifact_hash
+            ))
+            .into());
+        }
+        let linker_payload_hash = module
+            .reported_linker_payload_hash
+            .clone()
+            .unwrap_or_else(|| linker_handoff.linker_payload.sha256.clone());
+        if linker_payload_hash != linker_handoff.linker_payload.sha256 {
+            return Err(ProofError::Verification(format!(
+                "final module linker payload hash mismatch: payload {}, codegen handoff {}",
+                linker_payload_hash, linker_handoff.linker_payload.sha256
+            ))
+            .into());
+        }
+
+        let interface_proof = interface_proof_for_emitted_wasm(target, &artifact_path, storage)?;
+        let runtime_proof =
+            runtime_proof_for_emitted_wasm(target, &artifact_path, &written_bytes, &written_hash)?;
+
+        let interface_succeeded = interface_proof.status == ProofStatus::Succeeded;
+        let runtime_succeeded = runtime_proof.status == ProofStatus::Succeeded;
+        if !interface_succeeded || !runtime_succeeded {
+            interface_proofs.push(interface_proof);
+            runtime_proofs.push(runtime_proof);
+            continue;
+        }
+
+        pipeline_record.artifact_emitted = true;
+        pipeline_record.blocked_at_stage = None;
+        pipeline_record.blocker_category = None;
+        pipeline_record.blocker_component = None;
+        pipeline_record.blocker_reason = None;
+        pipeline_record.remaining_stages = artifact_pipeline_stage_records(None)
+            .into_iter()
+            .map(|mut stage| {
+                stage.status = ArtifactPipelineStageStatus::Completed;
+                stage.adapter_available = true;
+                stage
+            })
+            .collect();
+        for unit in &mut pipeline_record.compile_units {
+            if unit.unit_id == unit_id {
+                unit.codegen_handoff_status = Some("runtime_proof_passed".to_owned());
+            }
+        }
+        for record in compiler_pipeline
+            .iter_mut()
+            .filter(|record| record.unit_id == unit_id)
+        {
+            record.status = RustCompilerPipelineStatus::Artifact;
+            record.missing_stage = None;
+            record.artifact = Some(RustCompileArtifactRecord {
+                unit_id: record.unit_id.clone(),
+                package: record.package.clone(),
+                target: record.target.clone(),
+                target_kind: record.target_kind.clone(),
+                triple: record.triple.clone(),
+                profile: record.profile.clone(),
+                artifact_kind: RustCompileArtifactKind::CompilerUnitObject,
+                path: artifact_path.clone(),
+                sha256: written_hash.clone(),
+            });
+        }
+
+        artifacts.push(ArtifactManifestEntry {
+            target: target.name.clone(),
+            target_triple: target.triple.clone(),
+            path: artifact_path.clone(),
+            artifact_kind: "Module".to_owned(),
+            byte_length: written_bytes.len() as u64,
+            sha256: written_hash.clone(),
+            producer_stage: "embedded_codegen_payload + embedded_wasm_ld".to_owned(),
+            input_object_hash,
+            linker_payload_hash,
+            compile_unit_id: unit_id.clone(),
+            mir_hash: codegen_handoff.mir_body_hash.clone(),
+            mono_graph_hash: codegen_handoff.mono_item_graph_hash.clone(),
+            source_path: codegen_handoff.source_path.clone(),
+            source_sha256,
+            codegen_input_sha256: module.codegen_input_sha256.clone(),
+            codegen_input_source: module.codegen_input_source.clone(),
+        });
+        hashes.push(HashEntry {
+            label: format!("artifact:{}", target.name),
+            path: artifact_path,
+            sha256: written_hash,
+        });
+        interface_proofs.push(interface_proof);
+        runtime_proofs.push(runtime_proof);
+        promoted_compile_units.insert(unit_id);
+        promoted_target_triples.insert(target.triple.clone());
+    }
+
+    Ok(ArtifactPromotionOutput {
+        artifacts,
+        interface_proofs,
+        runtime_proofs,
+        hashes,
+        promoted_compile_units,
+        promoted_target_triples,
+    })
+}
+
+fn blocked_interface_proof(
+    target: &rouwdi_contract::TargetContract,
+    pipeline_record: &ArtifactPipelineRecord,
+) -> ArtifactInterfaceProof {
+    ArtifactInterfaceProof {
+        target_name: target.name.clone(),
+        triple: target.triple.clone(),
+        artifact_kind: format!("{:?}", target.artifact),
+        artifact_path: None,
+        artifact_sha256: None,
+        artifact_size_bytes: None,
+        artifact_built: false,
+        wasm_magic_valid: None,
+        wasm_version_valid: None,
+        exports: Vec::new(),
+        imports: Vec::new(),
+        start_export_present: None,
+        required_exports: target.interface.required_exports.clone(),
+        missing_exports: target.interface.required_exports.clone(),
+        required_exports_satisfied: false,
+        wasi_imports_classified: false,
+        require_executable: target.interface.require_executable,
+        executable_detected: None,
+        status: ProofStatus::Failed,
+        reason: pipeline_record.blocker_reason.clone().or_else(|| {
+            Some(
+                "artifact was not emitted because upstream compiler payload stages are not embedded"
+                    .to_owned(),
+            )
+        }),
+    }
+}
+
+fn blocked_runtime_proof(target: &rouwdi_contract::TargetContract) -> RuntimeProof {
+    RuntimeProof {
+        target_name: target.name.clone(),
+        triple: target.triple.clone(),
+        artifact_path: None,
+        artifact_hash: None,
+        runtime_used: None,
+        required: target.runtime.required,
+        kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
+        mode: format!("{:?}", target.runtime.mode),
+        command_args: target.runtime.args.clone(),
+        stdin: String::new(),
+        stdout: String::new(),
+        stderr: String::new(),
+        executed: false,
+        timeout_seconds: target.runtime.timeout_seconds,
+        expected_exit_code: target.runtime.expected_exit_code.or(Some(0)),
+        actual_exit_code: None,
+        timed_out: None,
+        stdout_contains: target.runtime.stdout_contains.clone(),
+        stdout_matched: None,
+        status: if target.runtime.required {
+            ProofStatus::Failed
+        } else {
+            ProofStatus::Succeeded
+        },
+        reason: if target.runtime.required {
+            Some("runtime proof cannot execute until the artifact exists".to_owned())
+        } else {
+            None
+        },
+    }
+}
+
+fn interface_proof_for_emitted_wasm(
+    target: &rouwdi_contract::TargetContract,
+    artifact_path: &str,
+    storage: &dyn Storage,
+) -> Result<ArtifactInterfaceProof, EngineError> {
+    let bytes = storage.read(artifact_path)?;
+    let sha256 = hash_bytes(&bytes);
+    let wasm_magic_valid = bytes.len() >= 4 && &bytes[..4] == b"\0asm";
+    let wasm_version_valid = bytes.len() >= 8 && &bytes[4..8] == b"\x01\0\0\0";
+    let exports = parse_wasm_exports(&bytes)?;
+    let imports = parse_wasm_imports(&bytes)?;
+    let export_names = exports
+        .iter()
+        .map(|export| export.name.clone())
+        .collect::<Vec<_>>();
+    let import_names = imports
+        .iter()
+        .map(|import| format!("{}::{}", import.module, import.name))
+        .collect::<Vec<_>>();
+    let missing_exports = missing_wasm_exports(&exports, &target.interface.required_exports);
+    let start_export_present = exports.iter().any(|export| export.name == "_start");
+    let wasi_imports_classified = imports
+        .iter()
+        .all(|import| import.module == "wasi_snapshot_preview1" || import.module == "env");
+    let executable_detected = start_export_present;
+    let succeeded = wasm_magic_valid
+        && wasm_version_valid
+        && missing_exports.is_empty()
+        && (!target.interface.require_executable || executable_detected)
+        && start_export_present
+        && wasi_imports_classified;
+
+    Ok(ArtifactInterfaceProof {
+        target_name: target.name.clone(),
+        triple: target.triple.clone(),
+        artifact_kind: format!("{:?}", target.artifact),
+        artifact_path: Some(artifact_path.to_owned()),
+        artifact_sha256: Some(sha256),
+        artifact_size_bytes: Some(bytes.len() as u64),
+        artifact_built: true,
+        wasm_magic_valid: Some(wasm_magic_valid),
+        wasm_version_valid: Some(wasm_version_valid),
+        exports: export_names,
+        imports: import_names,
+        start_export_present: Some(start_export_present),
+        required_exports: target.interface.required_exports.clone(),
+        missing_exports,
+        required_exports_satisfied: succeeded,
+        wasi_imports_classified,
+        require_executable: target.interface.require_executable,
+        executable_detected: Some(executable_detected),
+        status: if succeeded {
+            ProofStatus::Succeeded
+        } else {
+            ProofStatus::Failed
+        },
+        reason: (!succeeded).then(|| {
+            "emitted WebAssembly module failed interface validation against the artifact bytes"
+                .to_owned()
+        }),
+    })
+}
+
+fn runtime_proof_for_emitted_wasm(
+    target: &rouwdi_contract::TargetContract,
+    artifact_path: &str,
+    bytes: &[u8],
+    artifact_hash: &str,
+) -> Result<RuntimeProof, EngineError> {
+    if !target.runtime.required {
+        return Ok(RuntimeProof {
+            target_name: target.name.clone(),
+            triple: target.triple.clone(),
+            artifact_path: Some(artifact_path.to_owned()),
+            artifact_hash: Some(artifact_hash.to_owned()),
+            runtime_used: None,
+            required: false,
+            kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
+            mode: format!("{:?}", target.runtime.mode),
+            command_args: target.runtime.args.clone(),
+            stdin: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            executed: false,
+            timeout_seconds: target.runtime.timeout_seconds,
+            expected_exit_code: target.runtime.expected_exit_code.or(Some(0)),
+            actual_exit_code: None,
+            timed_out: Some(false),
+            stdout_contains: target.runtime.stdout_contains.clone(),
+            stdout_matched: target.runtime.stdout_contains.as_ref().map(|_| false),
+            status: ProofStatus::Succeeded,
+            reason: None,
+        });
+    }
+    if target.runtime.kind != Some(RuntimeKind::Wasi) {
+        return Ok(RuntimeProof {
+            target_name: target.name.clone(),
+            triple: target.triple.clone(),
+            artifact_path: Some(artifact_path.to_owned()),
+            artifact_hash: Some(artifact_hash.to_owned()),
+            runtime_used: None,
+            required: true,
+            kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
+            mode: format!("{:?}", target.runtime.mode),
+            command_args: target.runtime.args.clone(),
+            stdin: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            executed: false,
+            timeout_seconds: target.runtime.timeout_seconds,
+            expected_exit_code: target.runtime.expected_exit_code.or(Some(0)),
+            actual_exit_code: None,
+            timed_out: Some(false),
+            stdout_contains: target.runtime.stdout_contains.clone(),
+            stdout_matched: None,
+            status: ProofStatus::Unsupported,
+            reason: Some("runtime proof is only implemented for local WASI artifacts".to_owned()),
+        });
+    }
+
+    let expected_exit_code = target.runtime.expected_exit_code.unwrap_or(0);
+    let runtime = execute_wasi_module(bytes, &target.runtime.args, target.runtime.timeout_seconds);
+    let stdout_matched = target
+        .runtime
+        .stdout_contains
+        .as_ref()
+        .map(|needle| runtime.stdout.contains(needle));
+    let passed = runtime.exit_code == Some(expected_exit_code)
+        && !runtime.timed_out
+        && runtime.error.is_none()
+        && stdout_matched.unwrap_or(true);
+    Ok(RuntimeProof {
+        target_name: target.name.clone(),
+        triple: target.triple.clone(),
+        artifact_path: Some(artifact_path.to_owned()),
+        artifact_hash: Some(artifact_hash.to_owned()),
+        runtime_used: Some("rouwdi-engine wasmi wasi_snapshot_preview1 substrate".to_owned()),
+        required: true,
+        kind: target.runtime.kind.map(|kind| format!("{kind:?}")),
+        mode: format!("{:?}", target.runtime.mode),
+        command_args: target.runtime.args.clone(),
+        stdin: String::new(),
+        stdout: runtime.stdout,
+        stderr: runtime.stderr,
+        executed: runtime.executed,
+        timeout_seconds: target.runtime.timeout_seconds,
+        expected_exit_code: Some(expected_exit_code),
+        actual_exit_code: runtime.exit_code,
+        timed_out: Some(runtime.timed_out),
+        stdout_contains: target.runtime.stdout_contains.clone(),
+        stdout_matched,
+        status: if passed {
+            ProofStatus::Succeeded
+        } else {
+            ProofStatus::Failed
+        },
+        reason: if passed {
+            None
+        } else {
+            Some(runtime.error.unwrap_or_else(|| {
+                "emitted WASI module runtime result did not match the contract".to_owned()
+            }))
+        },
+    })
+}
+
+struct WasiExecutionResult {
+    executed: bool,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct EngineWasiState {
+    args: Vec<String>,
+    env: Vec<String>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    proc_exit_code: Option<i32>,
+    random_counter: u8,
+}
+
+const WASI: &str = "wasi_snapshot_preview1";
+const WASI_ERRNO_SUCCESS: i32 = 0;
+const WASI_ERRNO_BADF: i32 = 8;
+const WASI_ERRNO_INVAL: i32 = 28;
+const WASI_ERRNO_NOENT: i32 = 44;
+const WASI_ERRNO_NOSYS: i32 = 52;
+const WASI_FILETYPE_CHARACTER_DEVICE: u8 = 2;
+const WASI_FILETYPE_DIRECTORY: u8 = 3;
+const WASI_PREOPEN_FD: i32 = 3;
+const WASI_PREOPEN_PATH: &str = "/";
+
+fn execute_wasi_module(
+    bytes: &[u8],
+    args: &[String],
+    _timeout_seconds: u64,
+) -> WasiExecutionResult {
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    config.set_max_recursion_depth(4096);
+    config.ignore_custom_sections(true);
+    let engine = Engine::new(&config);
+    let module = match Module::new(&engine, bytes) {
+        Ok(module) => module,
+        Err(error) => {
+            return WasiExecutionResult {
+                executed: false,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+                timed_out: false,
+                error: Some(format!("module compile failed: {error}")),
+            };
+        }
+    };
+    let mut linker = Linker::<EngineWasiState>::new(&engine);
+    if let Err(error) = define_engine_wasi_imports(&mut linker) {
+        return WasiExecutionResult {
+            executed: false,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: false,
+            error: Some(error),
+        };
+    }
+    let mut store = Store::new(
+        &engine,
+        EngineWasiState {
+            args: std::iter::once("artifact.wasm".to_owned())
+                .chain(args.iter().cloned())
+                .collect(),
+            env: vec!["PWD=/".to_owned()],
+            ..EngineWasiState::default()
+        },
+    );
+    if let Err(error) = store.set_fuel(1_000_000_000) {
+        return WasiExecutionResult {
+            executed: false,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: false,
+            error: Some(format!("fuel setup failed: {error}")),
+        };
+    }
+    let instance = match linker.instantiate_and_start(&mut store, &module) {
+        Ok(instance) => instance,
+        Err(error) => {
+            let stdout = String::from_utf8_lossy(&store.data().stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&store.data().stderr).into_owned();
+            return WasiExecutionResult {
+                executed: false,
+                stdout,
+                stderr,
+                exit_code: store.data().proc_exit_code,
+                timed_out: false,
+                error: Some(format!("module instantiate failed: {error}")),
+            };
+        }
+    };
+    let start = match instance.get_typed_func::<(), ()>(&store, "_start") {
+        Ok(start) => start,
+        Err(error) => {
+            return WasiExecutionResult {
+                executed: false,
+                stdout: String::from_utf8_lossy(&store.data().stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&store.data().stderr).into_owned(),
+                exit_code: store.data().proc_exit_code,
+                timed_out: false,
+                error: Some(format!("_start export missing or invalid: {error}")),
+            };
+        }
+    };
+    let call_result = start.call(&mut store, ());
+    let stdout = String::from_utf8_lossy(&store.data().stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&store.data().stderr).into_owned();
+    match call_result {
+        Ok(()) => WasiExecutionResult {
+            executed: true,
+            stdout,
+            stderr,
+            exit_code: Some(store.data().proc_exit_code.unwrap_or(0)),
+            timed_out: false,
+            error: None,
+        },
+        Err(error) => {
+            let fuel_exhausted = error.to_string().to_ascii_lowercase().contains("fuel");
+            let proc_exit_code = store.data().proc_exit_code;
+            WasiExecutionResult {
+                executed: proc_exit_code.is_some(),
+                stdout,
+                stderr,
+                exit_code: proc_exit_code,
+                timed_out: fuel_exhausted,
+                error: proc_exit_code
+                    .is_none()
+                    .then(|| format!("runtime trap: {error}")),
+            }
+        }
+    }
+}
+
+fn define_engine_wasi_imports(linker: &mut Linker<EngineWasiState>) -> Result<(), String> {
+    linker
+        .func_wrap(WASI, "args_sizes_get", wasi_args_sizes_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "args_get", wasi_args_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "environ_sizes_get", wasi_environ_sizes_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "environ_get", wasi_environ_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "clock_time_get", wasi_clock_time_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "random_get", wasi_random_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "poll_oneoff", wasi_poll_oneoff)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_write", wasi_fd_write)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_read", wasi_fd_read)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_pread", wasi_fd_pread)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_close", wasi_fd_close)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_fdstat_get", wasi_fd_fdstat_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_fdstat_set_flags", wasi_fd_fdstat_set_flags)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_filestat_get", wasi_fd_filestat_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_filestat_set_size", wasi_fd_filestat_set_size)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_prestat_get", wasi_fd_prestat_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_prestat_dir_name", wasi_fd_prestat_dir_name)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_readdir", wasi_fd_readdir)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "fd_seek", wasi_fd_seek)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_create_directory", wasi_path_create_directory)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_filestat_get", wasi_path_filestat_get)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_link", wasi_path_link)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_open", wasi_path_open)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_readlink", wasi_path_readlink)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_remove_directory", wasi_path_remove_directory)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_rename", wasi_path_rename)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "path_unlink_file", wasi_path_unlink_file)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "proc_exit", wasi_proc_exit)
+        .map_err(|error| error.to_string())?;
+    linker
+        .func_wrap(WASI, "sched_yield", wasi_sched_yield)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn wasi_args_sizes_get(
+    mut caller: Caller<'_, EngineWasiState>,
+    argc_ptr: i32,
+    argv_buf_size_ptr: i32,
+) -> i32 {
+    let args = caller.data().args.clone();
+    let status = write_u32(&mut caller, argc_ptr, args.len() as u32);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    let argv_buf_size = args.iter().map(|arg| arg.len() + 1).sum::<usize>();
+    write_u32(&mut caller, argv_buf_size_ptr, argv_buf_size as u32)
+}
+
+fn wasi_args_get(mut caller: Caller<'_, EngineWasiState>, argv_ptr: i32, argv_buf_ptr: i32) -> i32 {
+    let args = caller.data().args.clone();
+    write_string_vector(&mut caller, args, argv_ptr, argv_buf_ptr)
+}
+
+fn wasi_environ_sizes_get(
+    mut caller: Caller<'_, EngineWasiState>,
+    count_ptr: i32,
+    size_ptr: i32,
+) -> i32 {
+    let env = caller.data().env.clone();
+    let status = write_u32(&mut caller, count_ptr, env.len() as u32);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    let env_buf_size = env.iter().map(|entry| entry.len() + 1).sum::<usize>();
+    write_u32(&mut caller, size_ptr, env_buf_size as u32)
+}
+
+fn wasi_environ_get(
+    mut caller: Caller<'_, EngineWasiState>,
+    env_ptr: i32,
+    env_buf_ptr: i32,
+) -> i32 {
+    let env = caller.data().env.clone();
+    write_string_vector(&mut caller, env, env_ptr, env_buf_ptr)
+}
+
+fn write_string_vector(
+    caller: &mut Caller<'_, EngineWasiState>,
+    values: Vec<String>,
+    ptrs: i32,
+    buf: i32,
+) -> i32 {
+    let mut current_buf_ptr = buf;
+    for (index, value) in values.iter().enumerate() {
+        let pointer_slot = ptrs + (index as i32 * 4);
+        let status = write_u32(caller, pointer_slot, current_buf_ptr as u32);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let status = write_bytes(caller, current_buf_ptr, value.as_bytes());
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        let terminator_ptr = current_buf_ptr + value.len() as i32;
+        let status = write_bytes(caller, terminator_ptr, &[0]);
+        if status != WASI_ERRNO_SUCCESS {
+            return status;
+        }
+        current_buf_ptr = terminator_ptr + 1;
+    }
+    WASI_ERRNO_SUCCESS
+}
+
+fn wasi_clock_time_get(
+    mut caller: Caller<'_, EngineWasiState>,
+    _clock_id: i32,
+    _precision: i64,
+    time_ptr: i32,
+) -> i32 {
+    write_u64(&mut caller, time_ptr, 0)
+}
+
+fn wasi_random_get(mut caller: Caller<'_, EngineWasiState>, ptr: i32, len: i32) -> i32 {
+    if ptr < 0 || len < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let mut bytes = vec![0_u8; len as usize];
+    for byte in &mut bytes {
+        let next = caller.data().random_counter.wrapping_add(1);
+        caller.data_mut().random_counter = next;
+        *byte = next;
+    }
+    write_bytes(&mut caller, ptr, &bytes)
+}
+
+fn wasi_poll_oneoff(
+    mut caller: Caller<'_, EngineWasiState>,
+    subscriptions_ptr: i32,
+    events_ptr: i32,
+    subscriptions_len: i32,
+    events_len_ptr: i32,
+) -> i32 {
+    if subscriptions_ptr < 0 || events_ptr < 0 || subscriptions_len <= 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut userdata = [0_u8; 8];
+    if memory
+        .read(&caller, subscriptions_ptr as usize, &mut userdata)
+        .is_err()
+    {
+        return WASI_ERRNO_INVAL;
+    }
+    let mut event = [0_u8; 32];
+    event[0..8].copy_from_slice(&userdata);
+    let status = write_bytes(&mut caller, events_ptr, &event);
+    if status != WASI_ERRNO_SUCCESS {
+        return status;
+    }
+    write_u32(&mut caller, events_len_ptr, 1)
+}
+
+fn wasi_fd_write(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    iovs_ptr: i32,
+    iovs_len: i32,
+    nwritten_ptr: i32,
+) -> i32 {
+    if iovs_ptr < 0 || iovs_len < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let Some(memory) = caller_memory(&caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let mut written = 0_u32;
+    let mut chunks = Vec::new();
+    for index in 0..iovs_len {
+        let base = iovs_ptr as usize + (index as usize * 8);
+        let Ok(ptr) = read_memory_u32(&memory, &caller, base) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let Ok(len) = read_memory_u32(&memory, &caller, base + 4) else {
+            return WASI_ERRNO_INVAL;
+        };
+        let mut bytes = vec![0_u8; len as usize];
+        if memory.read(&caller, ptr as usize, &mut bytes).is_err() {
+            return WASI_ERRNO_INVAL;
+        }
+        written = written.saturating_add(len);
+        chunks.extend_from_slice(&bytes);
+    }
+    match fd {
+        1 => caller.data_mut().stdout.extend_from_slice(&chunks),
+        2 => caller.data_mut().stderr.extend_from_slice(&chunks),
+        _ => return WASI_ERRNO_BADF,
+    }
+    write_u32(&mut caller, nwritten_ptr, written)
+}
+
+fn wasi_fd_read(
+    mut caller: Caller<'_, EngineWasiState>,
+    _fd: i32,
+    _iovs_ptr: i32,
+    _iovs_len: i32,
+    nread_ptr: i32,
+) -> i32 {
+    write_u32(&mut caller, nread_ptr, 0)
+}
+
+fn wasi_fd_pread(
+    mut caller: Caller<'_, EngineWasiState>,
+    _fd: i32,
+    _iovs_ptr: i32,
+    _iovs_len: i32,
+    _offset: i64,
+    nread_ptr: i32,
+) -> i32 {
+    write_u32(&mut caller, nread_ptr, 0)
+}
+
+fn wasi_fd_close(_caller: Caller<'_, EngineWasiState>, fd: i32) -> i32 {
+    if fd == WASI_PREOPEN_FD {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_fd_fdstat_get(mut caller: Caller<'_, EngineWasiState>, fd: i32, stat_ptr: i32) -> i32 {
+    let filetype = match fd {
+        0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
+        WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
+        _ => return WASI_ERRNO_BADF,
+    };
+    let mut stat = [0_u8; 24];
+    stat[0] = filetype;
+    stat[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+    stat[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+    write_bytes(&mut caller, stat_ptr, &stat)
+}
+
+fn wasi_fd_fdstat_set_flags(_caller: Caller<'_, EngineWasiState>, fd: i32, _flags: i32) -> i32 {
+    if matches!(fd, 0..=3) {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_fd_filestat_get(mut caller: Caller<'_, EngineWasiState>, fd: i32, stat_ptr: i32) -> i32 {
+    let filetype = match fd {
+        0..=2 => WASI_FILETYPE_CHARACTER_DEVICE,
+        WASI_PREOPEN_FD => WASI_FILETYPE_DIRECTORY,
+        _ => return WASI_ERRNO_BADF,
+    };
+    write_filestat(&mut caller, stat_ptr, filetype, 0)
+}
+
+fn wasi_fd_filestat_set_size(_caller: Caller<'_, EngineWasiState>, _fd: i32, _size: i64) -> i32 {
+    WASI_ERRNO_BADF
+}
+
+fn wasi_fd_prestat_get(mut caller: Caller<'_, EngineWasiState>, fd: i32, prestat_ptr: i32) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let mut prestat = [0_u8; 8];
+    prestat[4..8].copy_from_slice(&(WASI_PREOPEN_PATH.len() as u32).to_le_bytes());
+    write_bytes(&mut caller, prestat_ptr, &prestat)
+}
+
+fn wasi_fd_prestat_dir_name(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD || path_len < 0 {
+        return WASI_ERRNO_BADF;
+    }
+    let bytes = WASI_PREOPEN_PATH.as_bytes();
+    if path_len as usize > bytes.len() {
+        return WASI_ERRNO_INVAL;
+    }
+    write_bytes(&mut caller, path_ptr, &bytes[..path_len as usize])
+}
+
+fn wasi_fd_readdir(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _buf: i32,
+    _buf_len: i32,
+    _cookie: i64,
+    bufused_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    write_u32(&mut caller, bufused_ptr, 0)
+}
+
+fn wasi_fd_seek(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _offset: i64,
+    _whence: i32,
+    newoffset_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    write_u64(&mut caller, newoffset_ptr, 0)
+}
+
+fn wasi_path_create_directory(
+    _caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    if fd == WASI_PREOPEN_FD {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_path_filestat_get(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _flags: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    stat_ptr: i32,
+) -> i32 {
+    if fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    write_filestat(&mut caller, stat_ptr, WASI_FILETYPE_DIRECTORY, 0)
+}
+
+fn wasi_path_link(
+    _caller: Caller<'_, EngineWasiState>,
+    _old_fd: i32,
+    _old_flags: i32,
+    _old_path_ptr: i32,
+    _old_path_len: i32,
+    _new_fd: i32,
+    _new_path_ptr: i32,
+    _new_path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_open(
+    mut caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _dirflags: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _oflags: i32,
+    _rights_base: i64,
+    _rights_inheriting: i64,
+    _fdflags: i32,
+    opened_fd_ptr: i32,
+) -> i32 {
+    let _ = write_u32(&mut caller, opened_fd_ptr, 0);
+    if fd == WASI_PREOPEN_FD {
+        WASI_ERRNO_NOENT
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_path_readlink(
+    mut caller: Caller<'_, EngineWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _buf: i32,
+    _buf_len: i32,
+    bufused_ptr: i32,
+) -> i32 {
+    let _ = write_u32(&mut caller, bufused_ptr, 0);
+    WASI_ERRNO_NOENT
+}
+
+fn wasi_path_remove_directory(
+    _caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    if fd == WASI_PREOPEN_FD {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_path_rename(
+    _caller: Caller<'_, EngineWasiState>,
+    _fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+    _new_fd: i32,
+    _new_path_ptr: i32,
+    _new_path_len: i32,
+) -> i32 {
+    WASI_ERRNO_NOSYS
+}
+
+fn wasi_path_unlink_file(
+    _caller: Caller<'_, EngineWasiState>,
+    fd: i32,
+    _path_ptr: i32,
+    _path_len: i32,
+) -> i32 {
+    if fd == WASI_PREOPEN_FD {
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_BADF
+    }
+}
+
+fn wasi_proc_exit(mut caller: Caller<'_, EngineWasiState>, code: i32) {
+    caller.data_mut().proc_exit_code = Some(code);
+}
+
+fn wasi_sched_yield() -> i32 {
+    WASI_ERRNO_SUCCESS
+}
+
+fn caller_memory(caller: &Caller<'_, EngineWasiState>) -> Option<Memory> {
+    caller.get_export("memory").and_then(|item| match item {
+        Extern::Memory(memory) => Some(memory),
+        _ => None,
+    })
+}
+
+fn write_u32(caller: &mut Caller<'_, EngineWasiState>, ptr: i32, value: u32) -> i32 {
+    write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
+fn write_u64(caller: &mut Caller<'_, EngineWasiState>, ptr: i32, value: u64) -> i32 {
+    write_bytes(caller, ptr, &value.to_le_bytes())
+}
+
+fn write_bytes(caller: &mut Caller<'_, EngineWasiState>, ptr: i32, bytes: &[u8]) -> i32 {
+    if ptr < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+    let Some(memory) = caller_memory(caller) else {
+        return WASI_ERRNO_INVAL;
+    };
+    if memory.write(caller, ptr as usize, bytes).is_err() {
+        WASI_ERRNO_INVAL
+    } else {
+        WASI_ERRNO_SUCCESS
+    }
+}
+
+fn write_filestat(
+    caller: &mut Caller<'_, EngineWasiState>,
+    ptr: i32,
+    filetype: u8,
+    size: u64,
+) -> i32 {
+    let mut stat = [0_u8; 64];
+    stat[16] = filetype;
+    stat[32..40].copy_from_slice(&size.to_le_bytes());
+    write_bytes(caller, ptr, &stat)
+}
+
+fn read_memory_u32(
+    memory: &Memory,
+    caller: &Caller<'_, EngineWasiState>,
+    offset: usize,
+) -> Result<u32, ()> {
+    let mut bytes = [0_u8; 4];
+    memory.read(caller, offset, &mut bytes).map_err(|_| ())?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn lex_build_plan_sources(
