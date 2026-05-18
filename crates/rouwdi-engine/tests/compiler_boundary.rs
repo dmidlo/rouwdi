@@ -330,6 +330,46 @@ fn synthetic_embedded_wasm_ld_payload() -> RustLinkerPayloadIdentity {
     }
 }
 
+fn attach_synthetic_linker_handoff(
+    handoff: &mut RustCodegenHandoffRecord,
+    linker_payload: RustLinkerPayloadIdentity,
+    current_status: &str,
+) {
+    let object_hash = handoff.object_artifact_sha256.clone().unwrap();
+    handoff.linker_handoff_created = true;
+    handoff.linker_handoff = Some(RustLinkerHandoffRecord {
+        compile_unit_id: handoff.compile_unit_id.clone(),
+        target_triple: handoff.target_triple.clone(),
+        codegen_artifact_kind: "wasm_object".to_owned(),
+        codegen_artifact_hash: object_hash.clone(),
+        codegen_artifact_size: handoff.object_artifact_size_bytes.unwrap_or(128),
+        codegen_backend_identity: "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
+        linker_payload,
+        required_linker_component: "wasm-ld".to_owned(),
+        expected_final_artifact_kind: "wasm32-wasip1 module".to_owned(),
+        linker_input_count: 1,
+        required_runtime_objects: vec!["crt1-command.o".to_owned()],
+        required_std_core_alloc_objects_or_archives: vec![
+            "libcore.rlib".to_owned(),
+            "liballoc.rlib".to_owned(),
+            "libstd.rlib".to_owned(),
+            "libwasip1.rlib".to_owned(),
+            "libc.a".to_owned(),
+        ],
+        current_status: current_status.to_owned(),
+        blocker_kind: "lld_not_embedded".to_owned(),
+        linker_invoked: false,
+        linker_command_args: Vec::new(),
+        input_artifact_hashes: vec![object_hash],
+        output_artifact_path: None,
+        stdout: None,
+        stderr: None,
+        exit_code: None,
+        next_command: "embed a rouwdi-owned wasm-ld/lld payload".to_owned(),
+        proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
+    });
+}
+
 #[test]
 fn no_deps_wasi_binary_reaches_internal_compiler_boundary() {
     let mut storage = no_deps_wasi_binary_storage();
@@ -1209,7 +1249,7 @@ fn linker_handoff_from_llvm_ir_is_rejected() {
         compile_unit_id: codegen_handoff.compile_unit_id.clone(),
         target_triple: codegen_handoff.target_triple.clone(),
         codegen_artifact_kind: "llvm_ir".to_owned(),
-        codegen_artifact_hash: llvm_ir_sha,
+        codegen_artifact_hash: llvm_ir_sha.clone(),
         codegen_artifact_size: 121,
         codegen_backend_identity: "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
         linker_payload: synthetic_embedded_wasm_ld_payload(),
@@ -1220,6 +1260,13 @@ fn linker_handoff_from_llvm_ir_is_rejected() {
         required_std_core_alloc_objects_or_archives: vec!["libcore.rlib".to_owned()],
         current_status: "blocked_until_object_bytes_emitted".to_owned(),
         blocker_kind: "linker_handoff_waiting_for_wasm_object_bytes".to_owned(),
+        linker_invoked: false,
+        linker_command_args: Vec::new(),
+        input_artifact_hashes: vec![llvm_ir_sha],
+        output_artifact_path: None,
+        stdout: None,
+        stderr: None,
+        exit_code: None,
         next_command: "emit object bytes first".to_owned(),
         proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
     });
@@ -1245,7 +1292,7 @@ fn host_wasm_ld_payload_is_rejected_as_product_linker() {
         compile_unit_id: codegen_handoff.compile_unit_id.clone(),
         target_triple: codegen_handoff.target_triple.clone(),
         codegen_artifact_kind: "wasm_object".to_owned(),
-        codegen_artifact_hash: object_hash,
+        codegen_artifact_hash: object_hash.clone(),
         codegen_artifact_size: 128,
         codegen_backend_identity: "rustc_codegen_llvm::LlvmCodegenBackend".to_owned(),
         linker_payload,
@@ -1262,6 +1309,13 @@ fn host_wasm_ld_payload_is_rejected_as_product_linker() {
         ],
         current_status: "wasm_ld_payload_required".to_owned(),
         blocker_kind: "lld_not_embedded".to_owned(),
+        linker_invoked: false,
+        linker_command_args: Vec::new(),
+        input_artifact_hashes: vec![object_hash],
+        output_artifact_path: None,
+        stdout: None,
+        stderr: None,
+        exit_code: None,
         next_command: "embed a rouwdi-owned wasm-ld/lld payload".to_owned(),
         proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
     });
@@ -1270,6 +1324,58 @@ fn host_wasm_ld_payload_is_rejected_as_product_linker() {
         .validate_against_monomorphization_proof(&mono_proof)
         .unwrap_err()
         .contains("host linker sidecar"));
+}
+
+#[test]
+fn assembly_owned_prefix_cannot_mask_repo_tool_sidecar_linker_path() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    mark_handoff_as_mono_item_wasm_object(&mut codegen_handoff, "f".repeat(64));
+    let mut linker_payload = synthetic_embedded_wasm_ld_payload();
+    linker_payload.artifact_path = r"vfs:/.rouwdi\tools\wasi-sdk\bin\wasm-ld".to_owned();
+    attach_synthetic_linker_handoff(
+        &mut codegen_handoff,
+        linker_payload,
+        "wasm_ld_payload_required",
+    );
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("host linker sidecar"));
+}
+
+#[test]
+fn invoked_wasm_ld_status_requires_command_io_and_exit_evidence() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    mark_handoff_as_mono_item_wasm_object(&mut codegen_handoff, "f".repeat(64));
+    attach_synthetic_linker_handoff(
+        &mut codegen_handoff,
+        synthetic_embedded_wasm_ld_payload(),
+        "wasm_ld_invoked_blocked_at_missing_crt",
+    );
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("linker_invoked=true"));
+}
+
+#[test]
+fn non_invoked_linker_handoff_cannot_claim_invocation_evidence() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+    mark_handoff_as_mono_item_wasm_object(&mut codegen_handoff, "f".repeat(64));
+    attach_synthetic_linker_handoff(
+        &mut codegen_handoff,
+        synthetic_embedded_wasm_ld_payload(),
+        "wasm_ld_payload_required",
+    );
+    let linker_handoff = codegen_handoff.linker_handoff.as_mut().unwrap();
+    linker_handoff.linker_invoked = true;
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("linker_invoked requires"));
 }
 
 #[test]

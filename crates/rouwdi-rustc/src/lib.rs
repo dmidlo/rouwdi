@@ -661,6 +661,13 @@ pub struct RustLinkerHandoffRecord {
     pub required_std_core_alloc_objects_or_archives: Vec<String>,
     pub current_status: String,
     pub blocker_kind: String,
+    pub linker_invoked: bool,
+    pub linker_command_args: Vec<String>,
+    pub input_artifact_hashes: Vec<String>,
+    pub output_artifact_path: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i32>,
     pub next_command: String,
     pub proof_path: String,
 }
@@ -1127,6 +1134,16 @@ impl RustCodegenHandoffRecord {
                             ],
                             current_status: "wasm_ld_payload_required".to_owned(),
                             blocker_kind: "lld_not_embedded".to_owned(),
+                            linker_invoked: false,
+                            linker_command_args: Vec::new(),
+                            input_artifact_hashes: vec![codegen_probe
+                                .object_artifact_sha256
+                                .clone()
+                                .unwrap_or_default()],
+                            output_artifact_path: None,
+                            stdout: None,
+                            stderr: None,
+                            exit_code: None,
                             next_command: "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus target-pack runtime objects".to_owned(),
                             proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
                         })
@@ -1556,11 +1573,21 @@ impl RustCodegenHandoffRecord {
             if linker_handoff.codegen_artifact_size == 0 || linker_handoff.linker_input_count == 0 {
                 return Err("linker handoff requires object size and input count".to_owned());
             }
+            if !linker_handoff
+                .input_artifact_hashes
+                .iter()
+                .any(|hash| hash == codegen_sha)
+            {
+                return Err(
+                    "linker handoff input hashes must include the codegen object hash".to_owned(),
+                );
+            }
             if linker_handoff.required_linker_component != "wasm-ld"
                 && linker_handoff.required_linker_component != "lld"
             {
                 return Err("linker handoff must name wasm-ld/lld".to_owned());
             }
+            validate_linker_invocation_evidence(linker_handoff)?;
             validate_linker_payload_identity(linker_handoff)?;
         }
         Ok(())
@@ -1612,7 +1639,10 @@ fn validate_linker_payload_identity(handoff: &RustLinkerHandoffRecord) -> Result
     if !is_assembly_owned_payload_path(&payload.artifact_path) {
         return Err("linker payload must be assembly-owned, not a host linker sidecar".to_owned());
     }
-    let lower_path = payload.artifact_path.to_ascii_lowercase();
+    let lower_path = payload
+        .artifact_path
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     if lower_path.ends_with(".exe")
         || lower_path.contains(".rouwdi/tools")
         || lower_path.contains("wasi-sdk")
@@ -1632,6 +1662,48 @@ fn validate_linker_payload_identity(handoff: &RustLinkerHandoffRecord) -> Result
     let execution = payload.execution_method.to_ascii_lowercase();
     if execution.contains("host_process") || execution.contains("sidecar") {
         return Err("linker payload execution method must not be a host process".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_linker_invocation_evidence(handoff: &RustLinkerHandoffRecord) -> Result<(), String> {
+    let status = handoff.current_status.as_str();
+    let claims_invocation = status.starts_with("wasm_ld_invoked")
+        || status == "wasm32_wasip1_module_linked"
+        || status == "interface_proof_passed"
+        || status == "runtime_proof_passed";
+    if !claims_invocation {
+        if handoff.linker_invoked {
+            return Err("linker_invoked requires an invoked or linked linker status".to_owned());
+        }
+        if handoff.exit_code.is_some() {
+            return Err("non-invoked linker handoff must not record an exit code".to_owned());
+        }
+        return Ok(());
+    }
+
+    if !handoff.linker_invoked {
+        return Err("invoked linker status requires linker_invoked=true".to_owned());
+    }
+    if handoff.linker_command_args.is_empty() {
+        return Err("invoked linker status requires recorded command arguments".to_owned());
+    }
+    if handoff
+        .linker_command_args
+        .iter()
+        .any(|arg| arg.to_ascii_lowercase().ends_with("wasm-ld.exe"))
+    {
+        return Err("linker command must not invoke a host wasm-ld.exe sidecar".to_owned());
+    }
+    if handoff
+        .output_artifact_path
+        .as_deref()
+        .is_none_or(|path| path.trim().is_empty())
+    {
+        return Err("invoked linker status requires an output artifact path".to_owned());
+    }
+    if handoff.stdout.is_none() || handoff.stderr.is_none() || handoff.exit_code.is_none() {
+        return Err("invoked linker status requires stdout, stderr, and exit code".to_owned());
     }
     Ok(())
 }
