@@ -24,15 +24,15 @@ pub(super) const CODEGEN_PAYLOAD_BACKEND: &str = "rustc_codegen_llvm";
 pub(super) const CODEGEN_PAYLOAD_BACKEND_FAMILY: &str = "llvm-grade";
 pub(super) const CODEGEN_PAYLOAD_TARGET_TRIPLE: &str = "wasm32-wasip1";
 pub(super) const CODEGEN_PAYLOAD_ARTIFACT_PATH: &str =
-    ".rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-2877186751952474.wasm";
+    ".rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-c3347eb5e6bcbfc2.wasm";
 pub(super) const CODEGEN_PAYLOAD_GENERATION_COMMAND: &str =
     "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1";
 pub(super) const CODEGEN_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasi_cli_module";
 pub(super) const CODEGEN_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
 pub(super) const CODEGEN_PAYLOAD_STATE: &str = "embedded_payload";
 pub(super) const CODEGEN_PAYLOAD_SHA256: &str =
-    "cd4475b13574658b21ad0bd22418c88912b5b334358970b0d52e109cb358733e";
-pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 67787631;
+    "9033725d61ed4c7c431d11b96dbfd38bf0e891bcc1d8201b912940dede05cac7";
+pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 144100142;
 pub(super) const CODEGEN_PAYLOAD_BYTES: &[u8] = include_bytes!(
-    "../../../../.rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-2877186751952474.wasm"
+    "../../../../.rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-c3347eb5e6bcbfc2.wasm"
 );

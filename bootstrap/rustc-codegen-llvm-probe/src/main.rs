@@ -2,9 +2,14 @@
 
 use rouwdi_object::{inspect_wasm_object, WasmObjectInspection};
 use sha2::{Digest, Sha256};
+use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::ptr;
+use std::slice;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Clone)]
 struct ProbeInput {
@@ -68,6 +73,8 @@ struct TargetMachineSetup {
 struct ObjectEmissionSetup {
     attempted: bool,
     api: String,
+    codegen_lowering_invoked: bool,
+    codegen_lowering_entrypoint: String,
     object_bytes_emitted: bool,
     wasm_object_bytes_emitted: bool,
     inspection: Option<WasmObjectInspection>,
@@ -86,12 +93,63 @@ struct ObjectEmissionSetup {
     blocker_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct LinkerPayloadIdentity {
+    sha256: String,
+    size_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LinkExecution {
+    linker_invoked: bool,
+    command_args: Vec<String>,
+    input_artifact_hashes: Vec<String>,
+    output_artifact_path: Option<String>,
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    final_module_bytes: Option<Vec<u8>>,
+    final_module_sha256: Option<String>,
+    final_module_size_bytes: Option<usize>,
+    interface_proof: Option<InterfaceProof>,
+    current_status: String,
+    blocker_kind: String,
+    blocker_reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceProof {
+    wasm_magic_valid: bool,
+    wasm_version_valid: bool,
+    exports: Vec<String>,
+    imports: Vec<String>,
+    start_present: bool,
+    wasi_imports: Vec<String>,
+    required_exports_checked: Vec<String>,
+    missing_required_exports: Vec<String>,
+    module_sha256: String,
+    module_size_bytes: usize,
+    passed: bool,
+}
+
 type LLVMTargetRef = *mut c_void;
 type LLVMTargetMachineRef = *mut c_void;
 type LLVMMemoryBufferRef = *mut c_void;
 
 const LLVM_OBJECT_FILE: c_uint = 1;
+const CODEGEN_SOURCE_PATH: &str = "rouwdi-codegen-input.rs";
 const OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1.o";
+const ALLOCATOR_OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1-allocator.o";
+const FINAL_WASI_MODULE_PATH: &str = "rouwdi-codegen-wasm32-wasip1-linked.wasm";
+const LLD_WRAPPER_ARCHIVE: &[u8] = include_bytes!(
+    "../../../.rouwdi/codegen-llvm-probe/target-llvm-wrapper/lib/librouwdi-lld-wasm-wrapper.a"
+);
+const LLD_WASM_ARCHIVE: &[u8] =
+    include_bytes!("../../../third_party/rust/build/wasm32-wasip1/llvm/build/lib/liblldWasm.a");
+const LLD_COMMON_ARCHIVE: &[u8] =
+    include_bytes!("../../../third_party/rust/build/wasm32-wasip1/llvm/build/lib/liblldCommon.a");
+const UPSTREAM_CODEGEN_ENTRYPOINT: &str =
+    "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate -> rustc_codegen_ssa::base::codegen_crate";
 const CODEGEN_LOWERING_STATUS: &str =
     "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit";
 const CODEGEN_LOWERING_BLOCKER_KIND: &str =
@@ -113,11 +171,27 @@ const CODEGEN_LOWERING_MISSING_INPUTS: &[&str] = &[
     "live rustc_codegen_llvm::context::CodegenCx<'ll, 'tcx>",
     "rustc_codegen_ssa::ModuleCodegen<rustc_codegen_llvm::ModuleLlvm>",
 ];
+static USING_INTERNAL_FEATURES: AtomicBool = AtomicBool::new(false);
 
 #[link(name = "llvm-wrapper", kind = "static")]
 unsafe extern "C" {}
 
+#[link(name = "rouwdi-lld-wasm-wrapper", kind = "static")]
+#[link(name = "lldWasm", kind = "static")]
+#[link(name = "lldCommon", kind = "static")]
+#[link(name = "LLVMOption", kind = "static")]
+unsafe extern "C" {}
+
 unsafe extern "C" {
+    fn rouwdi_lld_wasm_link(
+        argc: c_int,
+        argv: *const *const c_char,
+        stdout_ptr: *mut *mut c_char,
+        stdout_len: *mut usize,
+        stderr_ptr: *mut *mut c_char,
+        stderr_len: *mut usize,
+    ) -> c_int;
+    fn rouwdi_lld_free(ptr: *mut c_char);
     fn LLVMContextCreate() -> *mut c_void;
     fn LLVMContextDispose(context: *mut c_void);
     fn LLVMModuleCreateWithNameInContext(
@@ -159,7 +233,95 @@ unsafe extern "C" {
     fn LLVMDisposeMessage(message: *mut c_char);
 }
 
+#[no_mangle]
+pub extern "C" fn rouwdi_lld_read_file(
+    path: *const c_char,
+    data_out: *mut *mut c_char,
+    len_out: *mut usize,
+) -> bool {
+    if path.is_null() || data_out.is_null() || len_out.is_null() {
+        return false;
+    }
+    let path = unsafe { CStr::from_ptr(path) }
+        .to_string_lossy()
+        .into_owned();
+    let bytes = match lld_path_candidates(&path)
+        .into_iter()
+        .find_map(|candidate| std::fs::read(&candidate).ok())
+    {
+        Some(bytes) => bytes,
+        None => return false,
+    };
+    unsafe {
+        *len_out = bytes.len();
+        if bytes.is_empty() {
+            *data_out = ptr::null_mut();
+            return true;
+        }
+    }
+    let Ok(layout) = Layout::array::<u8>(bytes.len()) else {
+        return false;
+    };
+    let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+        *data_out = ptr.cast::<c_char>();
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rouwdi_lld_free_file(data: *mut c_char, len: usize) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    if let Ok(layout) = Layout::array::<u8>(len) {
+        unsafe {
+            dealloc(data.cast::<u8>(), layout);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rouwdi_lld_write_output(
+    path: *const c_char,
+    data: *const c_char,
+    len: usize,
+) -> bool {
+    if path.is_null() || (data.is_null() && len != 0) {
+        return false;
+    }
+    let path = unsafe { CStr::from_ptr(path) }
+        .to_string_lossy()
+        .into_owned();
+    let bytes = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(data.cast::<u8>(), len) }
+    };
+    lld_path_candidates(&path)
+        .into_iter()
+        .any(|candidate| std::fs::write(candidate, bytes).is_ok())
+}
+
+fn lld_path_candidates(path: &str) -> Vec<String> {
+    let normalized = path.replace('\\', "/");
+    let mut candidates = vec![normalized.clone()];
+    for prefix in ["/workspace/", "workspace/", "/"] {
+        if let Some(stripped) = normalized.strip_prefix(prefix) {
+            candidates.push(stripped.to_owned());
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
 fn main() -> ExitCode {
+    eprintln!("rouwdi-codegen-progress: main-entered");
     let input = match parse_input() {
         Ok(input) => input,
         Err(error) => {
@@ -169,8 +331,10 @@ fn main() -> ExitCode {
     };
 
     let backend = rustc_codegen_llvm::LlvmCodegenBackend::new();
+    eprintln!("rouwdi-codegen-progress: backend-constructed");
     let backend_name = backend.name();
     let module_setup = attempt_llvm_module_setup(&input);
+    eprintln!("rouwdi-codegen-progress: llvm-module-setup-complete");
     let target_machine_setup = if module_setup.llvm_module_created {
         attempt_target_machine_setup(&input)
     } else {
@@ -187,12 +351,24 @@ fn main() -> ExitCode {
             blocker_reason: module_setup.blocker_reason.clone(),
         }
     };
+    eprintln!("rouwdi-codegen-progress: target-machine-setup-complete");
     let object_emission = attempt_object_emission(&input);
+    eprintln!("rouwdi-codegen-progress: object-emission-complete");
 
     let llvm_ir_emitted = module_setup.llvm_ir.is_some();
     let rust_mono_item_wasm_object_emitted = object_emission.wasm_object_bytes_emitted
         && object_emission.object_contains_codegened_function
         && object_emission.codegened_mono_item_count > 0;
+    let linker_payload_identity = linker_payload_identity();
+    let link_execution = if rust_mono_item_wasm_object_emitted {
+        Some(attempt_wasm_link(
+            &input,
+            &object_emission,
+            &linker_payload_identity,
+        ))
+    } else {
+        None
+    };
     let codegen_lowering_status = if rust_mono_item_wasm_object_emitted {
         "rust_mono_item_wasm_object_emitted"
     } else if object_emission.wasm_object_bytes_emitted {
@@ -319,6 +495,8 @@ fn main() -> ExitCode {
             "object_contains_codegened_function": object_emission.object_contains_codegened_function,
             "object_derived_from": object_emission.object_derived_from.clone(),
             "object_codegen_source": object_emission.object_codegen_source.clone(),
+            "codegen_lowering_invoked": object_emission.codegen_lowering_invoked,
+            "codegen_lowering_entrypoint": object_emission.codegen_lowering_entrypoint.clone(),
             "codegened_mono_item_count": object_emission.codegened_mono_item_count,
             "codegened_symbols": object_emission.codegened_symbols.clone(),
         })
@@ -330,7 +508,35 @@ fn main() -> ExitCode {
     } else {
         llvm_ir_artifact.clone()
     };
+    let final_module_artifact = if let Some(link) = link_execution.as_ref() {
+        if let (Some(hash), Some(size)) = (
+            link.final_module_sha256.as_ref(),
+            link.final_module_size_bytes,
+        ) {
+            serde_json::json!({
+                "artifact_kind": "wasm32_wasip1_module",
+                "target_triple": input.target_triple,
+                "size_bytes": size,
+                "sha256": hash,
+                "producer_linker": "rouwdi-wasm-ld",
+                "input_object_hash": object_emission.artifact_sha256,
+                "artifact_path": format!("vfs:/workspace/{FINAL_WASI_MODULE_PATH}"),
+            })
+        } else {
+            serde_json::Value::Null
+        }
+    } else {
+        serde_json::Value::Null
+    };
+    let interface_proof = link_execution
+        .as_ref()
+        .and_then(|link| link.interface_proof.as_ref())
+        .map(interface_proof_json)
+        .unwrap_or(serde_json::Value::Null);
     let linker_handoff = if rust_mono_item_wasm_object_emitted {
+        let link = link_execution
+            .as_ref()
+            .expect("link execution is attempted once mono-item object exists");
         serde_json::json!({
             "compile_unit_id": input.compile_unit_id,
             "target_triple": input.target_triple,
@@ -339,27 +545,41 @@ fn main() -> ExitCode {
             "codegen_artifact_size": object_emission.artifact_size_bytes,
             "codegen_backend_identity": "rustc_codegen_llvm::LlvmCodegenBackend",
             "linker_payload": {
-                "payload_name": "wasm-ld",
+                "payload_name": "rouwdi-wasm-ld",
                 "kind": "linker_payload",
                 "component": "wasm-ld",
                 "target": input.target_triple,
-                "artifact_path": "missing:wasm-ld",
-                "sha256": "",
-                "size_bytes": 0,
-                "embedding_method": "not_embedded",
-                "execution_method": "not_invoked",
-                "linker_version": null,
+                "artifact_path": "embedded_registry:linker-payloads/rouwdi-wasm-ld",
+                "sha256": linker_payload_identity.sha256,
+                "size_bytes": linker_payload_identity.size_bytes,
+                "embedding_method": "embedded_registry_static_linked_lld_archives",
+                "execution_method": "embedded_wasi_component_in_process_lld_wasm_link",
+                "linker_version": "LLD 22.1.0 source-payload",
                 "supported_input_kind": "wasm_object",
                 "supported_output_kind": "wasm32-wasip1 module"
             },
             "required_linker_component": "wasm-ld",
             "expected_final_artifact_kind": "wasm32-wasip1 module",
-            "linker_input_count": 1,
+            "linker_input_count": link.input_artifact_hashes.len(),
             "required_runtime_objects": ["crt1-command.o"],
+            "required_std_core_alloc_objects_or_archives": ["libcore.rlib", "liballoc.rlib", "libstd.rlib", "libwasip1.rlib", "libc.a", "libcompiler_builtins.rlib"],
             "required_std_objects_or_archives": ["libcore.rlib", "liballoc.rlib", "libstd.rlib", "libwasip1.rlib", "libc.a"],
-            "current_status": "wasm_ld_payload_required",
-            "blocker_kind": "lld_not_embedded",
-            "next_command": "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus the wasm32-wasip1 target-pack runtime objects",
+            "current_status": link.current_status,
+            "blocker_kind": link.blocker_kind,
+            "linker_invoked": link.linker_invoked,
+            "linker_command_args": link.command_args,
+            "input_artifact_hashes": link.input_artifact_hashes,
+            "output_artifact_path": link.output_artifact_path,
+            "stdout": link.stdout,
+            "stderr": link.stderr,
+            "exit_code": link.exit_code,
+            "final_module_artifact": final_module_artifact,
+            "interface_proof": interface_proof,
+            "next_command": if link.current_status == "interface_proof_passed" {
+                "attempt runtime proof on the final linked wasm32-wasip1 module"
+            } else {
+                "fix the embedded wasm-ld invocation or target-pack inputs and re-run interface proof"
+            },
             "proof_path": "dist/manifest.json#/codegen_payloads/0/linker_handoff"
         })
     } else {
@@ -411,6 +631,10 @@ fn main() -> ExitCode {
         "llvm_ir_artifact": llvm_ir_artifact,
         "object_artifact": object_artifact,
         "codegen_artifact": codegen_artifact,
+        "final_module_artifact": final_module_artifact,
+        "interface_proof": interface_proof,
+        "runtime_proof_attempted": false,
+        "runtime_proof": null,
         "llvm_ir_emitted": llvm_ir_emitted,
         "llvm_ir_sha256": module_setup.llvm_ir_sha256,
         "llvm_ir_size_bytes": module_setup.llvm_ir_size_bytes,
@@ -434,6 +658,8 @@ fn main() -> ExitCode {
         "object_contains_codegened_function": object_emission.object_contains_codegened_function,
         "object_derived_from": object_emission.object_derived_from.clone(),
         "object_codegen_source": object_emission.object_codegen_source.clone(),
+        "codegen_lowering_invoked": object_emission.codegen_lowering_invoked,
+        "codegen_lowering_entrypoint": object_emission.codegen_lowering_entrypoint.clone(),
         "codegen_lowering_status": codegen_lowering_status,
         "codegen_lowering_blocker_kind": codegen_lowering_blocker_kind,
         "codegen_lowering_blocker_component": codegen_lowering_blocker_component,
@@ -720,200 +946,554 @@ fn attempt_target_machine_setup(input: &ProbeInput) -> TargetMachineSetup {
 fn attempt_object_emission(input: &ProbeInput) -> ObjectEmissionSetup {
     let api = "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)".to_owned();
     let target_triple = input.target_triple.clone();
-    let module_name = match CString::new(input.compile_unit_id.as_str()) {
-        Ok(value) => value,
-        Err(error) => {
-            return object_blocked(
+    match emit_object_with_upstream_rustc_codegen(input) {
+        Ok(lowered) => {
+            let inspection = inspect_wasm_object(&lowered.object_bytes);
+            let codegened_symbols =
+                matching_codegened_symbols(&inspection, &lowered.codegened_symbols);
+            let object_contains_codegened_function =
+                inspection.object_has_code_bearing_content && !codegened_symbols.is_empty();
+            let codegened_mono_item_count = codegened_symbols.len() as u64;
+
+            ObjectEmissionSetup {
+                attempted: true,
                 api,
+                codegen_lowering_invoked: true,
+                codegen_lowering_entrypoint: UPSTREAM_CODEGEN_ENTRYPOINT.to_owned(),
+                object_bytes_emitted: true,
+                wasm_object_bytes_emitted: input.target_triple.starts_with("wasm32"),
+                inspection: Some(inspection),
+                object_contains_codegened_function,
+                codegened_mono_item_count,
+                codegened_symbols,
+                object_derived_from: "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate"
+                    .to_owned(),
+                object_codegen_source: if object_contains_codegened_function {
+                    "mono_item_graph".to_owned()
+                } else {
+                    "rustc_codegen_llvm_lowering_without_matching_mono_symbol".to_owned()
+                },
+                artifact_kind: Some(if input.target_triple.starts_with("wasm32") {
+                    "wasm_object".to_owned()
+                } else {
+                    "native_object".to_owned()
+                }),
+                artifact_sha256: Some(sha256_hex(&lowered.object_bytes)),
+                artifact_size_bytes: Some(lowered.object_bytes.len()),
+                artifact_location: Some(format!("vfs:/workspace/{OBJECT_ARTIFACT_PATH}")),
                 target_triple,
-                "object_emission_attempted_blocked_at_invalid_module_name",
-                error.to_string(),
-            );
-        }
-    };
-    let triple = match CString::new(input.target_triple.as_str()) {
-        Ok(value) => value,
-        Err(error) => {
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_invalid_target_triple",
-                error.to_string(),
-            );
-        }
-    };
-    let cpu = CString::new("generic").expect("static CPU has no nul");
-    let features = CString::new("").expect("static features have no nul");
-
-    unsafe {
-        LLVMInitializeWebAssemblyTargetInfo();
-        LLVMInitializeWebAssemblyTarget();
-        LLVMInitializeWebAssemblyTargetMC();
-        LLVMInitializeWebAssemblyAsmPrinter();
-
-        let context = LLVMContextCreate();
-        if context.is_null() {
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_LLVMContextCreate",
-                "LLVMContextCreate returned null".to_owned(),
-            );
-        }
-
-        let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), context);
-        if module.is_null() {
-            LLVMContextDispose(context);
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_LLVMModuleCreateWithNameInContext",
-                "LLVMModuleCreateWithNameInContext returned null".to_owned(),
-            );
-        }
-        LLVMSetTarget(module, triple.as_ptr());
-
-        let mut target = std::ptr::null_mut();
-        let mut error_message = std::ptr::null_mut();
-        let lookup_failed =
-            LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut error_message);
-        if lookup_failed != 0 || target.is_null() {
-            let reason = llvm_error_message(
-                error_message,
-                "LLVMGetTargetFromTriple returned no target".to_owned(),
-            );
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_LLVMGetTargetFromTriple",
-                reason,
-            );
-        }
-
-        let target_machine = LLVMCreateTargetMachine(
-            target,
-            triple.as_ptr(),
-            cpu.as_ptr(),
-            features.as_ptr(),
-            0,
-            2,
-            0,
-        );
-        if target_machine.is_null() {
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_LLVMCreateTargetMachine",
-                "LLVMCreateTargetMachine returned null".to_owned(),
-            );
-        }
-
-        let mut out_buffer = std::ptr::null_mut();
-        let mut emit_error = std::ptr::null_mut();
-        let failed = LLVMTargetMachineEmitToMemoryBuffer(
-            target_machine,
-            module,
-            LLVM_OBJECT_FILE,
-            &mut emit_error,
-            &mut out_buffer,
-        );
-        if failed != 0 || out_buffer.is_null() {
-            let reason = llvm_error_message(
-                emit_error,
-                "LLVMTargetMachineEmitToMemoryBuffer returned no object buffer".to_owned(),
-            );
-            LLVMDisposeTargetMachine(target_machine);
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_LLVMTargetMachineEmitToMemoryBuffer",
-                reason,
-            );
-        }
-
-        let ptr = LLVMGetBufferStart(out_buffer);
-        let len = LLVMGetBufferSize(out_buffer);
-        if ptr.is_null() || len == 0 {
-            LLVMDisposeMemoryBuffer(out_buffer);
-            LLVMDisposeTargetMachine(target_machine);
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            return object_blocked(
-                api,
-                target_triple,
-                "object_emission_attempted_blocked_at_empty_LLVM_memory_buffer",
-                "LLVMTargetMachineEmitToMemoryBuffer returned an empty buffer".to_owned(),
-            );
-        }
-
-        let object_bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec();
-        LLVMDisposeMemoryBuffer(out_buffer);
-        LLVMDisposeTargetMachine(target_machine);
-        LLVMDisposeModule(module);
-        LLVMContextDispose(context);
-
-        if cfg!(target_arch = "wasm32") {
-            if let Err(error) = std::fs::write(OBJECT_ARTIFACT_PATH, &object_bytes) {
-                return object_blocked(
-                    api,
-                    target_triple,
-                    "object_emission_attempted_blocked_at_rouwdi_virtual_fs_write",
-                    format!(
-                        "failed to write emitted object bytes to rouwdi-owned WASI VFS: {error}"
-                    ),
-                );
+                retrieval_method: Some("rouwdi_owned_virtual_fs".to_owned()),
+                blocker_kind: None,
+                blocker_reason: None,
             }
         }
-
-        let inspection = inspect_wasm_object(&object_bytes);
-        let object_contains_codegened_function = false;
-        let codegened_mono_item_count = 0;
-        let codegened_symbols = Vec::new();
-
-        ObjectEmissionSetup {
-            attempted: true,
+        Err(error) => object_blocked(
             api,
-            object_bytes_emitted: true,
-            wasm_object_bytes_emitted: input.target_triple.starts_with("wasm32"),
-            inspection: Some(inspection),
-            object_contains_codegened_function,
-            codegened_mono_item_count,
-            codegened_symbols,
-            object_derived_from:
-                "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
-                    .to_owned(),
-            object_codegen_source: if object_contains_codegened_function {
-                "mono_item_graph".to_owned()
-            } else {
-                "empty_llvm_module_before_mono_item_lowering".to_owned()
-            },
-            artifact_kind: Some(if input.target_triple.starts_with("wasm32") {
-                "wasm_object".to_owned()
-            } else {
-                "native_object".to_owned()
-            }),
-            artifact_sha256: Some(sha256_hex(&object_bytes)),
-            artifact_size_bytes: Some(object_bytes.len()),
-            artifact_location: Some(if cfg!(target_arch = "wasm32") {
-                format!("vfs:/workspace/{OBJECT_ARTIFACT_PATH}")
-            } else {
-                "memory://LLVMTargetMachineEmitToMemoryBuffer".to_owned()
-            }),
             target_triple,
-            retrieval_method: Some(if cfg!(target_arch = "wasm32") {
-                "rouwdi_owned_virtual_fs".to_owned()
-            } else {
-                "guest_memory".to_owned()
-            }),
-            blocker_kind: None,
-            blocker_reason: None,
+            "object_emission_attempted_blocked_at_rustc_codegen_llvm_lowering",
+            error,
+        ),
+    }
+}
+
+struct LoweredObject {
+    object_bytes: Vec<u8>,
+    additional_link_object_paths: Vec<String>,
+    codegened_symbols: Vec<String>,
+}
+
+#[allow(rustc::bad_opt_access)]
+fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<LoweredObject, String> {
+    let _ = std::fs::remove_file(OBJECT_ARTIFACT_PATH);
+
+    eprintln!("rouwdi-codegen-progress: rustc-interface-config-start");
+    let source = source_for_mono_item_graph(input).to_owned();
+    let mut opts = rustc_session::config::Options::default();
+    let sysroot_path = PathBuf::from(sysroot_path());
+    let target_libdir = sysroot_path
+        .join("lib")
+        .join("rustlib")
+        .join(&input.target_triple)
+        .join("lib");
+    opts.crate_types = vec![rustc_session::config::CrateType::Executable];
+    opts.crate_name = Some(sanitize_crate_name(&input.crate_identity));
+    opts.sysroot = rustc_session::config::Sysroot::new(Some(sysroot_path.clone()));
+    opts.target_triple = rustc_target::spec::TargetTuple::from_tuple(&input.target_triple);
+    opts.search_paths.push(
+        rustc_session::search_paths::SearchPath::from_sysroot_and_triple(
+            &sysroot_path,
+            &input.target_triple,
+        ),
+    );
+    opts.search_paths
+        .push(rustc_session::search_paths::SearchPath::new(
+            rustc_session::search_paths::PathKind::Dependency,
+            target_libdir.clone(),
+        ));
+    opts.search_paths
+        .push(rustc_session::search_paths::SearchPath::new(
+            rustc_session::search_paths::PathKind::Crate,
+            target_libdir,
+        ));
+    opts.output_types = rustc_session::config::OutputTypes::new(&[(
+        rustc_session::config::OutputType::Object,
+        Some(rustc_session::config::OutFileName::Real(PathBuf::from(
+            OBJECT_ARTIFACT_PATH,
+        ))),
+    )]);
+    opts.unstable_features = rustc_feature::UnstableFeatures::Cheat;
+    opts.cg.panic = Some(rustc_target::spec::PanicStrategy::Abort);
+    opts.cg.link_dead_code = Some(true);
+    opts.cg.codegen_units = Some(1);
+    opts.cg.embed_bitcode = false;
+    opts.cg.relocation_model = Some(rustc_target::spec::RelocModel::Pic);
+    opts.unstable_opts.no_parallel_backend = true;
+    opts.unstable_opts.panic_in_drop = rustc_target::spec::PanicStrategy::Abort;
+    opts.edition = rustc_span::edition::Edition::Edition2021;
+
+    let config = rustc_interface::Config {
+        opts,
+        crate_cfg: Vec::new(),
+        crate_check_cfg: Vec::new(),
+        input: rustc_session::config::Input::Str {
+            name: rustc_span::FileName::Custom(CODEGEN_SOURCE_PATH.to_owned()),
+            input: source,
+        },
+        output_dir: None,
+        output_file: None,
+        ice_file: None,
+        file_loader: None,
+        lint_caps: Default::default(),
+        psess_created: None,
+        track_state: None,
+        register_lints: None,
+        override_queries: None,
+        extra_symbols: Vec::new(),
+        make_codegen_backend: Some(Box::new(|_sess| {
+            rustc_codegen_llvm::LlvmCodegenBackend::new()
+        })),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+    };
+
+    eprintln!("rouwdi-codegen-progress: rustc-interface-run-start");
+    let compile_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        rustc_interface::run_compiler(
+            config,
+            |compiler| -> Result<Vec<rustc_codegen_llvm::RouwdiWasmObject>, String> {
+                eprintln!("rouwdi-codegen-progress: rustc-parse-start");
+                let krate = rustc_interface::parse(&compiler.sess);
+                eprintln!("rouwdi-codegen-progress: global-ctxt-start");
+                rustc_interface::create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                    eprintln!("rouwdi-codegen-progress: resolver-start");
+                    let _ = tcx.resolver_for_lowering();
+                    rustc_interface::passes::write_dep_info(tcx);
+                    rustc_interface::passes::write_interface(tcx);
+                    eprintln!("rouwdi-codegen-progress: analysis-start");
+                    tcx.ensure_ok().analysis(());
+                    eprintln!("rouwdi-codegen-progress: sync-codegen-start");
+                    let object_bytes = rustc_codegen_llvm::rouwdi_codegen_wasm_objects(tcx);
+                    eprintln!("rouwdi-codegen-progress: sync-codegen-returned");
+                    tcx.report_unused_features();
+                    object_bytes
+                })
+            },
+        )
+    }));
+    eprintln!("rouwdi-codegen-progress: rustc-interface-run-returned");
+    let objects = match compile_result {
+        Ok(Ok(objects)) => objects,
+        Ok(Err(error)) => return Err(error),
+        Err(payload) => {
+            return Err(format!(
+                "rustc_interface/rustc_codegen_llvm panicked while lowering the mono item: {}",
+                panic_payload_to_string(payload),
+            ));
         }
+    };
+
+    let Some(primary_object) = objects
+        .iter()
+        .find(|object| object.role == "mono_item_codegen_unit")
+    else {
+        return Err("rustc_codegen_llvm emitted no mono-item codegen object".to_owned());
+    };
+    let object_bytes = primary_object.bytes.clone();
+    if object_bytes.is_empty() {
+        return Err("rustc_codegen_llvm emitted an empty object buffer".to_owned());
+    }
+    for object in &objects {
+        std::fs::write(&object.path, &object.bytes).map_err(|error| {
+            format!(
+                "failed to mirror rustc_codegen_llvm {} object to canonical rouwdi VFS path {}: {error}",
+                object.role, object.path,
+            )
+        })?;
+    }
+
+    Ok(LoweredObject {
+        object_bytes,
+        additional_link_object_paths: objects
+            .iter()
+            .filter(|object| object.role != "mono_item_codegen_unit")
+            .map(|object| object.path.clone())
+            .collect(),
+        codegened_symbols: expected_codegened_symbols(input),
+    })
+}
+
+fn linker_payload_identity() -> LinkerPayloadIdentity {
+    let mut digest = Sha256::new();
+    digest.update(b"rouwdi-wasm-ld\0librouwdi-lld-wasm-wrapper.a\0");
+    digest.update(LLD_WRAPPER_ARCHIVE);
+    digest.update(b"\0liblldWasm.a\0");
+    digest.update(LLD_WASM_ARCHIVE);
+    digest.update(b"\0liblldCommon.a\0");
+    digest.update(LLD_COMMON_ARCHIVE);
+    LinkerPayloadIdentity {
+        sha256: hex::encode(digest.finalize()),
+        size_bytes: LLD_WRAPPER_ARCHIVE.len() + LLD_WASM_ARCHIVE.len() + LLD_COMMON_ARCHIVE.len(),
+    }
+}
+
+fn attempt_wasm_link(
+    input: &ProbeInput,
+    object_emission: &ObjectEmissionSetup,
+    _linker_payload: &LinkerPayloadIdentity,
+) -> LinkExecution {
+    let object_hash = object_emission
+        .artifact_sha256
+        .clone()
+        .unwrap_or_else(|| "missing-object-hash".to_owned());
+    let object_path = OBJECT_ARTIFACT_PATH.to_owned();
+    let allocator_object_hash = std::fs::read(ALLOCATOR_OBJECT_ARTIFACT_PATH)
+        .ok()
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| sha256_hex(&bytes));
+    let mut input_artifact_hashes = vec![object_hash.clone()];
+    if let Some(hash) = &allocator_object_hash {
+        input_artifact_hashes.push(hash.clone());
+    }
+    let output_path = FINAL_WASI_MODULE_PATH.to_owned();
+    let target_libdir = format!("{}/lib/rustlib/{}/lib", sysroot_path(), input.target_triple);
+    let self_contained_dir = format!("{target_libdir}/self-contained");
+    let mut command_args = vec![
+        "wasm-ld".to_owned(),
+        "--export".to_owned(),
+        "__main_void".to_owned(),
+        "-z".to_owned(),
+        "stack-size=1048576".to_owned(),
+        "--stack-first".to_owned(),
+        "--no-demangle".to_owned(),
+        format!("{self_contained_dir}/crt1-command.o"),
+        object_path,
+    ];
+    if allocator_object_hash.is_some() {
+        command_args.push(ALLOCATOR_OBJECT_ARTIFACT_PATH.to_owned());
+    }
+    command_args.extend([
+        format!("{target_libdir}/libpanic_abort-771e1103f866bdb4.rlib"),
+        format!("{target_libdir}/libstd-b594a2ae141e7c9c.rlib"),
+        format!("{target_libdir}/libwasip1-bdf89526125af68e.rlib"),
+        format!("{target_libdir}/libcfg_if-f330595bed847612.rlib"),
+        format!("{target_libdir}/librustc_demangle-3e5dfd60db0f61c6.rlib"),
+        format!("{target_libdir}/libstd_detect-992133543cee23b6.rlib"),
+        format!("{target_libdir}/libhashbrown-82db15a0bc02cc07.rlib"),
+        format!("{target_libdir}/librustc_std_workspace_alloc-4243392e063083ab.rlib"),
+        format!("{target_libdir}/libminiz_oxide-b1bb72b0c937980d.rlib"),
+        format!("{target_libdir}/libadler2-6c6ce22a3d784b53.rlib"),
+        format!("{target_libdir}/libunwind-801234150e5ffd1c.rlib"),
+        format!("{target_libdir}/liblibc-d076481cb93820f2.rlib"),
+        "-l".to_owned(),
+        "c".to_owned(),
+        format!("{target_libdir}/librustc_std_workspace_core-40703e9aafc1d450.rlib"),
+        format!("{target_libdir}/liballoc-aa5de9cb44693937.rlib"),
+        format!("{target_libdir}/libcore-fc7b12ec85c54ac0.rlib"),
+        format!("{target_libdir}/libcompiler_builtins-242fe6d76c147fd1.rlib"),
+        "-L".to_owned(),
+        self_contained_dir,
+        "-o".to_owned(),
+        output_path.clone(),
+        "--gc-sections".to_owned(),
+        "-O3".to_owned(),
+    ]);
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let exit_code = invoke_embedded_lld(&command_args, &mut stdout, &mut stderr);
+    if exit_code != 0 {
+        return LinkExecution {
+            linker_invoked: true,
+            command_args,
+            input_artifact_hashes,
+            output_artifact_path: Some(format!("vfs:/workspace/{FINAL_WASI_MODULE_PATH}")),
+            stdout,
+            stderr: if stderr.trim().is_empty() {
+                "embedded wasm-ld returned a non-zero exit code without stderr".to_owned()
+            } else {
+                stderr
+            },
+            exit_code,
+            final_module_bytes: None,
+            final_module_sha256: None,
+            final_module_size_bytes: None,
+            interface_proof: None,
+            current_status: "wasm_ld_invoked_blocked_at_link_error".to_owned(),
+            blocker_kind: "wasm_ld_link_failed".to_owned(),
+            blocker_reason: "embedded wasm-ld failed before emitting a final module".to_owned(),
+        };
+    }
+
+    let final_module_bytes = match std::fs::read(&output_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return LinkExecution {
+                linker_invoked: true,
+                command_args,
+                input_artifact_hashes,
+                output_artifact_path: Some(format!("vfs:/workspace/{FINAL_WASI_MODULE_PATH}")),
+                stdout,
+                stderr,
+                exit_code,
+                final_module_bytes: None,
+                final_module_sha256: None,
+                final_module_size_bytes: None,
+                interface_proof: None,
+                current_status: "wasm_ld_invoked_blocked_at_missing_output_module".to_owned(),
+                blocker_kind: "final_wasi_module_missing_after_link".to_owned(),
+                blocker_reason: format!(
+                    "embedded wasm-ld exited 0 but {FINAL_WASI_MODULE_PATH} could not be read: {error}"
+                ),
+            };
+        }
+    };
+    let module_sha256 = sha256_hex(&final_module_bytes);
+    let module_size = final_module_bytes.len();
+    let interface_proof = build_interface_proof(&final_module_bytes, &module_sha256);
+    let (current_status, blocker_kind, blocker_reason) = if interface_proof.passed {
+        (
+            "interface_proof_passed".to_owned(),
+            "none".to_owned(),
+            "none".to_owned(),
+        )
+    } else {
+        (
+            "wasm_ld_invoked_blocked_at_interface_proof".to_owned(),
+            "interface_proof_failed".to_owned(),
+            format!(
+                "final linked module is missing required exports: {}",
+                interface_proof.missing_required_exports.join(", ")
+            ),
+        )
+    };
+
+    LinkExecution {
+        linker_invoked: true,
+        command_args,
+        input_artifact_hashes,
+        output_artifact_path: Some(format!("vfs:/workspace/{FINAL_WASI_MODULE_PATH}")),
+        stdout,
+        stderr,
+        exit_code,
+        final_module_bytes: Some(final_module_bytes),
+        final_module_sha256: Some(module_sha256),
+        final_module_size_bytes: Some(module_size),
+        interface_proof: Some(interface_proof),
+        current_status,
+        blocker_kind,
+        blocker_reason,
+    }
+}
+
+fn invoke_embedded_lld(args: &[String], stdout: &mut String, stderr: &mut String) -> i32 {
+    let c_args = match args
+        .iter()
+        .map(|arg| CString::new(arg.as_str()))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(args) => args,
+        Err(error) => {
+            *stderr = format!("linker argument contained interior nul: {error}");
+            return 1;
+        }
+    };
+    let raw_args = c_args.iter().map(|arg| arg.as_ptr()).collect::<Vec<_>>();
+    let mut stdout_ptr: *mut c_char = ptr::null_mut();
+    let mut stdout_len = 0usize;
+    let mut stderr_ptr: *mut c_char = ptr::null_mut();
+    let mut stderr_len = 0usize;
+    let exit_code = unsafe {
+        rouwdi_lld_wasm_link(
+            raw_args.len() as c_int,
+            raw_args.as_ptr(),
+            &mut stdout_ptr,
+            &mut stdout_len,
+            &mut stderr_ptr,
+            &mut stderr_len,
+        )
+    };
+    *stdout = unsafe { take_lld_string(stdout_ptr, stdout_len) };
+    *stderr = unsafe { take_lld_string(stderr_ptr, stderr_len) };
+    exit_code
+}
+
+unsafe fn take_lld_string(ptr: *mut c_char, len: usize) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let bytes = slice::from_raw_parts(ptr.cast::<u8>(), len);
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    rouwdi_lld_free(ptr);
+    text
+}
+
+fn build_interface_proof(bytes: &[u8], module_sha256: &str) -> InterfaceProof {
+    let inspection = inspect_wasm_object(bytes);
+    let required_exports = vec!["_start".to_owned()];
+    let missing_required_exports = required_exports
+        .iter()
+        .filter(|export| {
+            !inspection
+                .object_exports
+                .iter()
+                .any(|found| found == *export)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let wasi_imports = inspection
+        .object_imports
+        .iter()
+        .filter(|import| import.starts_with("wasi_snapshot_preview1::"))
+        .cloned()
+        .collect::<Vec<_>>();
+    InterfaceProof {
+        wasm_magic_valid: inspection.wasm_magic_valid,
+        wasm_version_valid: inspection.wasm_version_valid,
+        exports: inspection.object_exports,
+        imports: inspection.object_imports,
+        start_present: missing_required_exports.is_empty(),
+        wasi_imports,
+        required_exports_checked: required_exports,
+        missing_required_exports: missing_required_exports.clone(),
+        module_sha256: module_sha256.to_owned(),
+        module_size_bytes: bytes.len(),
+        passed: inspection.wasm_magic_valid
+            && inspection.wasm_version_valid
+            && missing_required_exports.is_empty()
+            && inspection.parse_errors.is_empty(),
+    }
+}
+
+fn interface_proof_json(proof: &InterfaceProof) -> serde_json::Value {
+    serde_json::json!({
+        "wasm_magic_valid": proof.wasm_magic_valid,
+        "wasm_version_valid": proof.wasm_version_valid,
+        "exports": proof.exports.clone(),
+        "imports": proof.imports.clone(),
+        "_start_present": proof.start_present,
+        "wasi_imports": proof.wasi_imports.clone(),
+        "required_exports_checked": proof.required_exports_checked.clone(),
+        "missing_required_exports": proof.missing_required_exports.clone(),
+        "module_sha256": proof.module_sha256.clone(),
+        "module_size_bytes": proof.module_size_bytes,
+        "passed": proof.passed,
+    })
+}
+
+fn sysroot_path() -> String {
+    if cfg!(target_arch = "wasm32") {
+        "/workspace/third_party/rust/build/x86_64-pc-windows-msvc/stage1".to_owned()
+    } else {
+        let mut path = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        path.push("third_party");
+        path.push("rust");
+        path.push("build");
+        path.push("x86_64-pc-windows-msvc");
+        path.push("stage1");
+        path.display().to_string()
+    }
+}
+
+fn sanitize_crate_name(crate_identity: &str) -> String {
+    let mut sanitized = crate_identity
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    if sanitized.is_empty() || sanitized.as_bytes()[0].is_ascii_digit() {
+        sanitized.insert(0, '_');
+    }
+    sanitized
+}
+
+fn source_for_mono_item_graph(input: &ProbeInput) -> &'static str {
+    if input
+        .mono_items
+        .iter()
+        .any(|item| item.contains("rouwdi_entry"))
+    {
+        "#![no_main]\n#[no_mangle]\npub extern \"C\" fn rouwdi_entry() {}\n"
+    } else {
+        "fn main() {}\n"
+    }
+}
+
+fn expected_codegened_symbols(input: &ProbeInput) -> Vec<String> {
+    let mut symbols = input
+        .mono_items
+        .iter()
+        .filter_map(|item| {
+            if item.contains("rouwdi_entry") {
+                Some("rouwdi_entry".to_owned())
+            } else if item.contains("::main") || item.ends_with(":main") {
+                Some("main".to_owned())
+            } else {
+                item.rsplit("::")
+                    .next()
+                    .or_else(|| item.rsplit(':').next())
+                    .map(str::to_owned)
+            }
+        })
+        .filter(|symbol| !symbol.trim().is_empty())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols.dedup();
+    symbols
+}
+
+fn matching_codegened_symbols(
+    inspection: &WasmObjectInspection,
+    expected_symbols: &[String],
+) -> Vec<String> {
+    let mut matches = Vec::new();
+    for expected in expected_symbols {
+        for symbol in &inspection.object_symbols {
+            let Some(name) = symbol.name.as_deref() else {
+                continue;
+            };
+            if symbol.kind == "function"
+                && !symbol.undefined
+                && (name == expected || name.ends_with(expected))
+            {
+                matches.push(name.to_owned());
+            }
+        }
+        for export in &inspection.object_exports {
+            if export == expected || export.ends_with(expected) {
+                matches.push(export.clone());
+            }
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_owned()
     }
 }
 
@@ -926,6 +1506,8 @@ fn object_blocked(
     ObjectEmissionSetup {
         attempted: true,
         api,
+        codegen_lowering_invoked: false,
+        codegen_lowering_entrypoint: UPSTREAM_CODEGEN_ENTRYPOINT.to_owned(),
         object_bytes_emitted: false,
         wasm_object_bytes_emitted: false,
         inspection: None,

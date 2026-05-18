@@ -841,7 +841,11 @@ try {
     $monoItemGraphHash = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_item_graph_hash) { [string]$payloadOutput.mono_item_graph_hash } else { $null }
     $nextFrontier = if ($mirBodyHashEmitted) {
         if ($monoStatus -eq "mono_items_collected") {
-            if ($codegenPayloadExecution.rust_mono_item_wasm_object_emitted -eq $true -and $codegenPayloadExecution.linker_handoff_created -eq $true) {
+            if ($codegenPayloadExecution.codegen_contact_state -eq "runtime_proof_passed") {
+                "complete"
+            } elseif ($codegenPayloadExecution.codegen_contact_state -eq "interface_proof_passed") {
+                "runtime_proof"
+            } elseif ($codegenPayloadExecution.linker_handoff_created -eq $true) {
                 "linking"
             } elseif ($codegenPayloadExecution.wasm_object_bytes_emitted -eq $true -and $codegenPayloadExecution.rust_mono_item_wasm_object_emitted -ne $true) {
                 [string]$codegenPayloadExecution.codegen_contact_state
@@ -1467,6 +1471,10 @@ try {
             linker_handoff_requires_mono_item_wasm_object = $true
             current_codegen_lowering_blocker = if ($rustMonoItemWasmObjectEmitted) { $null } else { "codegen_lowering_to_object_not_implemented" }
         }
+    }
+
+    if ($manifest.Contains("mir_payload") -and $manifest.Contains("codegen_payloads")) {
+        $manifest.mir_payload["codegen_payloads"] = @($manifest.codegen_payloads)
     }
 
     $manifestJson = $manifest | ConvertTo-Json -Depth 12

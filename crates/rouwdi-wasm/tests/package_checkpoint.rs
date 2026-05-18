@@ -10,6 +10,72 @@ const PROBE_ONLY_CODEGEN_BLOCKERS: &[&str] = &[
     "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented",
     "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit",
 ];
+const CODEGEN_COMPLETION_STATES: &[&str] = &[
+    "rust_mono_item_wasm_object_emitted",
+    "wasm_ld_invoked",
+    "wasm32_wasip1_module_linked",
+    "interface_proof_passed",
+    "runtime_proof_attempted",
+    "runtime_proof_passed",
+];
+
+fn accepted_codegen_status(status: &str) -> bool {
+    CODEGEN_COMPLETION_STATES.contains(&status) || PROBE_ONLY_CODEGEN_BLOCKERS.contains(&status)
+}
+
+fn linked_runtime_proof_complete(linker_handoff: &Value, object_hash: &Value) -> bool {
+    let Some(object_hash) = object_hash.as_str() else {
+        return false;
+    };
+    let final_module = &linker_handoff["final_module_artifact"];
+    let Some(module_hash) = final_module["sha256"].as_str() else {
+        return false;
+    };
+
+    linker_handoff["current_status"] == Value::String("runtime_proof_passed".to_owned())
+        && linker_handoff["required_linker_component"] == Value::String("wasm-ld".to_owned())
+        && linker_handoff["codegen_artifact_hash"] == Value::String(object_hash.to_owned())
+        && linker_handoff["linker_invoked"] == Value::Bool(true)
+        && linker_handoff["linker_command_args"]
+            .as_array()
+            .is_some_and(|args| {
+                args.first()
+                    .and_then(Value::as_str)
+                    .is_some_and(|arg| arg == "wasm-ld")
+                    && args.iter().any(|arg| {
+                        arg.as_str()
+                            .is_some_and(|arg| arg == "rouwdi-codegen-wasm32-wasip1.o")
+                    })
+            })
+        && linker_handoff["stdout"].is_string()
+        && linker_handoff["stderr"].is_string()
+        && linker_handoff["exit_code"] == Value::from(0)
+        && linker_handoff["input_artifact_hashes"]
+            .as_array()
+            .is_some_and(|hashes| hashes.iter().any(|hash| hash.as_str() == Some(object_hash)))
+        && final_module["artifact_kind"] == Value::String("wasm32_wasip1_module".to_owned())
+        && final_module["input_object_hash"] == Value::String(object_hash.to_owned())
+        && final_module["producer_linker"] == Value::String("rouwdi-wasm-ld".to_owned())
+        && final_module["target_triple"] == Value::String("wasm32-wasip1".to_owned())
+        && final_module["size_bytes"]
+            .as_u64()
+            .is_some_and(|size| size > 0)
+        && module_hash.len() == 64
+        && linker_handoff["interface_proof"]["passed"] == Value::Bool(true)
+        && linker_handoff["interface_proof"]["_start_present"] == Value::Bool(true)
+        && linker_handoff["interface_proof"]["wasm_magic_valid"] == Value::Bool(true)
+        && linker_handoff["interface_proof"]["wasm_version_valid"] == Value::Bool(true)
+        && linker_handoff["interface_proof"]["module_sha256"]
+            == Value::String(module_hash.to_owned())
+        && linker_handoff["interface_proof"]["exports"]
+            .as_array()
+            .is_some_and(|exports| exports.iter().any(|export| export == "_start"))
+        && linker_handoff["runtime_proof_attempted"] == Value::Bool(true)
+        && linker_handoff["runtime_proof"]["passed"] == Value::Bool(true)
+        && linker_handoff["runtime_proof"]["module_hash"] == Value::String(module_hash.to_owned())
+        && linker_handoff["runtime_proof"]["exit_code"] == Value::from(0)
+        && linker_handoff["runtime_proof"]["timeout"] == Value::Bool(false)
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -103,6 +169,15 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
             || lower_path.contains("third_party/rust/build")
         {
             return Some("linker payload must be assembly-owned, not a host sidecar".to_owned());
+        }
+        if !linked_runtime_proof_complete(
+            linker_handoff,
+            &payload["codegen_object_artifact_sha256"],
+        ) {
+            return Some(
+                "linker handoff requires final module, interface proof, and runtime proof"
+                    .to_owned(),
+            );
         }
     }
     if payload["instantiated"] != Value::Bool(true) {
@@ -272,7 +347,14 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 if payload["rust_mono_item_wasm_object_emitted"] == Value::Bool(true)
                     && payload["linker_handoff_created"] == Value::Bool(true)
                 {
-                    Value::String("linking".to_owned())
+                    match payload["codegen_handoff_status"]
+                        .as_str()
+                        .unwrap_or_default()
+                    {
+                        "runtime_proof_passed" => Value::String("complete".to_owned()),
+                        "interface_proof_passed" => Value::String("runtime_proof".to_owned()),
+                        _ => Value::String("linking".to_owned()),
+                    }
                 } else if payload["codegen_wasm_object_bytes_emitted"] == Value::Bool(true)
                     && payload["rust_mono_item_wasm_object_emitted"] != Value::Bool(true)
                 {
@@ -327,8 +409,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 .as_str()
                 .unwrap_or_default();
             assert!(
-                codegen_status == "rust_mono_item_wasm_object_emitted"
-                    || PROBE_ONLY_CODEGEN_BLOCKERS.contains(&codegen_status),
+                accepted_codegen_status(codegen_status),
                 "canonical package must either emit a mono-item Wasm object or block at exact codegen lowering, got {codegen_status}"
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
@@ -494,15 +575,21 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 payload["codegen_object_artifact_kind"],
                 Value::String("wasm_object".to_owned())
             );
-            assert_eq!(
-                payload["codegen_object_artifact_sha256"],
-                Value::String(
-                    "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985".to_owned()
-                )
+            let object_hash = payload["codegen_object_artifact_sha256"]
+                .as_str()
+                .expect("object artifact hash must be present");
+            assert_eq!(object_hash.len(), 64);
+            assert_ne!(Some(object_hash), payload["mir_body_hash"].as_str());
+            assert_ne!(Some(object_hash), payload["mono_item_graph_hash"].as_str());
+            assert_ne!(
+                Some(object_hash),
+                payload["codegen_llvm_ir_sha256"].as_str()
             );
-            assert_eq!(
-                payload["codegen_object_artifact_size_bytes"],
-                Value::from(207)
+            assert!(
+                payload["codegen_object_artifact_size_bytes"]
+                    .as_u64()
+                    .is_some_and(|size| size > 207),
+                "mono-item-derived object must be larger than the old probe-only object"
             );
             assert_eq!(
                 payload["codegen_object_artifact_location"],
@@ -553,6 +640,18 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 .as_array()
                 .is_some_and(|errors| errors.is_empty()));
             if payload["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
+                assert_eq!(payload["object_has_code_section"], Value::Bool(true));
+                assert_eq!(payload["object_is_empty"], Value::Bool(false));
+                assert_eq!(
+                    payload["object_has_code_bearing_content"],
+                    Value::Bool(true)
+                );
+                assert!(payload["object_function_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0));
+                assert!(payload["object_symbol_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0));
                 assert_eq!(
                     payload["object_contains_codegened_function"],
                     Value::Bool(true)
@@ -589,6 +688,13 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                         || path.starts_with("vfs:/")
                         || path.starts_with("memory:")
                         || path.starts_with("dist/rouwdi.wasm#")));
+                assert!(
+                    linked_runtime_proof_complete(
+                        linker_handoff,
+                        &payload["codegen_object_artifact_sha256"]
+                    ),
+                    "linker handoff must carry final module, interface proof, and runtime proof"
+                );
             } else {
                 assert_eq!(
                     payload["object_contains_codegened_function"],
@@ -665,10 +771,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["host_probe_target_machine_created"] == Value::Bool(true)
                 && entry["codegen_contact_state"]
                     .as_str()
-                    .is_some_and(|status| {
-                        status == "rust_mono_item_wasm_object_emitted"
-                            || PROBE_ONLY_CODEGEN_BLOCKERS.contains(&status)
-                    })
+                    .is_some_and(accepted_codegen_status)
                 && entry["mono_proof_consumed"] == Value::Bool(true)
                 && entry["llvm_wrapper_target"] == Value::String("wasm32-wasip1".to_owned())
                 && entry["llvm_wrapper_artifact_kind"] == Value::String("staticlib".to_owned())
@@ -705,11 +808,16 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["wasm_object_bytes_emitted"] == Value::Bool(true)
                 && entry["object_artifact_kind"] == Value::String("wasm_object".to_owned())
                 && entry["object_artifact_sha256"]
-                    == Value::String(
-                        "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985"
-                            .to_owned(),
-                    )
-                && entry["object_artifact_size_bytes"] == Value::from(207)
+                    .as_str()
+                    .is_some_and(|hash| {
+                        hash.len() == 64
+                            && Some(hash) != entry["mir_body_hash"].as_str()
+                            && Some(hash) != entry["mono_item_graph_hash"].as_str()
+                            && Some(hash) != entry["llvm_ir_sha256"].as_str()
+                    })
+                && entry["object_artifact_size_bytes"]
+                    .as_u64()
+                    .is_some_and(|size| size > 207)
                 && entry["object_artifact_location"]
                     == Value::String("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned())
                 && entry["object_retrieval_method"]
@@ -742,7 +850,16 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .as_array()
                     .is_some_and(|errors| errors.is_empty())
                 && if entry["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
-                    entry["object_contains_codegened_function"] == Value::Bool(true)
+                    entry["object_has_code_section"] == Value::Bool(true)
+                        && entry["object_is_empty"] == Value::Bool(false)
+                        && entry["object_has_code_bearing_content"] == Value::Bool(true)
+                        && entry["object_function_count"]
+                            .as_u64()
+                            .is_some_and(|count| count > 0)
+                        && entry["object_symbol_count"]
+                            .as_u64()
+                            .is_some_and(|count| count > 0)
+                        && entry["object_contains_codegened_function"] == Value::Bool(true)
                         && entry["object_symbol_table_contains_codegened_symbol"]
                             == Value::Bool(true)
                         && entry["codegened_mono_item_count"]
@@ -751,6 +868,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                         && entry["object_codegen_source"]
                             == Value::String("mono_item_graph".to_owned())
                         && entry["linker_handoff_created"] == Value::Bool(true)
+                        && linked_runtime_proof_complete(
+                            &entry["linker_handoff"],
+                            &entry["object_artifact_sha256"],
+                        )
                 } else {
                     entry["object_contains_codegened_function"] == Value::Bool(false)
                         && entry["object_symbol_table_contains_codegened_symbol"]

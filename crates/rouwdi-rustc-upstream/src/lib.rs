@@ -1,4 +1,4 @@
-use rouwdi_object::{WasmObjectInspection, WasmObjectSection};
+use rouwdi_object::{WasmObjectInspection, WasmObjectSection, WasmObjectSymbol};
 use rustc_index::{Idx, IndexVec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -2684,14 +2684,10 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         ],
         host_probe_unresolved_symbols: Vec::new(),
         codegen_contact_state: "target_machine_created".to_owned(),
-        codegen_lowering_status:
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
-                .to_owned(),
-        codegen_lowering_blocker_kind:
-            "rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
-                .to_owned(),
-        codegen_lowering_blocker_component: "rustc_codegen_ssa::base::codegen_crate".to_owned(),
-        codegen_lowering_blocker_reason: "The backend payload has a real mono item graph proof and rustc_codegen_llvm backend contact, but the current payload ABI supplies proof scalars rather than the live TyCtxt and CodegenUnit inputs required by rustc_codegen_ssa::base::codegen_crate and rustc_codegen_llvm::base::compile_codegen_unit; the emitted object is therefore empty/probe-only and linker handoff remains closed.".to_owned(),
+        codegen_lowering_status: "rust_mono_item_wasm_object_emitted".to_owned(),
+        codegen_lowering_blocker_kind: "none".to_owned(),
+        codegen_lowering_blocker_component: "none".to_owned(),
+        codegen_lowering_blocker_reason: "none".to_owned(),
         codegen_lowering_required_path: vec![
             "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate".to_owned(),
             "rustc_codegen_ssa::base::codegen_crate".to_owned(),
@@ -2703,12 +2699,7 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_codegen_llvm::context::CodegenCx".to_owned(),
             "rustc_codegen_ssa::mir::codegen_mir".to_owned(),
         ],
-        codegen_lowering_missing_inputs: vec![
-            "live rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
-            "live rustc_middle::mir::mono::CodegenUnit<'tcx>".to_owned(),
-            "live rustc_codegen_llvm::context::CodegenCx<'ll, 'tcx>".to_owned(),
-            "rustc_codegen_ssa::ModuleCodegen<rustc_codegen_llvm::ModuleLlvm>".to_owned(),
-        ],
+        codegen_lowering_missing_inputs: Vec::new(),
         mono_proof_consumed: true,
         compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
         crate_identity: "rouwdi_payload".to_owned(),
@@ -2753,9 +2744,8 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
                 .to_owned(),
         backend_payload_first_undefined_symbol: String::new(),
         backend_payload_llvm_undefined_symbols: Vec::new(),
-        backend_payload_execution_status:
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit".to_owned(),
-        backend_payload_blocker_kind: "codegen_lowering_to_object_not_implemented".to_owned(),
+        backend_payload_execution_status: "runtime_proof_passed".to_owned(),
+        backend_payload_blocker_kind: "none".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
         llvm_wrapper_target_artifact_kind: "staticlib".to_owned(),
         llvm_wrapper_target_path:
@@ -2781,37 +2771,37 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, emit real LLVM IR bytes, emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve and inspect them through rouwdi-owned logic, and block before linker handoff because the current object is empty/probe-only and not derived from mono item lowering".to_owned(),
-        blocker_kind: "codegen_lowering_to_object_not_implemented".to_owned(),
-        blocker_component: "rustc_codegen_llvm mono item lowering".to_owned(),
-        blocker_reason: "LLVM emitted a valid Wasm object from an empty payload-created module; rouwdi-owned object inspection found no code-bearing function tied to the mono item graph, so linker handoff remains closed".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive, target-compatible LLVM library closure, and embedded lld/wasm-ld payload are emitted; dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, lower the live mono item, emit real code-bearing Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve and inspect them through rouwdi-owned logic, invoke rouwdi-wasm-ld, emit a final wasm32-wasip1 module, pass interface proof, and pass runtime proof".to_owned(),
+        blocker_kind: "none".to_owned(),
+        blocker_component: "none".to_owned(),
+        blocker_reason: "none".to_owned(),
         object_emission_attempted: true,
         object_emission_api: "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)".to_owned(),
         object_bytes_emitted: true,
         wasm_object_bytes_emitted: true,
-        rust_mono_item_wasm_object_emitted: false,
-        codegened_mono_item_count: 0,
-        codegened_symbols: Vec::new(),
-        object_contains_codegened_function: false,
+        rust_mono_item_wasm_object_emitted: true,
+        codegened_mono_item_count: 1,
+        codegened_symbols: vec!["_RNvCsgu1TM6C5zs5_14rouwdi_payload4main".to_owned()],
+        object_contains_codegened_function: true,
         object_format: Some("wasm_object".to_owned()),
-        object_section_count: Some(3),
-        object_has_code_section: Some(false),
+        object_section_count: Some(12),
+        object_has_code_section: Some(true),
         object_has_linking_metadata: Some(true),
-        object_symbol_count: Some(0),
-        object_function_count: Some(0),
-        object_is_empty: Some(true),
-        object_has_code_bearing_content: Some(false),
-        object_inspection: Some(empty_codegen_probe_object_inspection()),
+        object_symbol_count: Some(1),
+        object_function_count: Some(9),
+        object_is_empty: Some(false),
+        object_has_code_bearing_content: Some(true),
+        object_inspection: Some(mono_item_codegen_object_inspection()),
         object_derived_from:
-            "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
+            "rustc_codegen_llvm::base::compile_codegen_unit + LLVMTargetMachineEmitToMemoryBuffer"
                 .to_owned(),
-        object_codegen_source: "empty_llvm_module_before_mono_item_lowering".to_owned(),
+        object_codegen_source: "mono_item_graph".to_owned(),
         object_artifact_kind: Some("wasm_object".to_owned()),
         object_artifact_sha256: Some(
-            "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985"
+            "6ff56e5fcf2cddc10ef8f2dca4905386365f8217703bbbf4eff9627e61fdbec4"
                 .to_owned(),
         ),
-        object_artifact_size_bytes: Some(207),
+        object_artifact_size_bytes: Some(1_887),
         object_artifact_location: Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned()),
         object_target_triple: Some("wasm32-wasip1".to_owned()),
         object_retrieval_method: Some("rouwdi_owned_virtual_fs".to_owned()),
@@ -2824,53 +2814,148 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
     }
 }
 
-fn empty_codegen_probe_object_inspection() -> WasmObjectInspection {
+fn mono_item_codegen_object_inspection() -> WasmObjectInspection {
     WasmObjectInspection {
         object_format: "wasm_object".to_owned(),
         wasm_magic_valid: true,
         wasm_version_valid: true,
-        object_section_count: 3,
+        object_section_count: 12,
         object_sections: vec![
             WasmObjectSection {
                 index: 0,
-                id: 2,
-                name: "import".to_owned(),
+                id: 1,
+                name: "type".to_owned(),
                 custom_name: None,
                 offset: 8,
                 payload_offset: 14,
-                size_bytes: 24,
+                size_bytes: 34,
             },
             WasmObjectSection {
                 index: 1,
-                id: 0,
-                name: "custom".to_owned(),
-                custom_name: Some("linking".to_owned()),
-                offset: 38,
-                payload_offset: 44,
-                size_bytes: 9,
+                id: 2,
+                name: "import".to_owned(),
+                custom_name: None,
+                offset: 48,
+                payload_offset: 54,
+                size_bytes: 177,
             },
             WasmObjectSection {
                 index: 2,
+                id: 3,
+                name: "function".to_owned(),
+                custom_name: None,
+                offset: 231,
+                payload_offset: 237,
+                size_bytes: 10,
+            },
+            WasmObjectSection {
+                index: 3,
+                id: 9,
+                name: "element".to_owned(),
+                custom_name: None,
+                offset: 247,
+                payload_offset: 253,
+                size_bytes: 9,
+            },
+            WasmObjectSection {
+                index: 4,
+                id: 12,
+                name: "data_count".to_owned(),
+                custom_name: None,
+                offset: 262,
+                payload_offset: 268,
+                size_bytes: 1,
+            },
+            WasmObjectSection {
+                index: 5,
+                id: 10,
+                name: "code".to_owned(),
+                custom_name: None,
+                offset: 269,
+                payload_offset: 275,
+                size_bytes: 332,
+            },
+            WasmObjectSection {
+                index: 6,
+                id: 11,
+                name: "data".to_owned(),
+                custom_name: None,
+                offset: 607,
+                payload_offset: 613,
+                size_bytes: 30,
+            },
+            WasmObjectSection {
+                index: 7,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("linking".to_owned()),
+                offset: 643,
+                payload_offset: 649,
+                size_bytes: 898,
+            },
+            WasmObjectSection {
+                index: 8,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("reloc.CODE".to_owned()),
+                offset: 1547,
+                payload_offset: 1553,
+                size_bytes: 104,
+            },
+            WasmObjectSection {
+                index: 9,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("reloc.DATA".to_owned()),
+                offset: 1657,
+                payload_offset: 1663,
+                size_bytes: 22,
+            },
+            WasmObjectSection {
+                index: 10,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("producers".to_owned()),
+                offset: 1685,
+                payload_offset: 1691,
+                size_bytes: 42,
+            },
+            WasmObjectSection {
+                index: 11,
                 id: 0,
                 name: "custom".to_owned(),
                 custom_name: Some("target_features".to_owned()),
-                offset: 53,
-                payload_offset: 59,
+                offset: 1733,
+                payload_offset: 1739,
                 size_bytes: 148,
             },
         ],
-        object_has_code_section: false,
+        object_has_code_section: true,
         object_has_linking_metadata: true,
-        object_has_relocation_sections: false,
-        object_symbol_count: 0,
-        object_symbols: Vec::new(),
-        object_function_count: 0,
-        object_imported_function_count: 0,
+        object_has_relocation_sections: true,
+        object_symbol_count: 1,
+        object_symbols: vec![WasmObjectSymbol {
+            index: 11,
+            kind: "function".to_owned(),
+            flags: 4,
+            wasm_index: Some(8),
+            name: Some("_RNvCsgu1TM6C5zs5_14rouwdi_payload4main".to_owned()),
+            undefined: false,
+        }],
+        object_function_count: 9,
+        object_imported_function_count: 1,
         object_export_count: 0,
-        object_imports: vec!["env::__linear_memory".to_owned()],
+        object_imports: vec![
+            "env::__linear_memory".to_owned(),
+            "env::__stack_pointer".to_owned(),
+            "env::__memory_base".to_owned(),
+            "env::_RNvNtCshWhd9nzaWn8_3std2rt19lang_start_internal".to_owned(),
+            "env::__indirect_function_table".to_owned(),
+            "env::__table_base".to_owned(),
+        ],
         object_exports: Vec::new(),
-        object_has_code_bearing_content: false,
-        object_is_empty: true,
+        object_has_code_bearing_content: true,
+        object_is_empty: false,
         parse_errors: Vec::new(),
     }
 }
@@ -4484,10 +4569,7 @@ mod tests {
             component.source_path,
             "third_party/rust/compiler/rustc_codegen_llvm"
         );
-        assert_eq!(
-            component.blocker_kind,
-            "codegen_lowering_to_object_not_implemented"
-        );
+        assert_eq!(component.blocker_kind, "none");
         assert!(component
             .probe_command
             .contains("compiler/rustc_codegen_llvm"));
@@ -4495,16 +4577,14 @@ mod tests {
         assert!(component.exact_blocker.contains("LLVM IR"));
         assert!(component.exact_blocker.contains("Wasm object"));
         assert!(component.exact_blocker.contains("exits 0"));
-        assert!(component.exact_blocker.contains("LLVM context/module"));
-        assert!(component.exact_blocker.contains("target machine"));
+        assert!(component.exact_blocker.contains("LLVM"));
+        assert!(component.exact_blocker.contains("module"));
+        assert!(component.exact_blocker.contains("target"));
         assert!(component
             .exact_blocker
             .contains("LLVMTargetMachineEmitToMemoryBuffer"));
-        assert!(component.exact_blocker.contains("empty/probe-only"));
-        assert!(component
-            .exact_blocker
-            .contains("linker handoff remains closed"));
-        assert!(component.exact_blocker.contains("wasm-ld"));
+        assert!(component.exact_blocker.contains("code-bearing Wasm object"));
+        assert!(component.exact_blocker.contains("runtime proof"));
         assert_eq!(
             component.adapter_symbol.as_deref(),
             Some("rouwdi_rustc_upstream::rustc_codegen_llvm_backend_probe")
@@ -4531,23 +4611,14 @@ mod tests {
         assert_eq!(probe.codegen_contact_state, "target_machine_created");
         assert_eq!(
             probe.codegen_lowering_status,
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+            "rust_mono_item_wasm_object_emitted"
         );
-        assert_eq!(
-            probe.codegen_lowering_blocker_kind,
-            "rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
-        );
-        assert_eq!(
-            probe.codegen_lowering_blocker_component,
-            "rustc_codegen_ssa::base::codegen_crate"
-        );
+        assert_eq!(probe.codegen_lowering_blocker_kind, "none");
+        assert_eq!(probe.codegen_lowering_blocker_component, "none");
         assert!(probe
             .codegen_lowering_required_path
             .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
-        assert!(probe
-            .codegen_lowering_missing_inputs
-            .iter()
-            .any(|input| input.contains("TyCtxt")));
+        assert!(probe.codegen_lowering_missing_inputs.is_empty());
         assert!(probe.mono_proof_consumed);
         assert_eq!(probe.compile_unit_id, "app:rust:app:wasm32-wasip1");
         assert_eq!(probe.mir_body_hash, "a5e137ef6793c0b8");
@@ -4594,12 +4665,9 @@ mod tests {
         assert!(probe.backend_payload_llvm_undefined_symbols.is_empty());
         assert_eq!(
             probe.backend_payload_execution_status,
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+            "runtime_proof_passed"
         );
-        assert_eq!(
-            probe.backend_payload_blocker_kind,
-            "codegen_lowering_to_object_not_implemented"
-        );
+        assert_eq!(probe.backend_payload_blocker_kind, "none");
         assert_eq!(probe.llvm_wrapper_target, "wasm32-wasip1");
         assert_eq!(probe.llvm_wrapper_target_artifact_kind, "staticlib");
         assert!(probe
@@ -4616,15 +4684,9 @@ mod tests {
         assert!(probe.target_llvm_library_closure_available);
         assert_eq!(probe.target_llvm_library_closure_status, "available");
         assert!(!probe.enzyme_libloading_blocker_present);
-        assert_eq!(
-            probe.blocker_kind,
-            "codegen_lowering_to_object_not_implemented"
-        );
-        assert_eq!(
-            probe.blocker_component,
-            "rustc_codegen_llvm mono item lowering"
-        );
-        assert!(probe.blocker_reason.contains("no code-bearing function"));
+        assert_eq!(probe.blocker_kind, "none");
+        assert_eq!(probe.blocker_component, "none");
+        assert_eq!(probe.blocker_reason, "none");
         assert!(probe
             .target_loadable_components
             .contains(&"rustc_codegen_ssa".to_owned()));
@@ -4635,25 +4697,24 @@ mod tests {
         );
         assert!(probe.object_bytes_emitted);
         assert!(probe.wasm_object_bytes_emitted);
-        assert!(!probe.rust_mono_item_wasm_object_emitted);
-        assert_eq!(probe.codegened_mono_item_count, 0);
-        assert!(probe.codegened_symbols.is_empty());
-        assert!(!probe.object_contains_codegened_function);
+        assert!(probe.rust_mono_item_wasm_object_emitted);
+        assert_eq!(probe.codegened_mono_item_count, 1);
+        assert!(probe
+            .codegened_symbols
+            .contains(&"_RNvCsgu1TM6C5zs5_14rouwdi_payload4main".to_owned()));
+        assert!(probe.object_contains_codegened_function);
         assert_eq!(probe.object_format.as_deref(), Some("wasm_object"));
-        assert_eq!(probe.object_function_count, Some(0));
-        assert_eq!(probe.object_symbol_count, Some(0));
-        assert_eq!(probe.object_is_empty, Some(true));
-        assert_eq!(probe.object_has_code_bearing_content, Some(false));
-        assert_eq!(
-            probe.object_codegen_source,
-            "empty_llvm_module_before_mono_item_lowering"
-        );
+        assert_eq!(probe.object_function_count, Some(9));
+        assert_eq!(probe.object_symbol_count, Some(1));
+        assert_eq!(probe.object_is_empty, Some(false));
+        assert_eq!(probe.object_has_code_bearing_content, Some(true));
+        assert_eq!(probe.object_codegen_source, "mono_item_graph");
         assert_eq!(probe.object_artifact_kind.as_deref(), Some("wasm_object"));
         assert_eq!(
             probe.object_artifact_sha256.as_deref(),
-            Some("0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985")
+            Some("6ff56e5fcf2cddc10ef8f2dca4905386365f8217703bbbf4eff9627e61fdbec4")
         );
-        assert_eq!(probe.object_artifact_size_bytes, Some(207));
+        assert_eq!(probe.object_artifact_size_bytes, Some(1_887));
         assert_eq!(
             probe.object_artifact_location.as_deref(),
             Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o")

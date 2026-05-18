@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+const WASM32_WASIP1_LINKER_PAYLOAD_SHA256: &str =
+    "b04d1efd1d7a2f39f774f641e4a2e9e98350816aa19a36de57c46d59f0026dcd";
+
 #[derive(Debug, thiserror::Error)]
 pub enum TargetError {
     #[error("target pack is not embedded for {0}")]
@@ -134,16 +137,16 @@ pub struct TargetPackRegistry {
 impl TargetPackRegistry {
     pub fn strict_embedded() -> Self {
         let mut packs = BTreeMap::new();
-        packs.insert(
-            "wasm32-wasip1".to_owned(),
-            target_pack(
-                "wasm32-wasip1",
-                wasm32_wasip1_target_specs(),
-                TargetAbiModel::wasm32_wasi("p1"),
-                vec![ArtifactKind::Module, ArtifactKind::Component],
-                RuntimeExecutionCapability::Wasi,
-            ),
+        let mut wasm32_wasip1 = target_pack(
+            "wasm32-wasip1",
+            wasm32_wasip1_target_specs(),
+            TargetAbiModel::wasm32_wasi("p1"),
+            vec![ArtifactKind::Module, ArtifactKind::Component],
+            RuntimeExecutionCapability::Wasi,
         );
+        wasm32_wasip1.linker_pack_hash = Some(WASM32_WASIP1_LINKER_PAYLOAD_SHA256.to_owned());
+        wasm32_wasip1.linker_pack_embedded = true;
+        packs.insert("wasm32-wasip1".to_owned(), wasm32_wasip1);
         packs.insert(
             "wasm32-wasip2".to_owned(),
             target_pack(
@@ -412,14 +415,17 @@ mod tests {
         );
         assert!(registry.packs["wasm32-wasip1"].target_pack_embedded);
         assert!(!registry.packs["wasm32-wasip1"].std_pack_embedded);
-        assert!(!registry.packs["wasm32-wasip1"].linker_pack_embedded);
+        assert!(registry.packs["wasm32-wasip1"].linker_pack_embedded);
         assert_eq!(registry.packs["wasm32-wasip1"].target_pack_hash.len(), 64);
         assert_eq!(
             registry.packs["wasm32-wasip1"].target_abi.object_formats,
             vec!["wasm".to_owned()]
         );
         assert!(registry.packs["wasm32-wasip1"].std_pack_hash.is_none());
-        assert!(registry.packs["wasm32-wasip1"].linker_pack_hash.is_none());
+        assert_eq!(
+            registry.packs["wasm32-wasip1"].linker_pack_hash.as_deref(),
+            Some(WASM32_WASIP1_LINKER_PAYLOAD_SHA256)
+        );
         assert_eq!(
             registry.packs["wasm32-wasip1"]
                 .target_spec_bundle_hash
@@ -441,11 +447,17 @@ mod tests {
             .iter()
             .any(|component| component.name == "rustc_codegen_llvm"
                 && component.embedded_in_assembly));
+        assert!(registry.compiler.linker_embedded);
         assert!(registry
             .compiler
             .rustc_components
             .iter()
-            .any(|component| component.name == "lld" && !component.embedded_in_assembly));
+            .any(|component| component.name == "lld" && component.embedded_in_assembly));
+        assert!(registry
+            .compiler
+            .rustc_components
+            .iter()
+            .any(|component| component.name == "rustc_expand" && !component.embedded_in_assembly));
         assert!(!registry.compiler.is_complete());
     }
 

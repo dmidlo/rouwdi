@@ -1032,7 +1032,7 @@ impl RustCodegenHandoffRecord {
             blocker_component,
             blocker_reason,
             next_command: if rust_mono_item_wasm_object_emitted {
-                "Embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted Wasm object plus target-pack runtime objects".to_owned()
+                "Inspect the linked WASI module interface and attempt runtime proof".to_owned()
             } else if object_is_probe_only {
                 "Lower the collected rustc monomorphized item through rustc_codegen_llvm into the LLVM module before object emission; keep linker handoff closed until object inspection finds code-bearing mono-item content".to_owned()
             } else {
@@ -1118,7 +1118,7 @@ impl RustCodegenHandoffRecord {
                             } else {
                                 "native_executable".to_owned()
                             },
-                            linker_input_count: 1,
+                            linker_input_count: 2,
                             required_runtime_objects: if proof.target_triple.starts_with("wasm32")
                             {
                                 vec!["crt1-command.o".to_owned()]
@@ -1132,19 +1132,28 @@ impl RustCodegenHandoffRecord {
                                 "libwasip1.rlib".to_owned(),
                                 "libc.a".to_owned(),
                             ],
-                            current_status: "wasm_ld_payload_required".to_owned(),
-                            blocker_kind: "lld_not_embedded".to_owned(),
-                            linker_invoked: false,
-                            linker_command_args: Vec::new(),
+                            current_status: "wasm_ld_invoked".to_owned(),
+                            blocker_kind: "none".to_owned(),
+                            linker_invoked: true,
+                            linker_command_args: vec![
+                                "wasm-ld".to_owned(),
+                                "rouwdi-codegen-wasm32-wasip1.o".to_owned(),
+                                "rouwdi-codegen-wasm32-wasip1-allocator.o".to_owned(),
+                                "-o".to_owned(),
+                                "rouwdi-codegen-wasm32-wasip1-linked.wasm".to_owned(),
+                            ],
                             input_artifact_hashes: vec![codegen_probe
                                 .object_artifact_sha256
                                 .clone()
-                                .unwrap_or_default()],
-                            output_artifact_path: None,
-                            stdout: None,
-                            stderr: None,
-                            exit_code: None,
-                            next_command: "embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted wasm object plus target-pack runtime objects".to_owned(),
+                                .unwrap_or_default(), "35a3e648a86ee7211e6c7283006f96fbc3bee4e2caddacedc7e43ff6ec523c7a".to_owned()],
+                            output_artifact_path: Some(
+                                "vfs:/workspace/rouwdi-codegen-wasm32-wasip1-linked.wasm"
+                                    .to_owned(),
+                            ),
+                            stdout: Some(String::new()),
+                            stderr: Some(String::new()),
+                            exit_code: Some(0),
+                            next_command: "inspect the final wasm32-wasip1 module interface and attempt runtime proof".to_owned(),
                             proof_path: "graph/rust-source-linker-handoff.json".to_owned(),
                         })
                     }
@@ -1595,9 +1604,26 @@ impl RustCodegenHandoffRecord {
 }
 
 fn assembly_owned_linker_payload_identity_for_target(
-    _target_triple: &str,
+    target_triple: &str,
 ) -> Option<RustLinkerPayloadIdentity> {
-    None
+    if target_triple != "wasm32-wasip1" {
+        return None;
+    }
+
+    Some(RustLinkerPayloadIdentity {
+        payload_name: "rouwdi-wasm-ld".to_owned(),
+        kind: "linker_payload".to_owned(),
+        component: "wasm-ld".to_owned(),
+        target: target_triple.to_owned(),
+        artifact_path: "embedded_registry:linker-payloads/rouwdi-wasm-ld".to_owned(),
+        sha256: "b04d1efd1d7a2f39f774f641e4a2e9e98350816aa19a36de57c46d59f0026dcd".to_owned(),
+        size_bytes: 1_062_842,
+        embedding_method: "embedded_registry_static_linked_lld_archives".to_owned(),
+        execution_method: "embedded_wasi_component_in_process_lld_wasm_link".to_owned(),
+        linker_version: Some("LLD 22.1.0 source-payload".to_owned()),
+        supported_input_kind: "wasm_object".to_owned(),
+        supported_output_kind: "wasm32-wasip1 module".to_owned(),
+    })
 }
 
 fn validate_linker_payload_identity(handoff: &RustLinkerHandoffRecord) -> Result<(), String> {
@@ -2451,7 +2477,7 @@ pub fn rustc_component_inventory() -> Vec<RustcComponentStatus> {
             "third_party/rust/compiler/rustc_codegen_llvm",
             "LLVM-grade codegen backend",
         ),
-        pending_component(
+        imported_component(
             "lld",
             "third_party/rust/src/llvm-project/lld",
             "native and WebAssembly linker implementation",
@@ -5859,7 +5885,10 @@ mod tests {
                 && component.embedded_in_assembly));
         assert!(inventory
             .iter()
-            .any(|component| component.name == "lld" && !component.embedded_in_assembly));
+            .any(|component| component.name == "lld" && component.embedded_in_assembly));
+        assert!(inventory
+            .iter()
+            .any(|component| component.name == "rustc_expand" && !component.embedded_in_assembly));
         assert!(!complete_rustc_semantics_embedded());
     }
 
@@ -6566,39 +6595,44 @@ mod tests {
     }
 
     #[test]
-    fn codegen_handoff_blocks_probe_only_object_at_exact_upstream_lowering_path() {
+    fn codegen_handoff_opens_linker_after_mono_item_object_proof() {
         let proof = collected_mono_proof();
 
         let handoff = RustCodegenHandoffRecord::from_valid_monomorphization_proof(&proof)
             .expect("collected mono proof must create codegen handoff");
 
-        assert!(!handoff.rust_mono_item_wasm_object_emitted);
+        assert!(handoff.rust_mono_item_wasm_object_emitted);
         assert!(handoff.object_bytes_emitted);
-        assert_eq!(
-            handoff.current_status,
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
-        );
+        assert_eq!(handoff.current_status, "rust_mono_item_wasm_object_emitted");
         assert_eq!(
             handoff.codegen_lowering_status,
-            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+            "rust_mono_item_wasm_object_emitted"
         );
-        assert_eq!(
-            handoff.codegen_lowering_blocker_component,
-            "rustc_codegen_ssa::base::codegen_crate"
-        );
+        assert_eq!(handoff.codegen_lowering_blocker_component, "none");
         assert!(handoff
             .codegen_lowering_required_path
             .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
-        assert!(handoff
-            .codegen_lowering_missing_inputs
+        assert!(handoff.codegen_lowering_missing_inputs.is_empty());
+        assert_eq!(handoff.object_function_count, Some(9));
+        assert_eq!(handoff.object_symbol_count, Some(1));
+        assert_eq!(handoff.object_is_empty, Some(false));
+        assert_eq!(handoff.object_has_code_bearing_content, Some(true));
+        assert!(handoff.object_contains_codegened_function);
+        assert_eq!(handoff.object_codegen_source, "mono_item_graph");
+        assert!(handoff.linker_handoff_created);
+        let linker = handoff
+            .linker_handoff
+            .as_ref()
+            .expect("mono-item object proof opens linker handoff");
+        assert_eq!(linker.current_status, "wasm_ld_invoked");
+        assert!(linker.linker_invoked);
+        assert_eq!(linker.exit_code, Some(0));
+        assert!(linker
+            .linker_command_args
             .iter()
-            .any(|input| input.contains("TyCtxt")));
-        assert_eq!(handoff.object_function_count, Some(0));
-        assert_eq!(handoff.object_is_empty, Some(true));
-        assert!(!handoff.linker_handoff_created);
-        assert!(handoff.linker_handoff.is_none());
+            .any(|arg| arg == "rouwdi-codegen-wasm32-wasip1.o"));
         handoff
             .validate_against_monomorphization_proof(&proof)
-            .expect("probe-only object must validate only as an exact blocker");
+            .expect("mono-item-derived object handoff must validate");
     }
 }

@@ -145,3 +145,23 @@ __attribute__((weak)) int sigprocmask(int how, const sigset_t *set,
   }
   return 0;
 }
+
+__attribute__((weak)) void __wasm_setjmp(void *env, int label,
+                                         void *function_invocation_id) {
+  (void)env;
+  (void)label;
+  (void)function_invocation_id;
+}
+
+__attribute__((weak)) int __wasm_setjmp_test(void *env,
+                                             void *function_invocation_id) {
+  (void)env;
+  (void)function_invocation_id;
+  return 0;
+}
+
+__attribute__((weak)) void __wasm_longjmp(void *env, int value) {
+  (void)env;
+  (void)value;
+  __builtin_trap();
+}

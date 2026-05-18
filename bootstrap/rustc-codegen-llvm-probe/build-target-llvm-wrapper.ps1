@@ -8,7 +8,10 @@ $archiveDir = Join-Path $workDir "lib"
 $reportPath = Join-Path $reportDir "target-llvm-wrapper-report.json"
 $closureBuildScript = Join-Path $repo "bootstrap\rustc-codegen-llvm-probe\build-target-llvm-closure.ps1"
 $closureReportPath = Join-Path $reportDir "target-llvm-closure-report.json"
+$lldWrapperSource = Join-Path $repo "bootstrap\rustc-codegen-llvm-probe\rouwdi-lld-wasm-wrapper.cpp"
 $wrapperSourceDir = Join-Path $repo "third_party\rust\compiler\rustc_llvm\llvm-wrapper"
+$lldIncludeDir = Join-Path $repo "third_party\rust\src\llvm-project\lld\include"
+$llvmBuildIncludeDir = Join-Path $repo "third_party\rust\build\wasm32-wasip1\llvm\build\include"
 $llvmConfig = Join-Path $repo "third_party\rust\build\x86_64-pc-windows-msvc\ci-llvm\bin\llvm-config.exe"
 $wasiSdk = Join-Path $repo ".rouwdi\tools\wasi-sdk\wasi-sdk-33.0-x86_64-windows"
 $wasiClangxx = Join-Path $wasiSdk "bin\wasm32-wasip1-clang++.exe"
@@ -16,6 +19,7 @@ $wasiAr = Join-Path $wasiSdk "bin\llvm-ar.exe"
 $wasiRanlib = Join-Path $wasiSdk "bin\llvm-ranlib.exe"
 $wasiSysroot = Join-Path $wasiSdk "share\wasi-sysroot"
 $archivePath = Join-Path $archiveDir "libllvm-wrapper.a"
+$lldWrapperArchivePath = Join-Path $archiveDir "librouwdi-lld-wasm-wrapper.a"
 $targetTriple = "wasm32-wasip1"
 
 function To-RepoRelativePath {
@@ -156,6 +160,7 @@ function New-Manifest {
         target_loadable = $targetLoadable
         wrapper_archive_emitted = $archiveExists
         target_object_archive = $archiveExists
+        lld_wrapper_archive = if ($null -ne $ArchiveIdentity.lld_wrapper_archive) { $ArchiveIdentity.lld_wrapper_archive } else { $null }
         target_llvm_library_closure_available = $targetLlvmLibraryClosureAvailable
         target_llvm_library_closure = [ordered]@{
             required = $true
@@ -328,12 +333,71 @@ if (Test-Path -LiteralPath $closureBuildScript -PathType Leaf) {
         $closureReport = Get-Content -Raw -LiteralPath $closureReportPath | ConvertFrom-Json
     }
 }
+$lldWrapperResult = $null
+$lldWrapperArchiveResult = $null
+$lldWrapperIdentity = $null
+$lldWrapperCompileAttempt = $null
+if ($null -ne $closureReport -and $closureReport.closure_available -eq $true) {
+    $lldWrapperObject = Join-Path $objectDir "rouwdi-lld-wasm-wrapper.o"
+    $lldWrapperCompileLogPath = Join-Path $workDir "rouwdi-lld-wasm-wrapper.compile.log"
+    $lldWrapperResult = Invoke-CapturedNative -LogPath $lldWrapperCompileLogPath -Command {
+        & $wasiClangxx `
+            --target=$targetTriple `
+            --sysroot=$wasiSysroot `
+            -std=c++17 `
+            -fno-exceptions `
+            -fno-rtti `
+            -D__STDC_FORMAT_MACROS `
+            -D__STDC_LIMIT_MACROS `
+            -D__STDC_CONSTANT_MACROS `
+            -DNDEBUG `
+            -DLLVM_ON_UNIX `
+            "-I$lldIncludeDir" `
+            "-I$llvmIncludeDir" `
+            "-I$llvmBuildIncludeDir" `
+            -c $lldWrapperSource `
+            -o $lldWrapperObject
+    }
+    $lldWrapperObjectIdentity = Get-ArtifactIdentity -Path $lldWrapperObject
+    $lldWrapperCompileAttempt = [ordered]@{
+        source = "bootstrap/rustc-codegen-llvm-probe/rouwdi-lld-wasm-wrapper.cpp"
+        object_path = if ($null -ne $lldWrapperObjectIdentity) { $lldWrapperObjectIdentity.path } else { $null }
+        object_sha256 = if ($null -ne $lldWrapperObjectIdentity) { $lldWrapperObjectIdentity.sha256 } else { $null }
+        object_size_bytes = if ($null -ne $lldWrapperObjectIdentity) { $lldWrapperObjectIdentity.size_bytes } else { $null }
+        exit_code = $lldWrapperResult.exit_code
+        log_path = $lldWrapperResult.log_path
+        target_triple = $targetTriple
+    }
+    if ($lldWrapperResult.exit_code -eq 0 -and $null -ne $lldWrapperObjectIdentity) {
+        Remove-Item -LiteralPath $lldWrapperArchivePath -Force -ErrorAction SilentlyContinue
+        $lldWrapperArchiveLogPath = Join-Path $workDir "rouwdi-lld-wasm-wrapper.archive.log"
+        $lldWrapperArchiveResult = Invoke-CapturedNative -LogPath $lldWrapperArchiveLogPath -Command {
+            & $wasiAr crs $lldWrapperArchivePath $lldWrapperObject
+            if ($LASTEXITCODE -eq 0) {
+                & $wasiRanlib $lldWrapperArchivePath
+            }
+        }
+        $lldWrapperIdentity = Get-ArtifactIdentity -Path $lldWrapperArchivePath
+    }
+}
+$archiveIdentityWithLld = if ($null -ne $archiveIdentity) {
+    $copy = [ordered]@{}
+    foreach ($property in $archiveIdentity.GetEnumerator()) {
+        $copy[$property.Key] = $property.Value
+    }
+    $copy["lld_wrapper_archive"] = $lldWrapperIdentity
+    $copy
+} else {
+    $null
+}
 $blockerKind = if ($compileFailed) {
     "wasm32_llvm_wrapper_compile_failed"
 } elseif ($null -eq $archiveIdentity) {
     "wasm32_llvm_wrapper_archive_not_emitted"
 } elseif ($null -ne $closureReport -and $closureReport.closure_available -ne $true) {
     [string]$closureReport.blocker_kind
+} elseif ($null -eq $lldWrapperIdentity) {
+    "wasm32_lld_wrapper_archive_not_emitted"
 } else {
     "none"
 }
@@ -343,6 +407,8 @@ $blockerReason = if ($compileFailed) {
     "The wrapper C++ sources compiled, but llvm-ar did not emit libllvm-wrapper.a."
 } elseif ($null -ne $closureReport -and $closureReport.closure_available -ne $true) {
     [string]$closureReport.blocker_reason
+} elseif ($null -eq $lldWrapperIdentity) {
+    "The target-compatible LLVM/LLD closure was available, but the rouwdi_lld_wasm_link wrapper archive was not emitted."
 } else {
     "none"
 }
@@ -350,7 +416,7 @@ $blockerReason = if ($compileFailed) {
 $manifest = New-Manifest `
     -Attempted $true `
     -CompileAttempts @($compileAttempts.ToArray()) `
-    -ArchiveIdentity $archiveIdentity `
+    -ArchiveIdentity $archiveIdentityWithLld `
     -ArchiveResult $archiveResult `
     -BlockerKind $blockerKind `
     -BlockerReason $blockerReason `

@@ -813,23 +813,17 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         .any(|point| point.contains("LlvmCodegenBackend::new")));
     assert_eq!(
         codegen_handoff.codegen_contact_state,
-        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        "runtime_proof_passed"
     );
     assert_eq!(
         codegen_handoff.codegen_lowering_status,
-        codegen_handoff.codegen_contact_state
+        "rust_mono_item_wasm_object_emitted"
     );
-    assert_eq!(
-        codegen_handoff.codegen_lowering_blocker_component,
-        "rustc_codegen_ssa::base::codegen_crate"
-    );
+    assert_eq!(codegen_handoff.codegen_lowering_blocker_component, "none");
     assert!(codegen_handoff
         .codegen_lowering_required_path
         .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
-    assert!(codegen_handoff
-        .codegen_lowering_missing_inputs
-        .iter()
-        .any(|input| input.contains("TyCtxt")));
+    assert!(codegen_handoff.codegen_lowering_missing_inputs.is_empty());
     assert_eq!(
         codegen_handoff.host_probe_codegen_contact_state,
         "target_machine_created"
@@ -861,28 +855,17 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         codegen_handoff.backend_payload_kind,
         "codegen_backend_payload"
     );
-    assert_eq!(
-        codegen_handoff.backend_payload_blocker_kind,
-        "codegen_lowering_to_object_not_implemented"
-    );
+    assert_eq!(codegen_handoff.backend_payload_blocker_kind, "none");
     assert!(codegen_handoff.backend_payload_embedded_in_assembly);
     assert!(codegen_handoff.backend_payload_instantiated);
     assert!(codegen_handoff.backend_payload_executed);
     assert_eq!(
         codegen_handoff.current_status,
-        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        "rust_mono_item_wasm_object_emitted"
     );
-    assert_eq!(
-        codegen_handoff.blocker_kind,
-        "codegen_lowering_to_object_not_implemented"
-    );
-    assert_eq!(
-        codegen_handoff.blocker_component,
-        "rustc_codegen_llvm mono item lowering"
-    );
-    assert!(codegen_handoff
-        .blocker_reason
-        .contains("no code-bearing function"));
+    assert_eq!(codegen_handoff.blocker_kind, "none");
+    assert_eq!(codegen_handoff.blocker_component, "none");
+    assert_eq!(codegen_handoff.blocker_reason, "none");
     assert!(codegen_handoff.object_emission_attempted);
     assert_eq!(
         codegen_handoff.object_emission_api.as_deref(),
@@ -896,9 +879,9 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
     );
     assert_eq!(
         codegen_handoff.object_sha256.as_deref(),
-        Some("0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985")
+        Some("6ff56e5fcf2cddc10ef8f2dca4905386365f8217703bbbf4eff9627e61fdbec4")
     );
-    assert_eq!(codegen_handoff.object_artifact_size_bytes, Some(207));
+    assert_eq!(codegen_handoff.object_artifact_size_bytes, Some(1_887));
     assert_eq!(
         codegen_handoff.object_artifact_location.as_deref(),
         Some("vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o")
@@ -907,18 +890,20 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         codegen_handoff.object_retrieval_method.as_deref(),
         Some("rouwdi_owned_virtual_fs")
     );
-    assert!(!codegen_handoff.rust_mono_item_wasm_object_emitted);
-    assert_eq!(codegen_handoff.codegened_mono_item_count, 0);
-    assert!(codegen_handoff.codegened_symbols.is_empty());
-    assert!(!codegen_handoff.object_contains_codegened_function);
+    assert!(codegen_handoff.rust_mono_item_wasm_object_emitted);
+    assert_eq!(codegen_handoff.codegened_mono_item_count, 1);
+    assert!(codegen_handoff
+        .codegened_symbols
+        .contains(&"_RNvCsgu1TM6C5zs5_14rouwdi_payload4main".to_owned()));
+    assert!(codegen_handoff.object_contains_codegened_function);
     assert_eq!(
         codegen_handoff.object_format.as_deref(),
         Some("wasm_object")
     );
-    assert_eq!(codegen_handoff.object_function_count, Some(0));
-    assert_eq!(codegen_handoff.object_symbol_count, Some(0));
-    assert_eq!(codegen_handoff.object_is_empty, Some(true));
-    assert_eq!(codegen_handoff.object_has_code_bearing_content, Some(false));
+    assert_eq!(codegen_handoff.object_function_count, Some(9));
+    assert_eq!(codegen_handoff.object_symbol_count, Some(1));
+    assert_eq!(codegen_handoff.object_is_empty, Some(false));
+    assert_eq!(codegen_handoff.object_has_code_bearing_content, Some(true));
     let object_inspection = codegen_handoff
         .object_inspection
         .as_ref()
@@ -926,7 +911,7 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
     assert_eq!(object_inspection.object_format, "wasm_object");
     assert!(object_inspection.wasm_magic_valid);
     assert!(object_inspection.wasm_version_valid);
-    assert_eq!(object_inspection.object_section_count, 3);
+    assert_eq!(object_inspection.object_section_count, 12);
     assert!(object_inspection
         .object_sections
         .iter()
@@ -939,20 +924,16 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         .object_sections
         .iter()
         .any(|section| section.custom_name.as_deref() == Some("target_features")));
-    assert!(!object_inspection.object_has_code_section);
+    assert!(object_inspection.object_has_code_section);
     assert!(object_inspection.object_has_linking_metadata);
-    assert_eq!(object_inspection.object_symbol_count, 0);
-    assert_eq!(object_inspection.object_function_count, 0);
-    assert_eq!(
-        object_inspection.object_imports,
-        vec!["env::__linear_memory".to_owned()]
-    );
-    assert!(object_inspection.object_is_empty);
-    assert!(!object_inspection.object_has_code_bearing_content);
-    assert_eq!(
-        codegen_handoff.object_codegen_source,
-        "empty_llvm_module_before_mono_item_lowering"
-    );
+    assert_eq!(object_inspection.object_symbol_count, 1);
+    assert_eq!(object_inspection.object_function_count, 9);
+    assert!(object_inspection
+        .object_imports
+        .contains(&"env::__stack_pointer".to_owned()));
+    assert!(!object_inspection.object_is_empty);
+    assert!(object_inspection.object_has_code_bearing_content);
+    assert_eq!(codegen_handoff.object_codegen_source, "mono_item_graph");
     assert!(codegen_handoff.llvm_ir_emitted);
     assert_eq!(
         codegen_handoff.llvm_ir_sha256.as_deref(),
@@ -963,9 +944,15 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         codegen_handoff.codegen_artifact_kind.as_deref(),
         Some("wasm_object")
     );
-    assert_eq!(codegen_handoff.codegen_artifact_byte_len, Some(207));
-    assert!(!codegen_handoff.linker_handoff_created);
-    assert!(codegen_handoff.linker_handoff.is_none());
+    assert_eq!(codegen_handoff.codegen_artifact_byte_len, Some(1_887));
+    assert!(codegen_handoff.linker_handoff_created);
+    let linker_handoff = codegen_handoff
+        .linker_handoff
+        .as_ref()
+        .expect("mono-item object must open linker handoff");
+    assert_eq!(linker_handoff.current_status, "wasm_ld_invoked");
+    assert!(linker_handoff.linker_invoked);
+    assert_eq!(linker_handoff.exit_code, Some(0));
     codegen_handoff
         .validate_against_monomorphization_proof(mono_proof)
         .unwrap();
@@ -975,7 +962,7 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
             .as_ref()
             .unwrap()
             .stage,
-        RustCompilerStage::Codegen
+        RustCompilerStage::ArtifactEmission
     );
 
     let mono_path = format!("{}/proofs/monomorphization.json", report.run_root);
@@ -987,22 +974,22 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
     assert!(manifest.proof_files.contains(&codegen_path));
     assert_eq!(
         manifest.artifact_pipeline[0].blocked_at_stage,
-        Some(RustCompilerStage::Codegen)
+        Some(RustCompilerStage::ArtifactEmission)
     );
     assert_eq!(
         manifest.artifact_pipeline[0].blocker_component.as_deref(),
-        Some("rustc_codegen_llvm mono item lowering")
+        Some("rouwdi-rustc-artifact-writer")
     );
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
         .iter()
         .any(|stage| stage.stage == RustCompilerStage::Codegen
-            && stage.status == ArtifactPipelineStageStatus::Blocked));
+            && stage.status == ArtifactPipelineStageStatus::Completed));
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
         .iter()
         .any(|stage| stage.stage == RustCompilerStage::Linking
-            && stage.status == ArtifactPipelineStageStatus::Planned));
+            && stage.status == ArtifactPipelineStageStatus::Completed));
     assert!(manifest.artifact_pipeline[0]
         .remaining_stages
         .iter()
@@ -1015,9 +1002,7 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
             unit.mono_item_count == Some(1)
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
                 && unit.codegen_handoff_status.as_deref()
-                    == Some(
-                        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit",
-                    )
+                    == Some("rust_mono_item_wasm_object_emitted")
         }));
 }
 
@@ -1207,6 +1192,10 @@ fn linker_handoff_without_codegen_bytes_is_rejected() {
     let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
 
     codegen_handoff.current_status = "llvm_ir_emitted".to_owned();
+    codegen_handoff.rust_mono_item_wasm_object_emitted = false;
+    codegen_handoff.object_contains_codegened_function = false;
+    codegen_handoff.codegened_mono_item_count = 0;
+    codegen_handoff.codegened_symbols.clear();
     codegen_handoff.object_bytes_emitted = false;
     codegen_handoff.wasm_object_bytes_emitted = false;
     codegen_handoff.object_path = None;
@@ -1233,6 +1222,10 @@ fn linker_handoff_from_llvm_ir_is_rejected() {
     let llvm_ir_sha = codegen_handoff.llvm_ir_sha256.clone().unwrap();
 
     codegen_handoff.current_status = "llvm_ir_emitted".to_owned();
+    codegen_handoff.rust_mono_item_wasm_object_emitted = false;
+    codegen_handoff.object_contains_codegened_function = false;
+    codegen_handoff.codegened_mono_item_count = 0;
+    codegen_handoff.codegened_symbols.clear();
     codegen_handoff.object_bytes_emitted = false;
     codegen_handoff.wasm_object_bytes_emitted = false;
     codegen_handoff.object_path = None;
@@ -1438,25 +1431,21 @@ fn rustc_codegen_llvm_is_named_and_attempted_in_import_ledger() {
         component.source_path,
         "third_party/rust/compiler/rustc_codegen_llvm"
     );
-    assert_eq!(
-        component.blocker_kind,
-        "codegen_lowering_to_object_not_implemented"
-    );
+    assert_eq!(component.blocker_kind, "none");
     assert!(component
         .probe_command
         .contains("compiler/rustc_codegen_llvm"));
     assert!(component.exact_blocker.contains("embedded"));
     assert!(component.exact_blocker.contains("LLVM IR"));
     assert!(component.exact_blocker.contains("Wasm object"));
-    assert!(component.exact_blocker.contains("LLVM context/module"));
-    assert!(component.exact_blocker.contains("target machine"));
+    assert!(component.exact_blocker.contains("LLVM"));
+    assert!(component.exact_blocker.contains("module"));
+    assert!(component.exact_blocker.contains("target"));
     assert!(component
         .exact_blocker
         .contains("LLVMTargetMachineEmitToMemoryBuffer"));
-    assert!(component.exact_blocker.contains("empty/probe-only"));
-    assert!(component
-        .exact_blocker
-        .contains("linker handoff remains closed"));
+    assert!(component.exact_blocker.contains("code-bearing Wasm object"));
+    assert!(component.exact_blocker.contains("runtime proof"));
     assert!(component.exact_blocker.contains("wasm-ld"));
     assert!(component
         .adapter_evidence

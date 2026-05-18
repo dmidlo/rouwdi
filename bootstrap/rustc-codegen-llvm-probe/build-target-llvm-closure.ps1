@@ -78,8 +78,11 @@ $requiredComponents = @(
     "LLVMBitstreamReader",
     "LLVMBinaryFormat",
     "LLVMTargetParser",
+    "LLVMOption",
     "LLVMSupport",
-    "LLVMDemangle"
+    "LLVMDemangle",
+    "lldCommon",
+    "lldWasm"
 )
 
 function To-RepoRelativePath {
@@ -324,7 +327,9 @@ $configureResult = Invoke-CapturedNative -LogPath $configureLogPath -Command {
         -DLLVM_DEFAULT_TARGET_TRIPLE=$targetTriple `
         -DLLVM_TARGETS_TO_BUILD=WebAssembly `
         -DLLVM_ENABLE_CRASH_OVERRIDES=OFF `
-        -DLLVM_ENABLE_THREADS=OFF
+        -DLLVM_ENABLE_THREADS=OFF `
+        -DLLVM_ENABLE_PROJECTS=lld `
+        -DLLVM_TOOL_LLD_BUILD=ON
 }
 
 $buildResult = $null
