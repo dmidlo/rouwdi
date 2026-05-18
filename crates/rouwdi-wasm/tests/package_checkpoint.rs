@@ -496,6 +496,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 .as_u64()
                 .is_some_and(|count| count > 0));
             assert!(payload["object_symbol_count"].is_number());
+            assert!(payload["object_symbols"]
+                .as_array()
+                .is_some_and(|symbols| symbols.len()
+                    == payload["object_symbol_count"].as_u64().unwrap_or_default() as usize));
             assert!(payload["object_function_count"].is_number());
             assert!(payload["object_is_empty"].is_boolean());
             assert!(payload["object_has_code_bearing_content"].is_boolean());
@@ -524,6 +528,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     payload["object_contains_codegened_function"],
                     Value::Bool(true)
                 );
+                assert_eq!(
+                    payload["object_symbol_table_contains_codegened_symbol"],
+                    Value::Bool(true)
+                );
                 assert!(payload["codegened_mono_item_count"]
                     .as_u64()
                     .is_some_and(|count| count > 0));
@@ -535,6 +543,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             } else {
                 assert_eq!(
                     payload["object_contains_codegened_function"],
+                    Value::Bool(false)
+                );
+                assert_eq!(
+                    payload["object_symbol_table_contains_codegened_symbol"],
                     Value::Bool(false)
                 );
                 assert_eq!(payload["codegened_mono_item_count"], Value::from(0));
@@ -660,6 +672,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .as_u64()
                     .is_some_and(|count| count > 0)
                 && entry["object_symbol_count"].is_number()
+                && entry["object_symbols"].as_array().is_some_and(|symbols| {
+                    symbols.len()
+                        == entry["object_symbol_count"].as_u64().unwrap_or_default() as usize
+                })
                 && entry["object_function_count"].is_number()
                 && entry["object_is_empty"].is_boolean()
                 && entry["object_has_code_bearing_content"].is_boolean()
@@ -678,6 +694,8 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .is_some_and(|errors| errors.is_empty())
                 && if entry["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
                     entry["object_contains_codegened_function"] == Value::Bool(true)
+                        && entry["object_symbol_table_contains_codegened_symbol"]
+                            == Value::Bool(true)
                         && entry["codegened_mono_item_count"]
                             .as_u64()
                             .is_some_and(|count| count > 0)
@@ -686,6 +704,8 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                         && entry["linker_handoff_created"] == Value::Bool(true)
                 } else {
                     entry["object_contains_codegened_function"] == Value::Bool(false)
+                        && entry["object_symbol_table_contains_codegened_symbol"]
+                            == Value::Bool(false)
                         && entry["codegened_mono_item_count"] == Value::from(0)
                         && entry["object_function_count"] == Value::from(0)
                         && entry["object_is_empty"] == Value::Bool(true)

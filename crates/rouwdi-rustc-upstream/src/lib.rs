@@ -2863,6 +2863,7 @@ fn empty_codegen_probe_object_inspection() -> WasmObjectInspection {
         object_has_linking_metadata: true,
         object_has_relocation_sections: false,
         object_symbol_count: 0,
+        object_symbols: Vec::new(),
         object_function_count: 0,
         object_imported_function_count: 0,
         object_export_count: 0,

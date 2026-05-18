@@ -1373,6 +1373,12 @@ impl RustCodegenHandoffRecord {
             if !inspection.wasm_magic_valid || !inspection.wasm_version_valid {
                 return Err("object inspection requires valid Wasm magic and version".to_owned());
             }
+            if !inspection.parse_errors.is_empty() {
+                return Err("object inspection must not contain parse errors".to_owned());
+            }
+            if inspection.object_symbol_count != inspection.object_symbols.len() as u64 {
+                return Err("object symbol table count must match parsed object symbols".to_owned());
+            }
             if inspection.object_format != self.object_format.as_deref().unwrap_or_default()
                 || Some(inspection.object_section_count) != self.object_section_count
                 || Some(inspection.object_has_code_section) != self.object_has_code_section
@@ -1402,6 +1408,25 @@ impl RustCodegenHandoffRecord {
                         "mono-item object success requires code-bearing object content tied to the mono graph"
                             .to_owned(),
                     );
+                }
+                let object_symbol_names = inspection
+                    .object_symbols
+                    .iter()
+                    .filter(|symbol| symbol.kind == "function" && !symbol.undefined)
+                    .filter_map(|symbol| symbol.name.as_deref())
+                    .chain(inspection.object_exports.iter().map(String::as_str))
+                    .collect::<BTreeSet<_>>();
+                let missing_symbols = self
+                    .codegened_symbols
+                    .iter()
+                    .filter(|symbol| !object_symbol_names.contains(symbol.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !missing_symbols.is_empty() {
+                    return Err(format!(
+                        "codegened symbol(s) missing from parsed object symbol table/export list: {}",
+                        missing_symbols.join(", ")
+                    ));
                 }
                 if self.current_status != "rust_mono_item_wasm_object_emitted" {
                     return Err(

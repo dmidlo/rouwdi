@@ -211,6 +211,7 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub codegened_mono_item_count: u64,
     pub codegened_symbols: Vec<String>,
     pub object_contains_codegened_function: bool,
+    pub object_symbol_table_contains_codegened_symbol: bool,
     pub object_derived_from: Option<String>,
     pub object_codegen_source: Option<String>,
     pub object_inspection: Option<WasmObjectInspection>,
@@ -760,11 +761,18 @@ fn execute_embedded_codegen_payload(
     let wasm_object_bytes_emitted = json_bool(output_json.as_ref(), "wasm_object_bytes_emitted")
         && object_bytes_emitted
         && object_artifact_kind.as_deref() == Some("wasm_object");
+    let reported_codegened_symbols = json_string_array(output_json.as_ref(), "codegened_symbols");
+    let object_symbol_table_contains_codegened_symbol =
+        object_contains_any_reported_codegened_symbol(
+            object_inspection.as_ref(),
+            &reported_codegened_symbols,
+        );
     let reported_object_contains_codegened_function =
         json_bool(output_json.as_ref(), "object_contains_codegened_function")
             || json_bool(object_artifact, "object_contains_codegened_function");
     let object_contains_codegened_function = wasm_object_bytes_emitted
         && reported_object_contains_codegened_function
+        && object_symbol_table_contains_codegened_symbol
         && object_inspection
             .as_ref()
             .is_some_and(|inspection| inspection.object_has_code_bearing_content);
@@ -781,7 +789,7 @@ fn execute_embedded_codegen_payload(
         0
     };
     let codegened_symbols = if rust_mono_item_wasm_object_emitted {
-        json_string_array(output_json.as_ref(), "codegened_symbols")
+        reported_codegened_symbols
     } else {
         Vec::new()
     };
@@ -932,6 +940,7 @@ fn execute_embedded_codegen_payload(
         codegened_mono_item_count,
         codegened_symbols,
         object_contains_codegened_function,
+        object_symbol_table_contains_codegened_symbol,
         object_derived_from: json_string_field(output_json.as_ref(), "object_derived_from")
             .or_else(|| json_string_field(object_artifact, "object_derived_from")),
         object_codegen_source: json_string_field(output_json.as_ref(), "object_codegen_source")
@@ -2406,6 +2415,27 @@ fn json_string_array(value: Option<&serde_json::Value>, key: &str) -> Vec<String
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn object_contains_any_reported_codegened_symbol(
+    inspection: Option<&WasmObjectInspection>,
+    reported_symbols: &[String],
+) -> bool {
+    let Some(inspection) = inspection else {
+        return false;
+    };
+    reported_symbols.iter().any(|reported| {
+        let reported = reported.as_str();
+        !reported.is_empty()
+            && (inspection.object_symbols.iter().any(|symbol| {
+                symbol.kind == "function"
+                    && !symbol.undefined
+                    && symbol.name.as_deref() == Some(reported)
+            }) || inspection
+                .object_exports
+                .iter()
+                .any(|export| export == reported))
+    })
 }
 
 fn codegen_payload_argv() -> Vec<String> {

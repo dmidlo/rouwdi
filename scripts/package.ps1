@@ -725,6 +725,10 @@ try {
         if ($objectSections.Count -ne [int64]$codegenPayloadExecution.object_section_count) {
             throw "Canonical object inspection must carry a parsed section list"
         }
+        $objectSymbols = @($codegenPayloadExecution.object_inspection.object_symbols)
+        if ($objectSymbols.Count -ne [int64]$codegenPayloadExecution.object_symbol_count) {
+            throw "Canonical object inspection symbol count does not match parsed object_symbols"
+        }
         if ($codegenPayloadExecution.object_inspection.object_has_code_section -ne $codegenPayloadExecution.object_has_code_section `
             -or $codegenPayloadExecution.object_inspection.object_has_linking_metadata -ne $codegenPayloadExecution.object_has_linking_metadata `
             -or [int64]$codegenPayloadExecution.object_inspection.object_symbol_count -ne [int64]$codegenPayloadExecution.object_symbol_count `
@@ -740,6 +744,9 @@ try {
         if ($codegenPayloadExecution.rust_mono_item_wasm_object_emitted -eq $true) {
             if ($codegenPayloadExecution.object_contains_codegened_function -ne $true -or [int64]$codegenPayloadExecution.codegened_mono_item_count -le 0) {
                 throw "Canonical mono-item object success requires codegened mono item count and function content"
+            }
+            if ($codegenPayloadExecution.object_symbol_table_contains_codegened_symbol -ne $true) {
+                throw "Canonical mono-item object success requires a parsed object symbol/export matching a codegened mono item symbol"
             }
             if ([string]$codegenPayloadExecution.object_codegen_source -ne "mono_item_graph") {
                 throw "Canonical mono-item object success must be sourced from the mono item graph"
@@ -862,6 +869,7 @@ try {
     $objectWasmMagicValid = if ($null -ne $objectInspection) { $objectInspection.wasm_magic_valid } else { $null }
     $objectWasmVersionValid = if ($null -ne $objectInspection) { $objectInspection.wasm_version_valid } else { $null }
     $objectSections = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.object_sections } else { [object[]]@() }
+    $objectSymbols = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.object_symbols } else { [object[]]@() }
     $objectHasRelocationSections = if ($null -ne $objectInspection) { $objectInspection.object_has_relocation_sections } else { $null }
     $objectImportedFunctionCount = if ($null -ne $objectInspection) { $objectInspection.object_imported_function_count } else { $null }
     $objectExportCount = if ($null -ne $objectInspection) { $objectInspection.object_export_count } else { $null }
@@ -1035,6 +1043,8 @@ try {
         object_wasm_magic_valid = $objectWasmMagicValid
         object_wasm_version_valid = $objectWasmVersionValid
         object_sections = @($objectSections)
+        object_symbols = @($objectSymbols)
+        object_symbol_table_contains_codegened_symbol = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_symbol_table_contains_codegened_symbol } else { $false }
         object_has_relocation_sections = $objectHasRelocationSections
         object_imported_function_count = $objectImportedFunctionCount
         object_export_count = $objectExportCount
@@ -1178,6 +1188,8 @@ try {
                 object_wasm_magic_valid = $objectWasmMagicValid
                 object_wasm_version_valid = $objectWasmVersionValid
                 object_sections = @($objectSections)
+                object_symbols = @($objectSymbols)
+                object_symbol_table_contains_codegened_symbol = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_symbol_table_contains_codegened_symbol } else { $false }
                 object_has_relocation_sections = $objectHasRelocationSections
                 object_imported_function_count = $objectImportedFunctionCount
                 object_export_count = $objectExportCount
@@ -1362,6 +1374,8 @@ try {
             object_wasm_magic_valid = $objectWasmMagicValid
             object_wasm_version_valid = $objectWasmVersionValid
             object_sections = @($objectSections)
+            object_symbols = @($objectSymbols)
+            object_symbol_table_contains_codegened_symbol = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_symbol_table_contains_codegened_symbol } else { $false }
             object_has_relocation_sections = $objectHasRelocationSections
             object_imported_function_count = $objectImportedFunctionCount
             object_export_count = $objectExportCount

@@ -11,6 +11,7 @@ pub struct WasmObjectInspection {
     pub object_has_linking_metadata: bool,
     pub object_has_relocation_sections: bool,
     pub object_symbol_count: u64,
+    pub object_symbols: Vec<WasmObjectSymbol>,
     pub object_function_count: u64,
     pub object_imported_function_count: u64,
     pub object_export_count: u64,
@@ -30,6 +31,16 @@ pub struct WasmObjectSection {
     pub offset: u64,
     pub payload_offset: u64,
     pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WasmObjectSymbol {
+    pub index: u64,
+    pub kind: String,
+    pub flags: u32,
+    pub wasm_index: Option<u32>,
+    pub name: Option<String>,
+    pub undefined: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +96,24 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn read_varuint64(&mut self) -> Result<u64, String> {
+        let mut result = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.read_u8()?;
+            result |= ((byte & 0x7f) as u64)
+                .checked_shl(shift)
+                .ok_or_else(|| "varuint64 shift overflow".to_owned())?;
+            if byte & 0x80 == 0 {
+                return Ok(result);
+            }
+            shift += 7;
+            if shift > 63 {
+                return Err("varuint64 is too large".to_owned());
+            }
+        }
+    }
+
     fn read_name(&mut self) -> Result<String, String> {
         let len = self.read_varuint()? as usize;
         let start = self.offset;
@@ -108,6 +137,7 @@ struct Accumulator {
     code_body_count: u64,
     export_count: u64,
     symbol_count: u64,
+    symbols: Vec<WasmObjectSymbol>,
     imports: Vec<String>,
     exports: Vec<String>,
     has_code_section: bool,
@@ -209,6 +239,7 @@ fn finish_inspection(
         object_has_linking_metadata: acc.has_linking_metadata,
         object_has_relocation_sections: acc.has_relocation_sections,
         object_symbol_count: acc.symbol_count,
+        object_symbols: acc.symbols,
         object_function_count: acc.code_body_count.max(acc.defined_function_count),
         object_imported_function_count: acc.imported_function_count,
         object_export_count: acc.export_count,
@@ -338,9 +369,64 @@ fn parse_linking_section(reader: &mut Reader<'_>, acc: &mut Accumulator) -> Resu
         }
         if subsection_id == 8 {
             let mut symbol_reader = Reader::new(reader.bytes, start, end);
-            acc.symbol_count = symbol_reader.read_varuint()? as u64;
+            parse_symbol_table(&mut symbol_reader, acc)?;
         }
         reader.offset = end;
+    }
+    Ok(())
+}
+
+const WASM_SYMBOL_UNDEFINED: u32 = 0x10;
+const WASM_SYMBOL_EXPLICIT_NAME: u32 = 0x40;
+const WASM_SYMBOL_ABSOLUTE: u32 = 0x200;
+
+fn parse_symbol_table(reader: &mut Reader<'_>, acc: &mut Accumulator) -> Result<(), String> {
+    let count = reader.read_varuint()?;
+    acc.symbol_count = count as u64;
+    for index in 0..count {
+        let kind = reader.read_u8()?;
+        let flags = reader.read_varuint()?;
+        let undefined = flags & WASM_SYMBOL_UNDEFINED != 0;
+        let (wasm_index, name) = match kind {
+            0 | 2 | 4 | 5 => {
+                let element_index = reader.read_varuint()?;
+                let name = if !undefined || flags & WASM_SYMBOL_EXPLICIT_NAME != 0 {
+                    Some(reader.read_name()?)
+                } else {
+                    None
+                };
+                (Some(element_index), name)
+            }
+            1 => {
+                let name = Some(reader.read_name()?);
+                if !undefined {
+                    let segment_index = reader.read_varuint()?;
+                    if flags & WASM_SYMBOL_ABSOLUTE == 0 {
+                        let _offset = reader.read_varuint64()?;
+                        let _size = reader.read_varuint64()?;
+                    } else {
+                        let _absolute_offset = reader.read_varuint64()?;
+                        let _size = reader.read_varuint64()?;
+                    }
+                    (Some(segment_index), name)
+                } else {
+                    (None, name)
+                }
+            }
+            3 => {
+                let section_index = reader.read_varuint()?;
+                (Some(section_index), None)
+            }
+            _ => return Err(format!("unsupported wasm symbol kind {kind}")),
+        };
+        acc.symbols.push(WasmObjectSymbol {
+            index: index as u64,
+            kind: symbol_kind_name(kind).to_owned(),
+            flags,
+            wasm_index,
+            name,
+            undefined,
+        });
     }
     Ok(())
 }
@@ -388,6 +474,18 @@ fn section_name(section_id: u8) -> &'static str {
     }
 }
 
+fn symbol_kind_name(kind: u8) -> &'static str {
+    match kind {
+        0 => "function",
+        1 => "data",
+        2 => "global",
+        3 => "section",
+        4 => "tag",
+        5 => "table",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +516,30 @@ mod tests {
         out
     }
 
+    fn linking_symbol_table(symbols: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut symbol_table = Vec::new();
+        symbol_table.extend(varuint(symbols.len() as u32));
+        for mut symbol in symbols {
+            symbol_table.append(&mut symbol);
+        }
+
+        let mut payload = Vec::new();
+        payload.extend(varuint(2));
+        payload.push(8);
+        payload.extend(varuint(symbol_table.len() as u32));
+        payload.extend(symbol_table);
+        payload
+    }
+
+    fn function_symbol(index: u32, name: &str) -> Vec<u8> {
+        let mut symbol = vec![0];
+        symbol.extend(varuint(0));
+        symbol.extend(varuint(index));
+        symbol.extend(varuint(name.len() as u32));
+        symbol.extend(name.as_bytes());
+        symbol
+    }
+
     #[test]
     fn detects_empty_wasm_object_with_linking_metadata() {
         let mut module = b"\0asm\x01\0\0\0".to_vec();
@@ -431,6 +553,7 @@ mod tests {
         assert_eq!(inspection.object_section_count, 1);
         assert!(inspection.object_has_linking_metadata);
         assert_eq!(inspection.object_symbol_count, 0);
+        assert!(inspection.object_symbols.is_empty());
         assert_eq!(inspection.object_function_count, 0);
         assert!(!inspection.object_has_code_section);
         assert!(!inspection.object_has_code_bearing_content);
@@ -462,6 +585,44 @@ mod tests {
         assert!(inspection.object_has_code_section);
         assert!(inspection.object_has_code_bearing_content);
         assert!(!inspection.object_is_empty);
+        assert!(inspection.parse_errors.is_empty());
+    }
+
+    #[test]
+    fn parses_linking_symbol_table_function_names() {
+        let mut type_section = vec![1, 0x60, 0, 0];
+        let mut function_section = vec![1, 0];
+        let mut body = vec![2, 0, 0x0b];
+        let mut code_section = vec![1];
+        code_section.append(&mut body);
+
+        let mut module = b"\0asm\x01\0\0\0".to_vec();
+        module.push(1);
+        module.extend(varuint(type_section.len() as u32));
+        module.append(&mut type_section);
+        module.push(3);
+        module.extend(varuint(function_section.len() as u32));
+        module.append(&mut function_section);
+        module.push(10);
+        module.extend(varuint(code_section.len() as u32));
+        module.append(&mut code_section);
+        module.extend(named_custom_section(
+            "linking",
+            &linking_symbol_table(vec![function_symbol(0, "_RNvC8rouwdi_4main")]),
+        ));
+
+        let inspection = inspect_wasm_object(&module);
+
+        assert_eq!(inspection.object_symbol_count, 1);
+        assert_eq!(inspection.object_symbols.len(), 1);
+        assert_eq!(inspection.object_symbols[0].kind, "function");
+        assert_eq!(
+            inspection.object_symbols[0].name.as_deref(),
+            Some("_RNvC8rouwdi_4main")
+        );
+        assert!(!inspection.object_symbols[0].undefined);
+        assert_eq!(inspection.object_function_count, 1);
+        assert!(inspection.object_has_code_bearing_content);
         assert!(inspection.parse_errors.is_empty());
     }
 }

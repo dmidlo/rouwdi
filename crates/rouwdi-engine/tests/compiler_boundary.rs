@@ -280,6 +280,14 @@ fn mark_handoff_as_mono_item_wasm_object(
         object_has_linking_metadata: true,
         object_has_relocation_sections: false,
         object_symbol_count: 1,
+        object_symbols: vec![rouwdi_object::WasmObjectSymbol {
+            index: 0,
+            kind: "function".to_owned(),
+            flags: 0,
+            wasm_index: Some(0),
+            name: Some("_RNvC8rouwdi_4main".to_owned()),
+            undefined: false,
+        }],
         object_function_count: 1,
         object_imported_function_count: 0,
         object_export_count: 0,
@@ -1228,6 +1236,30 @@ fn object_bytes_without_full_inspection_are_rejected() {
         .validate_against_monomorphization_proof(&mono_proof)
         .unwrap_err()
         .contains("full parsed object inspection"));
+}
+
+#[test]
+fn mono_item_object_without_matching_parsed_symbol_is_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    mark_handoff_as_mono_item_wasm_object(&mut codegen_handoff, "f".repeat(64));
+    codegen_handoff
+        .object_inspection
+        .as_mut()
+        .unwrap()
+        .object_symbols
+        .clear();
+    codegen_handoff
+        .object_inspection
+        .as_mut()
+        .unwrap()
+        .object_symbol_count = 0;
+    codegen_handoff.object_symbol_count = Some(0);
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("missing from parsed object symbol table"));
 }
 
 #[test]
