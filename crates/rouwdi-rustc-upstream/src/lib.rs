@@ -145,6 +145,12 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub host_probe_resolved_libraries: Vec<String>,
     pub host_probe_unresolved_symbols: Vec<String>,
     pub codegen_contact_state: String,
+    pub codegen_lowering_status: String,
+    pub codegen_lowering_blocker_kind: String,
+    pub codegen_lowering_blocker_component: String,
+    pub codegen_lowering_blocker_reason: String,
+    pub codegen_lowering_required_path: Vec<String>,
+    pub codegen_lowering_missing_inputs: Vec<String>,
     pub mono_proof_consumed: bool,
     pub compile_unit_id: String,
     pub crate_identity: String,
@@ -2676,6 +2682,31 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         ],
         host_probe_unresolved_symbols: Vec::new(),
         codegen_contact_state: "target_machine_created".to_owned(),
+        codegen_lowering_status:
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+                .to_owned(),
+        codegen_lowering_blocker_kind:
+            "rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+                .to_owned(),
+        codegen_lowering_blocker_component: "rustc_codegen_ssa::base::codegen_crate".to_owned(),
+        codegen_lowering_blocker_reason: "The backend payload has a real mono item graph proof and rustc_codegen_llvm backend contact, but the current payload ABI supplies proof scalars rather than the live TyCtxt and CodegenUnit inputs required by rustc_codegen_ssa::base::codegen_crate and rustc_codegen_llvm::base::compile_codegen_unit; the emitted object is therefore empty/probe-only and linker handoff remains closed.".to_owned(),
+        codegen_lowering_required_path: vec![
+            "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate".to_owned(),
+            "rustc_codegen_ssa::base::codegen_crate".to_owned(),
+            "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned(),
+            "rustc_codegen_ssa::traits::backend::ExtraBackendMethods::compile_codegen_unit"
+                .to_owned(),
+            "rustc_codegen_llvm::base::compile_codegen_unit".to_owned(),
+            "rustc_codegen_llvm::base::module_codegen".to_owned(),
+            "rustc_codegen_llvm::context::CodegenCx".to_owned(),
+            "rustc_codegen_ssa::mir::codegen_mir".to_owned(),
+        ],
+        codegen_lowering_missing_inputs: vec![
+            "live rustc_middle::ty::TyCtxt<'tcx>".to_owned(),
+            "live rustc_middle::mir::mono::CodegenUnit<'tcx>".to_owned(),
+            "live rustc_codegen_llvm::context::CodegenCx<'ll, 'tcx>".to_owned(),
+            "rustc_codegen_ssa::ModuleCodegen<rustc_codegen_llvm::ModuleLlvm>".to_owned(),
+        ],
         mono_proof_consumed: true,
         compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
         crate_identity: "rouwdi_payload".to_owned(),
@@ -2721,7 +2752,7 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         backend_payload_first_undefined_symbol: String::new(),
         backend_payload_llvm_undefined_symbols: Vec::new(),
         backend_payload_execution_status:
-            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned(),
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit".to_owned(),
         backend_payload_blocker_kind: "codegen_lowering_to_object_not_implemented".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
         llvm_wrapper_target_artifact_kind: "staticlib".to_owned(),
@@ -4437,6 +4468,25 @@ mod tests {
             .host_probe_resolved_libraries
             .contains(&"llvm-wrapper.lib".to_owned()));
         assert_eq!(probe.codegen_contact_state, "target_machine_created");
+        assert_eq!(
+            probe.codegen_lowering_status,
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        );
+        assert_eq!(
+            probe.codegen_lowering_blocker_kind,
+            "rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        );
+        assert_eq!(
+            probe.codegen_lowering_blocker_component,
+            "rustc_codegen_ssa::base::codegen_crate"
+        );
+        assert!(probe
+            .codegen_lowering_required_path
+            .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
+        assert!(probe
+            .codegen_lowering_missing_inputs
+            .iter()
+            .any(|input| input.contains("TyCtxt")));
         assert!(probe.mono_proof_consumed);
         assert_eq!(probe.compile_unit_id, "app:rust:app:wasm32-wasip1");
         assert_eq!(probe.mir_body_hash, "a5e137ef6793c0b8");
@@ -4483,7 +4533,7 @@ mod tests {
         assert!(probe.backend_payload_llvm_undefined_symbols.is_empty());
         assert_eq!(
             probe.backend_payload_execution_status,
-            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
         );
         assert_eq!(
             probe.backend_payload_blocker_kind,

@@ -92,6 +92,27 @@ type LLVMMemoryBufferRef = *mut c_void;
 
 const LLVM_OBJECT_FILE: c_uint = 1;
 const OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1.o";
+const CODEGEN_LOWERING_STATUS: &str =
+    "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit";
+const CODEGEN_LOWERING_BLOCKER_KIND: &str =
+    "rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit";
+const CODEGEN_LOWERING_BLOCKER_COMPONENT: &str = "rustc_codegen_ssa::base::codegen_crate";
+const CODEGEN_LOWERING_PATH: &[&str] = &[
+    "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate",
+    "rustc_codegen_ssa::base::codegen_crate",
+    "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items",
+    "rustc_codegen_ssa::traits::backend::ExtraBackendMethods::compile_codegen_unit",
+    "rustc_codegen_llvm::base::compile_codegen_unit",
+    "rustc_codegen_llvm::base::module_codegen",
+    "rustc_codegen_llvm::context::CodegenCx",
+    "rustc_codegen_ssa::mir::codegen_mir",
+];
+const CODEGEN_LOWERING_MISSING_INPUTS: &[&str] = &[
+    "live rustc_middle::ty::TyCtxt<'tcx>",
+    "live rustc_middle::mir::mono::CodegenUnit<'tcx>",
+    "live rustc_codegen_llvm::context::CodegenCx<'ll, 'tcx>",
+    "rustc_codegen_ssa::ModuleCodegen<rustc_codegen_llvm::ModuleLlvm>",
+];
 
 #[link(name = "llvm-wrapper", kind = "static")]
 unsafe extern "C" {}
@@ -172,10 +193,36 @@ fn main() -> ExitCode {
     let rust_mono_item_wasm_object_emitted = object_emission.wasm_object_bytes_emitted
         && object_emission.object_contains_codegened_function
         && object_emission.codegened_mono_item_count > 0;
+    let codegen_lowering_status = if rust_mono_item_wasm_object_emitted {
+        "rust_mono_item_wasm_object_emitted"
+    } else if object_emission.wasm_object_bytes_emitted {
+        CODEGEN_LOWERING_STATUS
+    } else {
+        "codegen_lowering_not_reached"
+    };
+    let codegen_lowering_blocker_kind =
+        if object_emission.wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+            CODEGEN_LOWERING_BLOCKER_KIND
+        } else {
+            "none"
+        };
+    let codegen_lowering_blocker_component =
+        if object_emission.wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+            CODEGEN_LOWERING_BLOCKER_COMPONENT
+        } else {
+            "none"
+        };
+    let codegen_lowering_blocker_reason = if object_emission.wasm_object_bytes_emitted
+        && !rust_mono_item_wasm_object_emitted
+    {
+        "The embedded payload has the mono item graph proof and rustc_codegen_llvm backend, but it does not yet carry the live TyCtxt and CodegenUnit values required to enter rustc_codegen_ssa::base::codegen_crate and rustc_codegen_llvm::base::compile_codegen_unit; the emitted object is therefore kept classified as empty/probe-only and cannot be linked."
+    } else {
+        "none"
+    };
     let codegen_contact_state = if rust_mono_item_wasm_object_emitted {
         "rust_mono_item_wasm_object_emitted"
     } else if object_emission.wasm_object_bytes_emitted {
-        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+        codegen_lowering_status
     } else if object_emission.attempted
         && object_emission
             .blocker_kind
@@ -199,25 +246,23 @@ fn main() -> ExitCode {
     } else {
         "rustc_codegen_llvm_backend_constructed"
     };
-    let blocker_kind = if object_emission.wasm_object_bytes_emitted
-        && !rust_mono_item_wasm_object_emitted
-    {
-        "codegen_lowering_to_object_not_implemented"
-    } else {
-        target_machine_setup
-            .blocker_kind
-            .as_deref()
-            .or(module_setup.blocker_kind.as_deref())
-            .or(object_emission.blocker_kind.as_deref())
-            .unwrap_or("none")
-    };
-    let blocker_component = if object_emission.wasm_object_bytes_emitted
-        && !rust_mono_item_wasm_object_emitted
-    {
-        "rustc_codegen_llvm mono item lowering"
-    } else {
-        "none"
-    };
+    let blocker_kind =
+        if object_emission.wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+            "codegen_lowering_to_object_not_implemented"
+        } else {
+            target_machine_setup
+                .blocker_kind
+                .as_deref()
+                .or(module_setup.blocker_kind.as_deref())
+                .or(object_emission.blocker_kind.as_deref())
+                .unwrap_or("none")
+        };
+    let blocker_component =
+        if object_emission.wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+            "rustc_codegen_llvm mono item lowering"
+        } else {
+            "none"
+        };
     let blocker_reason = if object_emission.wasm_object_bytes_emitted
         && !rust_mono_item_wasm_object_emitted
     {
@@ -375,6 +420,12 @@ fn main() -> ExitCode {
         "object_contains_codegened_function": object_emission.object_contains_codegened_function,
         "object_derived_from": object_emission.object_derived_from.clone(),
         "object_codegen_source": object_emission.object_codegen_source.clone(),
+        "codegen_lowering_status": codegen_lowering_status,
+        "codegen_lowering_blocker_kind": codegen_lowering_blocker_kind,
+        "codegen_lowering_blocker_component": codegen_lowering_blocker_component,
+        "codegen_lowering_blocker_reason": codegen_lowering_blocker_reason,
+        "codegen_lowering_required_path": CODEGEN_LOWERING_PATH,
+        "codegen_lowering_missing_inputs": CODEGEN_LOWERING_MISSING_INPUTS,
         "object_inspection": object_emission.inspection.clone(),
         "object_format": object_emission.inspection.as_ref().map(|inspection| inspection.object_format.as_str()),
         "object_section_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_section_count),

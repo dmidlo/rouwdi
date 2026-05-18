@@ -692,8 +692,23 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         .any(|point| point.contains("LlvmCodegenBackend::new")));
     assert_eq!(
         codegen_handoff.codegen_contact_state,
-        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
     );
+    assert_eq!(
+        codegen_handoff.codegen_lowering_status,
+        codegen_handoff.codegen_contact_state
+    );
+    assert_eq!(
+        codegen_handoff.codegen_lowering_blocker_component,
+        "rustc_codegen_ssa::base::codegen_crate"
+    );
+    assert!(codegen_handoff
+        .codegen_lowering_required_path
+        .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
+    assert!(codegen_handoff
+        .codegen_lowering_missing_inputs
+        .iter()
+        .any(|input| input.contains("TyCtxt")));
     assert_eq!(
         codegen_handoff.host_probe_codegen_contact_state,
         "target_machine_created"
@@ -734,7 +749,7 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
     assert!(codegen_handoff.backend_payload_executed);
     assert_eq!(
         codegen_handoff.current_status,
-        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
     );
     assert_eq!(
         codegen_handoff.blocker_kind,
@@ -850,7 +865,7 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
                 && unit.mono_item_graph_hash.as_deref() == Some("0123456789abcdef")
                 && unit.codegen_handoff_status.as_deref()
                     == Some(
-                        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented",
+                        "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit",
                     )
         }));
 }

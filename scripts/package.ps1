@@ -733,6 +733,26 @@ try {
             if (-not ([string]$codegenPayloadExecution.codegen_contact_state).StartsWith("codegen_lowering_blocked_at_")) {
                 throw "Probe-only object must report exact codegen lowering frontier; got $($codegenPayloadExecution.codegen_contact_state)"
             }
+            if ([string]$codegenPayloadExecution.codegen_lowering_status -ne [string]$codegenPayloadExecution.codegen_contact_state) {
+                throw "Probe-only object must expose codegen_lowering_status matching codegen_contact_state"
+            }
+            if ([string]$codegenPayloadExecution.codegen_lowering_blocker_component -ne "rustc_codegen_ssa::base::codegen_crate") {
+                throw "Probe-only object must block at rustc_codegen_ssa::base::codegen_crate; got $($codegenPayloadExecution.codegen_lowering_blocker_component)"
+            }
+            $loweringPath = @($codegenPayloadExecution.codegen_lowering_required_path)
+            if (-not ($loweringPath -contains "rustc_codegen_llvm::base::compile_codegen_unit")) {
+                throw "Probe-only object must name rustc_codegen_llvm::base::compile_codegen_unit in codegen_lowering_required_path"
+            }
+            $loweringInputs = @($codegenPayloadExecution.codegen_lowering_missing_inputs)
+            $missingTyCtxt = $false
+            foreach ($input in $loweringInputs) {
+                if ([string]$input -like "*TyCtxt*") {
+                    $missingTyCtxt = $true
+                }
+            }
+            if (-not $missingTyCtxt) {
+                throw "Probe-only object must name live TyCtxt as a missing codegen lowering input"
+            }
         }
     } elseif ($codegenPayloadExecution.linker_handoff_created -eq $true) {
         throw "Canonical codegen payload created linker handoff without real object bytes"
@@ -755,7 +775,7 @@ try {
             if ($codegenPayloadExecution.rust_mono_item_wasm_object_emitted -eq $true -and $codegenPayloadExecution.linker_handoff_created -eq $true) {
                 "linking"
             } elseif ($codegenPayloadExecution.wasm_object_bytes_emitted -eq $true -and $codegenPayloadExecution.rust_mono_item_wasm_object_emitted -ne $true) {
-                "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+                [string]$codegenPayloadExecution.codegen_contact_state
             } else {
                 "object_emission"
             }
@@ -819,6 +839,12 @@ try {
     $objectHasCodeBearingContent = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_has_code_bearing_content } else { $null }
     $objectDerivedFrom = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_derived_from } else { $null }
     $objectCodegenSource = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_codegen_source } else { $null }
+    $codegenLoweringStatus = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_lowering_status } else { $null }
+    $codegenLoweringBlockerKind = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_lowering_blocker_kind } else { $null }
+    $codegenLoweringBlockerComponent = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_lowering_blocker_component } else { $null }
+    $codegenLoweringBlockerReason = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_lowering_blocker_reason } else { $null }
+    $codegenLoweringRequiredPath = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.codegen_lowering_required_path) { @($codegenPayloadExecution.codegen_lowering_required_path) } else { @() }
+    $codegenLoweringMissingInputs = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.codegen_lowering_missing_inputs) { @($codegenPayloadExecution.codegen_lowering_missing_inputs) } else { @() }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
@@ -977,6 +1003,12 @@ try {
         object_has_code_bearing_content = $objectHasCodeBearingContent
         object_derived_from = $objectDerivedFrom
         object_codegen_source = $objectCodegenSource
+        codegen_lowering_status = $codegenLoweringStatus
+        codegen_lowering_blocker_kind = $codegenLoweringBlockerKind
+        codegen_lowering_blocker_component = $codegenLoweringBlockerComponent
+        codegen_lowering_blocker_reason = $codegenLoweringBlockerReason
+        codegen_lowering_required_path = @($codegenLoweringRequiredPath)
+        codegen_lowering_missing_inputs = @($codegenLoweringMissingInputs)
         codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
         linker_handoff_created = $linkerHandoffCreated
         next_frontier = $nextFrontier
@@ -1104,6 +1136,12 @@ try {
                 object_has_code_bearing_content = $objectHasCodeBearingContent
                 object_derived_from = $objectDerivedFrom
                 object_codegen_source = $objectCodegenSource
+                codegen_lowering_status = $codegenLoweringStatus
+                codegen_lowering_blocker_kind = $codegenLoweringBlockerKind
+                codegen_lowering_blocker_component = $codegenLoweringBlockerComponent
+                codegen_lowering_blocker_reason = $codegenLoweringBlockerReason
+                codegen_lowering_required_path = @($codegenLoweringRequiredPath)
+                codegen_lowering_missing_inputs = @($codegenLoweringMissingInputs)
                 linker_required = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_required } else { $false }
                 linker_handoff_created = $linkerHandoffCreated
                 linker_handoff = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.output_json.linker_handoff) { $codegenPayloadExecution.output_json.linker_handoff } else { $null }
@@ -1272,6 +1310,12 @@ try {
             object_has_code_bearing_content = $objectHasCodeBearingContent
             object_derived_from = $objectDerivedFrom
             object_codegen_source = $objectCodegenSource
+            codegen_lowering_status = $codegenLoweringStatus
+            codegen_lowering_blocker_kind = $codegenLoweringBlockerKind
+            codegen_lowering_blocker_component = $codegenLoweringBlockerComponent
+            codegen_lowering_blocker_reason = $codegenLoweringBlockerReason
+            codegen_lowering_required_path = @($codegenLoweringRequiredPath)
+            codegen_lowering_missing_inputs = @($codegenLoweringMissingInputs)
             codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
             linker_handoff_created = $linkerHandoffCreated
             next_frontier = $nextFrontier

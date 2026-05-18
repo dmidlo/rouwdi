@@ -677,6 +677,12 @@ pub struct RustCodegenHandoffRecord {
     pub codegen_backend_entrypoint: String,
     pub codegen_contact_points: Vec<String>,
     pub codegen_contact_state: String,
+    pub codegen_lowering_status: String,
+    pub codegen_lowering_blocker_kind: String,
+    pub codegen_lowering_blocker_component: String,
+    pub codegen_lowering_blocker_reason: String,
+    pub codegen_lowering_required_path: Vec<String>,
+    pub codegen_lowering_missing_inputs: Vec<String>,
     pub host_probe_codegen_contact_state: String,
     pub host_probe_llvm_context_created: bool,
     pub host_probe_llvm_module_created: bool,
@@ -810,7 +816,7 @@ impl RustCodegenHandoffRecord {
         let current_status = if rust_mono_item_wasm_object_emitted {
             "rust_mono_item_wasm_object_emitted".to_owned()
         } else if object_is_probe_only {
-            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned()
+            codegen_probe.codegen_lowering_status.clone()
         } else if codegen_probe.object_emission_attempted {
             codegen_probe.backend_payload_execution_status.clone()
         } else if codegen_probe.llvm_ir_emitted {
@@ -913,6 +919,14 @@ impl RustCodegenHandoffRecord {
                 "embedded backend payload execution from dist/rouwdi.wasm".to_owned(),
             ],
             codegen_contact_state: codegen_probe.backend_payload_execution_status.clone(),
+            codegen_lowering_status: codegen_probe.codegen_lowering_status.clone(),
+            codegen_lowering_blocker_kind: codegen_probe.codegen_lowering_blocker_kind.clone(),
+            codegen_lowering_blocker_component: codegen_probe
+                .codegen_lowering_blocker_component
+                .clone(),
+            codegen_lowering_blocker_reason: codegen_probe.codegen_lowering_blocker_reason.clone(),
+            codegen_lowering_required_path: codegen_probe.codegen_lowering_required_path.clone(),
+            codegen_lowering_missing_inputs: codegen_probe.codegen_lowering_missing_inputs.clone(),
             host_probe_codegen_contact_state: codegen_probe.codegen_contact_state,
             host_probe_llvm_context_created: codegen_probe.llvm_context_created,
             host_probe_llvm_module_created: codegen_probe.llvm_module_created,
@@ -1374,6 +1388,26 @@ impl RustCodegenHandoffRecord {
                 if self.linker_handoff_created || self.linker_handoff.is_some() {
                     return Err(
                         "linker handoff is forbidden until object inspection finds mono-item code"
+                            .to_owned(),
+                    );
+                }
+                if !self
+                    .codegen_lowering_status
+                    .starts_with("codegen_lowering_blocked_at_")
+                    || self.codegen_lowering_blocker_kind == "none"
+                    || self.codegen_lowering_blocker_component
+                        != "rustc_codegen_ssa::base::codegen_crate"
+                    || !self
+                        .codegen_lowering_required_path
+                        .iter()
+                        .any(|path| path == "rustc_codegen_llvm::base::compile_codegen_unit")
+                    || !self
+                        .codegen_lowering_missing_inputs
+                        .iter()
+                        .any(|input| input.contains("TyCtxt"))
+                {
+                    return Err(
+                        "probe-only object bytes must name the exact rustc codegen lowering blocker"
                             .to_owned(),
                     );
                 }
@@ -5500,6 +5534,47 @@ mod tests {
         }
     }
 
+    fn collected_mono_proof() -> RustMonomorphizationProof {
+        RustMonomorphizationProof {
+            compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "bin".to_owned(),
+            target_triple: "wasm32-wasip1".to_owned(),
+            profile: "release".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            mir_body_identity: "def_id=app::main".to_owned(),
+            mir_body_hash: "a5e137ef6793c0b8".to_owned(),
+            mono_provider: "rustc_monomorphize".to_owned(),
+            mono_query: "rustc_middle::ty::TyCtxt::collect_and_partition_mono_items".to_owned(),
+            mono_item_count: 1,
+            mono_items: vec![RustMonoItemProof {
+                item_kind: "fn".to_owned(),
+                symbol_name: "rouwdi_payload::main".to_owned(),
+                instance_identity: Some("InstanceDef::Item(app::main)".to_owned()),
+                def_id: "DefId(0:3 ~ app::main)".to_owned(),
+                codegen_unit: Some("app.0".to_owned()),
+                linkage: Some("external".to_owned()),
+                visibility: Some("default".to_owned()),
+                source: "rustc_middle::mir::mono::MonoItem".to_owned(),
+            }],
+            mono_item_graph_hash: Some("bec5817d61819666".to_owned()),
+            partition_count: Some(1),
+            codegen_unit_count: Some(1),
+            upstream_component_identities: vec!["rustc_monomorphize::collector".to_owned()],
+            payload_sha256: "payload".to_owned(),
+            input_contract_sha256: "input".to_owned(),
+            output_contract_sha256: "output".to_owned(),
+            status: "mono_items_collected".to_owned(),
+            blocker_kind: None,
+            blocker_component: None,
+            blocker_message: None,
+            failed_query: None,
+            last_successful_compiler_step: Some("collect_and_partition_mono_items".to_owned()),
+            fabricated_mono_items: false,
+        }
+    }
+
     #[test]
     fn embeds_real_upstream_rustc_lexer() {
         let tokens = lex_rust_source("fn main() { let raw = r#\"hello\"#; }\n");
@@ -6245,5 +6320,42 @@ mod tests {
         }));
         assert!(record.missing_stage.is_none());
         assert_eq!(record.artifact, None);
+    }
+
+    #[test]
+    fn codegen_handoff_blocks_probe_only_object_at_exact_upstream_lowering_path() {
+        let proof = collected_mono_proof();
+
+        let handoff = RustCodegenHandoffRecord::from_valid_monomorphization_proof(&proof)
+            .expect("collected mono proof must create codegen handoff");
+
+        assert!(!handoff.rust_mono_item_wasm_object_emitted);
+        assert!(handoff.object_bytes_emitted);
+        assert_eq!(
+            handoff.current_status,
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        );
+        assert_eq!(
+            handoff.codegen_lowering_status,
+            "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit"
+        );
+        assert_eq!(
+            handoff.codegen_lowering_blocker_component,
+            "rustc_codegen_ssa::base::codegen_crate"
+        );
+        assert!(handoff
+            .codegen_lowering_required_path
+            .contains(&"rustc_codegen_llvm::base::compile_codegen_unit".to_owned()));
+        assert!(handoff
+            .codegen_lowering_missing_inputs
+            .iter()
+            .any(|input| input.contains("TyCtxt")));
+        assert_eq!(handoff.object_function_count, Some(0));
+        assert_eq!(handoff.object_is_empty, Some(true));
+        assert!(!handoff.linker_handoff_created);
+        assert!(handoff.linker_handoff.is_none());
+        handoff
+            .validate_against_monomorphization_proof(&proof)
+            .expect("probe-only object must validate only as an exact blocker");
     }
 }

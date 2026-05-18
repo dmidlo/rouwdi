@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 const MIN_PRODUCT_SIZE_BYTES: u64 = 1_048_576;
 const EXTERNAL_ONLY_STATES: &[&str] =
     &["metadata_reference_only", "external_hash_verified_payload"];
+const PROBE_ONLY_CODEGEN_BLOCKERS: &[&str] = &[
+    "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented",
+    "codegen_lowering_blocked_at_rustc_codegen_ssa_base_codegen_crate_requires_live_tyctxt_and_codegen_unit",
+];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -243,10 +247,9 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 } else if payload["codegen_wasm_object_bytes_emitted"] == Value::Bool(true)
                     && payload["rust_mono_item_wasm_object_emitted"] != Value::Bool(true)
                 {
-                    Value::String(
+                    Value::String(payload["codegen_handoff_status"].as_str().unwrap_or(
                         "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
-                            .to_owned(),
-                    )
+                    ).to_owned())
                 } else {
                     Value::String("codegen".to_owned())
                 }
@@ -296,8 +299,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 .unwrap_or_default();
             assert!(
                 codegen_status == "rust_mono_item_wasm_object_emitted"
-                    || codegen_status
-                        == "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented",
+                    || PROBE_ONLY_CODEGEN_BLOCKERS.contains(&codegen_status),
                 "canonical package must either emit a mono-item Wasm object or block at exact codegen lowering, got {codegen_status}"
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
@@ -319,6 +321,26 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 payload["codegen_contact_state"],
                 payload["codegen_handoff_status"]
             );
+            if payload["rust_mono_item_wasm_object_emitted"] != Value::Bool(true) {
+                assert_eq!(
+                    payload["codegen_lowering_status"],
+                    payload["codegen_handoff_status"]
+                );
+                assert_eq!(
+                    payload["codegen_lowering_blocker_component"],
+                    Value::String("rustc_codegen_ssa::base::codegen_crate".to_owned())
+                );
+                assert!(payload["codegen_lowering_required_path"]
+                    .as_array()
+                    .is_some_and(|path| path
+                        .iter()
+                        .any(|item| item == "rustc_codegen_llvm::base::compile_codegen_unit")));
+                assert!(payload["codegen_lowering_missing_inputs"]
+                    .as_array()
+                    .is_some_and(|inputs| inputs
+                        .iter()
+                        .any(|item| item.as_str().is_some_and(|input| input.contains("TyCtxt")))));
+            }
             assert_eq!(
                 payload["host_probe_codegen_contact_state"],
                 Value::String("target_machine_created".to_owned())
@@ -564,8 +586,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .as_str()
                     .is_some_and(|status| {
                         status == "rust_mono_item_wasm_object_emitted"
-                            || status
-                                == "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+                            || PROBE_ONLY_CODEGEN_BLOCKERS.contains(&status)
                     })
                 && entry["mono_proof_consumed"] == Value::Bool(true)
                 && entry["llvm_wrapper_target"] == Value::String("wasm32-wasip1".to_owned())
@@ -635,6 +656,16 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                         && entry["codegened_mono_item_count"] == Value::from(0)
                         && entry["object_function_count"] == Value::from(0)
                         && entry["object_is_empty"] == Value::Bool(true)
+                        && entry["codegen_lowering_status"] == entry["codegen_contact_state"]
+                        && entry["codegen_lowering_blocker_component"]
+                            == Value::String("rustc_codegen_ssa::base::codegen_crate".to_owned())
+                        && entry["codegen_lowering_required_path"]
+                            .as_array()
+                            .is_some_and(|path| {
+                                path.iter().any(|item| {
+                                    item == "rustc_codegen_llvm::base::compile_codegen_unit"
+                                })
+                            })
                         && entry["linker_handoff_created"] == Value::Bool(false)
                 }
         }),

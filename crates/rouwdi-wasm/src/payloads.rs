@@ -177,6 +177,12 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub backend_constructed: bool,
     pub backend_name: Option<String>,
     pub codegen_contact_state: Option<String>,
+    pub codegen_lowering_status: Option<String>,
+    pub codegen_lowering_blocker_kind: Option<String>,
+    pub codegen_lowering_blocker_component: Option<String>,
+    pub codegen_lowering_blocker_reason: Option<String>,
+    pub codegen_lowering_required_path: Vec<String>,
+    pub codegen_lowering_missing_inputs: Vec<String>,
     pub mono_proof_consumed: bool,
     pub mir_body_hash: Option<String>,
     pub mono_item_count: Option<u64>,
@@ -781,7 +787,11 @@ fn execute_embedded_codegen_payload(
     };
     let codegen_contact_state = if wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted
     {
-        Some("codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned())
+        json_string_field(output_json.as_ref(), "codegen_lowering_status").or_else(|| {
+            Some(
+                "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned(),
+            )
+        })
     } else {
         json_string_field(output_json.as_ref(), "codegen_contact_state")
     };
@@ -858,6 +868,30 @@ fn execute_embedded_codegen_payload(
         backend_constructed: json_bool(output_json.as_ref(), "backend_constructed"),
         backend_name: json_string_field(output_json.as_ref(), "backend_name"),
         codegen_contact_state,
+        codegen_lowering_status: json_string_field(output_json.as_ref(), "codegen_lowering_status"),
+        codegen_lowering_blocker_kind: json_string_field(
+            output_json.as_ref(),
+            "codegen_lowering_blocker_kind",
+        )
+        .filter(|kind| kind != "none"),
+        codegen_lowering_blocker_component: json_string_field(
+            output_json.as_ref(),
+            "codegen_lowering_blocker_component",
+        )
+        .filter(|component| component != "none"),
+        codegen_lowering_blocker_reason: json_string_field(
+            output_json.as_ref(),
+            "codegen_lowering_blocker_reason",
+        )
+        .filter(|reason| reason != "none"),
+        codegen_lowering_required_path: json_string_array(
+            output_json.as_ref(),
+            "codegen_lowering_required_path",
+        ),
+        codegen_lowering_missing_inputs: json_string_array(
+            output_json.as_ref(),
+            "codegen_lowering_missing_inputs",
+        ),
         mono_proof_consumed: json_bool(output_json.as_ref(), "mono_proof_consumed"),
         mir_body_hash: json_string_field(output_json.as_ref(), "mir_body_hash"),
         mono_item_count: output_json
