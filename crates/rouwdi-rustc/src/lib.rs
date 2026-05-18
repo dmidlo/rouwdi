@@ -1,3 +1,4 @@
+use rouwdi_object::WasmObjectInspection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -740,6 +741,7 @@ pub struct RustCodegenHandoffRecord {
     pub object_function_count: Option<u64>,
     pub object_is_empty: Option<bool>,
     pub object_has_code_bearing_content: Option<bool>,
+    pub object_inspection: Option<WasmObjectInspection>,
     pub object_derived_from: String,
     pub object_codegen_source: String,
     pub object_path: Option<String>,
@@ -1022,6 +1024,7 @@ impl RustCodegenHandoffRecord {
             object_function_count: codegen_probe.object_function_count,
             object_is_empty: codegen_probe.object_is_empty,
             object_has_code_bearing_content: codegen_probe.object_has_code_bearing_content,
+            object_inspection: codegen_probe.object_inspection.clone(),
             object_derived_from: codegen_probe.object_derived_from.clone(),
             object_codegen_source: codegen_probe.object_codegen_source.clone(),
             object_path: codegen_probe.object_artifact_location.clone(),
@@ -1361,6 +1364,28 @@ impl RustCodegenHandoffRecord {
             {
                 return Err(
                     "object bytes require parsed section/function/symbol inspection".to_owned(),
+                );
+            }
+            let inspection = self
+                .object_inspection
+                .as_ref()
+                .ok_or_else(|| "object bytes require full parsed object inspection".to_owned())?;
+            if !inspection.wasm_magic_valid || !inspection.wasm_version_valid {
+                return Err("object inspection requires valid Wasm magic and version".to_owned());
+            }
+            if inspection.object_format != self.object_format.as_deref().unwrap_or_default()
+                || Some(inspection.object_section_count) != self.object_section_count
+                || Some(inspection.object_has_code_section) != self.object_has_code_section
+                || Some(inspection.object_has_linking_metadata) != self.object_has_linking_metadata
+                || Some(inspection.object_symbol_count) != self.object_symbol_count
+                || Some(inspection.object_function_count) != self.object_function_count
+                || Some(inspection.object_is_empty) != self.object_is_empty
+                || Some(inspection.object_has_code_bearing_content)
+                    != self.object_has_code_bearing_content
+            {
+                return Err(
+                    "object inspection summary fields must match the full parsed object inspection"
+                        .to_owned(),
                 );
             }
             if self.rust_mono_item_wasm_object_emitted {

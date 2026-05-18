@@ -499,6 +499,26 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert!(payload["object_function_count"].is_number());
             assert!(payload["object_is_empty"].is_boolean());
             assert!(payload["object_has_code_bearing_content"].is_boolean());
+            assert_eq!(payload["object_wasm_magic_valid"], Value::Bool(true));
+            assert_eq!(payload["object_wasm_version_valid"], Value::Bool(true));
+            assert!(payload["object_sections"]
+                .as_array()
+                .is_some_and(|sections| !sections.is_empty()));
+            assert_eq!(
+                payload["object_inspection"]["object_section_count"],
+                payload["object_section_count"]
+            );
+            assert_eq!(
+                payload["object_inspection"]["object_function_count"],
+                payload["object_function_count"]
+            );
+            assert_eq!(
+                payload["object_inspection"]["object_is_empty"],
+                payload["object_is_empty"]
+            );
+            assert!(payload["object_parse_errors"]
+                .as_array()
+                .is_some_and(|errors| errors.is_empty()));
             if payload["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
                 assert_eq!(
                     payload["object_contains_codegened_function"],
@@ -643,6 +663,19 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["object_function_count"].is_number()
                 && entry["object_is_empty"].is_boolean()
                 && entry["object_has_code_bearing_content"].is_boolean()
+                && entry["object_wasm_magic_valid"] == Value::Bool(true)
+                && entry["object_wasm_version_valid"] == Value::Bool(true)
+                && entry["object_sections"]
+                    .as_array()
+                    .is_some_and(|sections| !sections.is_empty())
+                && entry["object_inspection"]["object_section_count"]
+                    == entry["object_section_count"]
+                && entry["object_inspection"]["object_function_count"]
+                    == entry["object_function_count"]
+                && entry["object_inspection"]["object_is_empty"] == entry["object_is_empty"]
+                && entry["object_parse_errors"]
+                    .as_array()
+                    .is_some_and(|errors| errors.is_empty())
                 && if entry["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
                     entry["object_contains_codegened_function"] == Value::Bool(true)
                         && entry["codegened_mono_item_count"]

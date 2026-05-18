@@ -712,6 +712,27 @@ try {
         if ($null -eq $codegenPayloadExecution.object_is_empty -or $null -eq $codegenPayloadExecution.object_has_code_bearing_content) {
             throw "Canonical object inspection must classify code-bearing content"
         }
+        if ($null -eq $codegenPayloadExecution.object_inspection) {
+            throw "Canonical object inspection must include the full parsed object inspection"
+        }
+        if ($codegenPayloadExecution.object_inspection.wasm_magic_valid -ne $true -or $codegenPayloadExecution.object_inspection.wasm_version_valid -ne $true) {
+            throw "Canonical object inspection must validate Wasm magic and version"
+        }
+        if ([int64]$codegenPayloadExecution.object_inspection.object_section_count -ne [int64]$codegenPayloadExecution.object_section_count) {
+            throw "Canonical object inspection summary does not match full section count"
+        }
+        $objectSections = @($codegenPayloadExecution.object_inspection.object_sections)
+        if ($objectSections.Count -ne [int64]$codegenPayloadExecution.object_section_count) {
+            throw "Canonical object inspection must carry a parsed section list"
+        }
+        if ($codegenPayloadExecution.object_inspection.object_has_code_section -ne $codegenPayloadExecution.object_has_code_section `
+            -or $codegenPayloadExecution.object_inspection.object_has_linking_metadata -ne $codegenPayloadExecution.object_has_linking_metadata `
+            -or [int64]$codegenPayloadExecution.object_inspection.object_symbol_count -ne [int64]$codegenPayloadExecution.object_symbol_count `
+            -or [int64]$codegenPayloadExecution.object_inspection.object_function_count -ne [int64]$codegenPayloadExecution.object_function_count `
+            -or $codegenPayloadExecution.object_inspection.object_is_empty -ne $codegenPayloadExecution.object_is_empty `
+            -or $codegenPayloadExecution.object_inspection.object_has_code_bearing_content -ne $codegenPayloadExecution.object_has_code_bearing_content) {
+            throw "Canonical object inspection summary fields must match the full parsed inspection"
+        }
         $objectLocation = [string]$codegenPayloadExecution.object_artifact_location
         if ([string]::IsNullOrWhiteSpace($objectLocation) -or $objectLocation.EndsWith(".json") -or $objectLocation.Contains("proof") -or $objectLocation.Contains("host:")) {
             throw "Canonical object artifact location is not an object-byte location: $objectLocation"
@@ -837,6 +858,16 @@ try {
     $objectFunctionCount = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_function_count } else { $null }
     $objectIsEmpty = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_is_empty } else { $null }
     $objectHasCodeBearingContent = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_has_code_bearing_content } else { $null }
+    $objectInspection = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_inspection } else { $null }
+    $objectWasmMagicValid = if ($null -ne $objectInspection) { $objectInspection.wasm_magic_valid } else { $null }
+    $objectWasmVersionValid = if ($null -ne $objectInspection) { $objectInspection.wasm_version_valid } else { $null }
+    $objectSections = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.object_sections } else { [object[]]@() }
+    $objectHasRelocationSections = if ($null -ne $objectInspection) { $objectInspection.object_has_relocation_sections } else { $null }
+    $objectImportedFunctionCount = if ($null -ne $objectInspection) { $objectInspection.object_imported_function_count } else { $null }
+    $objectExportCount = if ($null -ne $objectInspection) { $objectInspection.object_export_count } else { $null }
+    $objectImports = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.object_imports } else { [object[]]@() }
+    $objectExports = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.object_exports } else { [object[]]@() }
+    $objectParseErrors = if ($null -ne $objectInspection) { To-JsonArray $objectInspection.parse_errors } else { [object[]]@() }
     $objectDerivedFrom = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_derived_from } else { $null }
     $objectCodegenSource = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_codegen_source } else { $null }
     $codegenLoweringStatus = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.codegen_lowering_status } else { $null }
@@ -1001,6 +1032,16 @@ try {
         object_function_count = $objectFunctionCount
         object_is_empty = $objectIsEmpty
         object_has_code_bearing_content = $objectHasCodeBearingContent
+        object_wasm_magic_valid = $objectWasmMagicValid
+        object_wasm_version_valid = $objectWasmVersionValid
+        object_sections = @($objectSections)
+        object_has_relocation_sections = $objectHasRelocationSections
+        object_imported_function_count = $objectImportedFunctionCount
+        object_export_count = $objectExportCount
+        object_imports = @($objectImports)
+        object_exports = @($objectExports)
+        object_parse_errors = @($objectParseErrors)
+        object_inspection = $objectInspection
         object_derived_from = $objectDerivedFrom
         object_codegen_source = $objectCodegenSource
         codegen_lowering_status = $codegenLoweringStatus
@@ -1134,6 +1175,16 @@ try {
                 object_function_count = $objectFunctionCount
                 object_is_empty = $objectIsEmpty
                 object_has_code_bearing_content = $objectHasCodeBearingContent
+                object_wasm_magic_valid = $objectWasmMagicValid
+                object_wasm_version_valid = $objectWasmVersionValid
+                object_sections = @($objectSections)
+                object_has_relocation_sections = $objectHasRelocationSections
+                object_imported_function_count = $objectImportedFunctionCount
+                object_export_count = $objectExportCount
+                object_imports = @($objectImports)
+                object_exports = @($objectExports)
+                object_parse_errors = @($objectParseErrors)
+                object_inspection = $objectInspection
                 object_derived_from = $objectDerivedFrom
                 object_codegen_source = $objectCodegenSource
                 codegen_lowering_status = $codegenLoweringStatus
@@ -1308,6 +1359,16 @@ try {
             object_function_count = $objectFunctionCount
             object_is_empty = $objectIsEmpty
             object_has_code_bearing_content = $objectHasCodeBearingContent
+            object_wasm_magic_valid = $objectWasmMagicValid
+            object_wasm_version_valid = $objectWasmVersionValid
+            object_sections = @($objectSections)
+            object_has_relocation_sections = $objectHasRelocationSections
+            object_imported_function_count = $objectImportedFunctionCount
+            object_export_count = $objectExportCount
+            object_imports = @($objectImports)
+            object_exports = @($objectExports)
+            object_parse_errors = @($objectParseErrors)
+            object_inspection = $objectInspection
             object_derived_from = $objectDerivedFrom
             object_codegen_source = $objectCodegenSource
             codegen_lowering_status = $codegenLoweringStatus

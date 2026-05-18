@@ -233,6 +233,62 @@ fn mark_handoff_as_mono_item_wasm_object(
     handoff.object_function_count = Some(1);
     handoff.object_is_empty = Some(false);
     handoff.object_has_code_bearing_content = Some(true);
+    handoff.object_inspection = Some(rouwdi_object::WasmObjectInspection {
+        object_format: "wasm_object".to_owned(),
+        wasm_magic_valid: true,
+        wasm_version_valid: true,
+        object_section_count: 4,
+        object_sections: vec![
+            rouwdi_object::WasmObjectSection {
+                index: 0,
+                id: 1,
+                name: "type".to_owned(),
+                custom_name: None,
+                offset: 8,
+                payload_offset: 10,
+                size_bytes: 4,
+            },
+            rouwdi_object::WasmObjectSection {
+                index: 1,
+                id: 3,
+                name: "function".to_owned(),
+                custom_name: None,
+                offset: 14,
+                payload_offset: 16,
+                size_bytes: 2,
+            },
+            rouwdi_object::WasmObjectSection {
+                index: 2,
+                id: 10,
+                name: "code".to_owned(),
+                custom_name: None,
+                offset: 18,
+                payload_offset: 20,
+                size_bytes: 4,
+            },
+            rouwdi_object::WasmObjectSection {
+                index: 3,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("linking".to_owned()),
+                offset: 24,
+                payload_offset: 26,
+                size_bytes: 8,
+            },
+        ],
+        object_has_code_section: true,
+        object_has_linking_metadata: true,
+        object_has_relocation_sections: false,
+        object_symbol_count: 1,
+        object_function_count: 1,
+        object_imported_function_count: 0,
+        object_export_count: 0,
+        object_imports: Vec::new(),
+        object_exports: Vec::new(),
+        object_has_code_bearing_content: true,
+        object_is_empty: false,
+        parse_errors: Vec::new(),
+    });
     handoff.object_derived_from = "rustc_codegen_llvm::LlvmCodegenBackend".to_owned();
     handoff.object_codegen_source = "mono_item_graph".to_owned();
     handoff.object_path = Some("vfs:/workspace/app.wasm.o".to_owned());
@@ -798,6 +854,36 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
     assert_eq!(codegen_handoff.object_symbol_count, Some(0));
     assert_eq!(codegen_handoff.object_is_empty, Some(true));
     assert_eq!(codegen_handoff.object_has_code_bearing_content, Some(false));
+    let object_inspection = codegen_handoff
+        .object_inspection
+        .as_ref()
+        .expect("codegen handoff must carry full object inspection");
+    assert_eq!(object_inspection.object_format, "wasm_object");
+    assert!(object_inspection.wasm_magic_valid);
+    assert!(object_inspection.wasm_version_valid);
+    assert_eq!(object_inspection.object_section_count, 3);
+    assert!(object_inspection
+        .object_sections
+        .iter()
+        .any(|section| section.name == "import"));
+    assert!(object_inspection
+        .object_sections
+        .iter()
+        .any(|section| section.custom_name.as_deref() == Some("linking")));
+    assert!(object_inspection
+        .object_sections
+        .iter()
+        .any(|section| section.custom_name.as_deref() == Some("target_features")));
+    assert!(!object_inspection.object_has_code_section);
+    assert!(object_inspection.object_has_linking_metadata);
+    assert_eq!(object_inspection.object_symbol_count, 0);
+    assert_eq!(object_inspection.object_function_count, 0);
+    assert_eq!(
+        object_inspection.object_imports,
+        vec!["env::__linear_memory".to_owned()]
+    );
+    assert!(object_inspection.object_is_empty);
+    assert!(!object_inspection.object_has_code_bearing_content);
     assert_eq!(
         codegen_handoff.object_codegen_source,
         "empty_llvm_module_before_mono_item_lowering"
@@ -1129,6 +1215,19 @@ fn host_sidecar_object_location_is_rejected() {
         .validate_against_monomorphization_proof(&mono_proof)
         .unwrap_err()
         .contains("host sidecar"));
+}
+
+#[test]
+fn object_bytes_without_full_inspection_are_rejected() {
+    let (mono_proof, mut codegen_handoff) = collected_mono_proof_and_codegen_handoff();
+
+    mark_handoff_as_mono_item_wasm_object(&mut codegen_handoff, "f".repeat(64));
+    codegen_handoff.object_inspection = None;
+
+    assert!(codegen_handoff
+        .validate_against_monomorphization_proof(&mono_proof)
+        .unwrap_err()
+        .contains("full parsed object inspection"));
 }
 
 #[test]

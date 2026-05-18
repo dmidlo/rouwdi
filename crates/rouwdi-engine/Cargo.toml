@@ -20,5 +20,6 @@ rouwdi-targets = { path = "../rouwdi-targets" }
 rouwdi-vfs = { path = "../rouwdi-vfs" }
 
 [dev-dependencies]
+rouwdi-object.workspace = true
 rouwdi-rustc-upstream = { path = "../rouwdi-rustc-upstream" }
 tempfile = "3"

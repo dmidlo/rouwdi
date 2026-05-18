@@ -1,3 +1,4 @@
+use rouwdi_object::{WasmObjectInspection, WasmObjectSection};
 use rustc_index::{Idx, IndexVec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -220,6 +221,7 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub object_function_count: Option<u64>,
     pub object_is_empty: Option<bool>,
     pub object_has_code_bearing_content: Option<bool>,
+    pub object_inspection: Option<WasmObjectInspection>,
     pub object_derived_from: String,
     pub object_codegen_source: String,
     pub object_artifact_kind: Option<String>,
@@ -2792,13 +2794,14 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         codegened_symbols: Vec::new(),
         object_contains_codegened_function: false,
         object_format: Some("wasm_object".to_owned()),
-        object_section_count: Some(1),
+        object_section_count: Some(3),
         object_has_code_section: Some(false),
         object_has_linking_metadata: Some(true),
         object_symbol_count: Some(0),
         object_function_count: Some(0),
         object_is_empty: Some(true),
         object_has_code_bearing_content: Some(false),
+        object_inspection: Some(empty_codegen_probe_object_inspection()),
         object_derived_from:
             "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
                 .to_owned(),
@@ -2818,6 +2821,56 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
                 .to_owned(),
         ),
         llvm_ir_byte_len: Some(121),
+    }
+}
+
+fn empty_codegen_probe_object_inspection() -> WasmObjectInspection {
+    WasmObjectInspection {
+        object_format: "wasm_object".to_owned(),
+        wasm_magic_valid: true,
+        wasm_version_valid: true,
+        object_section_count: 3,
+        object_sections: vec![
+            WasmObjectSection {
+                index: 0,
+                id: 2,
+                name: "import".to_owned(),
+                custom_name: None,
+                offset: 8,
+                payload_offset: 14,
+                size_bytes: 24,
+            },
+            WasmObjectSection {
+                index: 1,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("linking".to_owned()),
+                offset: 38,
+                payload_offset: 44,
+                size_bytes: 9,
+            },
+            WasmObjectSection {
+                index: 2,
+                id: 0,
+                name: "custom".to_owned(),
+                custom_name: Some("target_features".to_owned()),
+                offset: 53,
+                payload_offset: 59,
+                size_bytes: 148,
+            },
+        ],
+        object_has_code_section: false,
+        object_has_linking_metadata: true,
+        object_has_relocation_sections: false,
+        object_symbol_count: 0,
+        object_function_count: 0,
+        object_imported_function_count: 0,
+        object_export_count: 0,
+        object_imports: vec!["env::__linear_memory".to_owned()],
+        object_exports: Vec::new(),
+        object_has_code_bearing_content: false,
+        object_is_empty: true,
+        parse_errors: Vec::new(),
     }
 }
 

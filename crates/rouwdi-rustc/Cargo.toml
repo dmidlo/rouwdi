@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 hex.workspace = true
 ra_parser.workspace = true
+rouwdi-object.workspace = true
 rouwdi-rustc-upstream = { path = "../rouwdi-rustc-upstream" }
 rustc_lexer.workspace = true
 serde.workspace = true

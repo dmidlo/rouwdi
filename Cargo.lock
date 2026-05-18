@@ -1927,6 +1927,7 @@ dependencies = [
  "rouwdi-cargo",
  "rouwdi-compiletime",
  "rouwdi-contract",
+ "rouwdi-object",
  "rouwdi-proof",
  "rouwdi-rustc",
  "rouwdi-rustc-upstream",
@@ -1970,6 +1971,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "parser",
+ "rouwdi-object",
  "rouwdi-rustc-upstream",
  "rustc_lexer",
  "serde",
