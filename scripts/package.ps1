@@ -700,9 +700,39 @@ try {
         if ($codegenPayloadExecution.object_bytes_retrieved_by_rouwdi -ne $true -or $codegenPayloadExecution.object_sha256_verified -ne $true) {
             throw "Canonical object bytes must be retrieved and hashed by rouwdi-owned logic"
         }
+        if ($codegenPayloadExecution.object_format -ne "wasm_object") {
+            throw "Canonical object inspection must classify the artifact as wasm_object"
+        }
+        if ($null -eq $codegenPayloadExecution.object_section_count -or [int64]$codegenPayloadExecution.object_section_count -le 0) {
+            throw "Canonical object inspection must record section metadata"
+        }
+        if ($null -eq $codegenPayloadExecution.object_symbol_count -or $null -eq $codegenPayloadExecution.object_function_count) {
+            throw "Canonical object inspection must record symbol/function counts"
+        }
+        if ($null -eq $codegenPayloadExecution.object_is_empty -or $null -eq $codegenPayloadExecution.object_has_code_bearing_content) {
+            throw "Canonical object inspection must classify code-bearing content"
+        }
         $objectLocation = [string]$codegenPayloadExecution.object_artifact_location
         if ([string]::IsNullOrWhiteSpace($objectLocation) -or $objectLocation.EndsWith(".json") -or $objectLocation.Contains("proof") -or $objectLocation.Contains("host:")) {
             throw "Canonical object artifact location is not an object-byte location: $objectLocation"
+        }
+        if ($codegenPayloadExecution.rust_mono_item_wasm_object_emitted -eq $true) {
+            if ($codegenPayloadExecution.object_contains_codegened_function -ne $true -or [int64]$codegenPayloadExecution.codegened_mono_item_count -le 0) {
+                throw "Canonical mono-item object success requires codegened mono item count and function content"
+            }
+            if ([string]$codegenPayloadExecution.object_codegen_source -ne "mono_item_graph") {
+                throw "Canonical mono-item object success must be sourced from the mono item graph"
+            }
+        } else {
+            if ($codegenPayloadExecution.linker_handoff_created -eq $true) {
+                throw "Canonical codegen payload created linker handoff before mono-item-derived object content"
+            }
+            if ([string]$codegenPayloadExecution.blocker_kind -ne "codegen_lowering_to_object_not_implemented") {
+                throw "Probe-only object must block at codegen_lowering_to_object_not_implemented; got $($codegenPayloadExecution.blocker_kind)"
+            }
+            if (-not ([string]$codegenPayloadExecution.codegen_contact_state).StartsWith("codegen_lowering_blocked_at_")) {
+                throw "Probe-only object must report exact codegen lowering frontier; got $($codegenPayloadExecution.codegen_contact_state)"
+            }
         }
     } elseif ($codegenPayloadExecution.linker_handoff_created -eq $true) {
         throw "Canonical codegen payload created linker handoff without real object bytes"
@@ -722,8 +752,10 @@ try {
     $monoItemGraphHash = if ($null -ne $payloadOutput -and $null -ne $payloadOutput.mono_item_graph_hash) { [string]$payloadOutput.mono_item_graph_hash } else { $null }
     $nextFrontier = if ($mirBodyHashEmitted) {
         if ($monoStatus -eq "mono_items_collected") {
-            if ($codegenPayloadExecution.wasm_object_bytes_emitted -eq $true -and $codegenPayloadExecution.linker_handoff_created -eq $true) {
+            if ($codegenPayloadExecution.rust_mono_item_wasm_object_emitted -eq $true -and $codegenPayloadExecution.linker_handoff_created -eq $true) {
                 "linking"
+            } elseif ($codegenPayloadExecution.wasm_object_bytes_emitted -eq $true -and $codegenPayloadExecution.rust_mono_item_wasm_object_emitted -ne $true) {
+                "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
             } else {
                 "object_emission"
             }
@@ -739,9 +771,11 @@ try {
     $backendPayloadBlockerKind = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.blocker_kind } else { $null }
     $codegenHandoffStatus = $backendPayloadExecutionStatus
     $codegenBlockerKind = $backendPayloadBlockerKind
-    $codegenBlockerComponent = if ($monoStatus -eq "mono_items_collected" -and -not [string]::IsNullOrWhiteSpace([string]$codegenBlockerKind)) {
-        if ($llvmWrapperReport.target_llvm_library_closure.blocker_component -ne $null) {
-        [string]$llvmWrapperReport.target_llvm_library_closure.blocker_component
+    $codegenBlockerComponent = if ($monoStatus -eq "mono_items_collected" -and -not [string]::IsNullOrWhiteSpace([string]$codegenBlockerKind) -and [string]$codegenBlockerKind -ne "none") {
+        if ($null -ne $codegenPayloadExecution.blocker_component -and -not [string]::IsNullOrWhiteSpace([string]$codegenPayloadExecution.blocker_component) -and [string]$codegenPayloadExecution.blocker_component -ne "none") {
+            [string]$codegenPayloadExecution.blocker_component
+        } elseif ($llvmWrapperReport.target_llvm_library_closure.blocker_component -ne $null) {
+            [string]$llvmWrapperReport.target_llvm_library_closure.blocker_component
         } else {
             "embedded rustc_codegen_llvm backend payload"
         }
@@ -771,6 +805,20 @@ try {
     $objectTargetTriple = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_target_triple } else { $null }
     $objectRetrievalMethod = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_retrieval_method } else { $null }
     $linkerHandoffCreated = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_handoff_created } else { $false }
+    $rustMonoItemWasmObjectEmitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.rust_mono_item_wasm_object_emitted } else { $false }
+    $objectContainsCodegenedFunction = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_contains_codegened_function } else { $false }
+    $codegenedMonoItemCount = if ($monoStatus -eq "mono_items_collected") { [int64]$codegenPayloadExecution.codegened_mono_item_count } else { 0 }
+    $codegenedSymbols = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.codegened_symbols) { @($codegenPayloadExecution.codegened_symbols) } else { @() }
+    $objectFormat = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_format } else { $null }
+    $objectSectionCount = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_section_count } else { $null }
+    $objectHasCodeSection = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_has_code_section } else { $null }
+    $objectHasLinkingMetadata = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_has_linking_metadata } else { $null }
+    $objectSymbolCount = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_symbol_count } else { $null }
+    $objectFunctionCount = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_function_count } else { $null }
+    $objectIsEmpty = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_is_empty } else { $null }
+    $objectHasCodeBearingContent = if ($monoStatus -eq "mono_items_collected") { $codegenPayloadExecution.object_has_code_bearing_content } else { $null }
+    $objectDerivedFrom = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_derived_from } else { $null }
+    $objectCodegenSource = if ($monoStatus -eq "mono_items_collected") { [string]$codegenPayloadExecution.object_codegen_source } else { $null }
     $exactBlocker = if ($null -ne $payloadError) { $payloadError.blocker_kind } elseif ($null -ne $payloadOutput) { $payloadOutput.blocker_kind } else { $payloadExecution.blocker_kind }
 
     $embeddedPayload = [ordered]@{
@@ -915,6 +963,20 @@ try {
         codegen_object_retrieval_method = $objectRetrievalMethod
         codegen_object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
         codegen_object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
+        rust_mono_item_wasm_object_emitted = $rustMonoItemWasmObjectEmitted
+        codegened_mono_item_count = $codegenedMonoItemCount
+        codegened_symbols = @($codegenedSymbols)
+        object_contains_codegened_function = $objectContainsCodegenedFunction
+        object_format = $objectFormat
+        object_section_count = $objectSectionCount
+        object_has_code_section = $objectHasCodeSection
+        object_has_linking_metadata = $objectHasLinkingMetadata
+        object_symbol_count = $objectSymbolCount
+        object_function_count = $objectFunctionCount
+        object_is_empty = $objectIsEmpty
+        object_has_code_bearing_content = $objectHasCodeBearingContent
+        object_derived_from = $objectDerivedFrom
+        object_codegen_source = $objectCodegenSource
         codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
         linker_handoff_created = $linkerHandoffCreated
         next_frontier = $nextFrontier
@@ -1028,6 +1090,20 @@ try {
                 object_retrieval_method = $objectRetrievalMethod
                 object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
                 object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
+                rust_mono_item_wasm_object_emitted = $rustMonoItemWasmObjectEmitted
+                codegened_mono_item_count = $codegenedMonoItemCount
+                codegened_symbols = @($codegenedSymbols)
+                object_contains_codegened_function = $objectContainsCodegenedFunction
+                object_format = $objectFormat
+                object_section_count = $objectSectionCount
+                object_has_code_section = $objectHasCodeSection
+                object_has_linking_metadata = $objectHasLinkingMetadata
+                object_symbol_count = $objectSymbolCount
+                object_function_count = $objectFunctionCount
+                object_is_empty = $objectIsEmpty
+                object_has_code_bearing_content = $objectHasCodeBearingContent
+                object_derived_from = $objectDerivedFrom
+                object_codegen_source = $objectCodegenSource
                 linker_required = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.linker_required } else { $false }
                 linker_handoff_created = $linkerHandoffCreated
                 linker_handoff = if ($monoStatus -eq "mono_items_collected" -and $null -ne $codegenPayloadExecution.output_json.linker_handoff) { $codegenPayloadExecution.output_json.linker_handoff } else { $null }
@@ -1182,6 +1258,20 @@ try {
             codegen_object_retrieval_method = $objectRetrievalMethod
             codegen_object_bytes_retrieved_by_rouwdi = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_bytes_retrieved_by_rouwdi } else { $false }
             codegen_object_sha256_verified = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.object_sha256_verified } else { $false }
+            rust_mono_item_wasm_object_emitted = $rustMonoItemWasmObjectEmitted
+            codegened_mono_item_count = $codegenedMonoItemCount
+            codegened_symbols = @($codegenedSymbols)
+            object_contains_codegened_function = $objectContainsCodegenedFunction
+            object_format = $objectFormat
+            object_section_count = $objectSectionCount
+            object_has_code_section = $objectHasCodeSection
+            object_has_linking_metadata = $objectHasLinkingMetadata
+            object_symbol_count = $objectSymbolCount
+            object_function_count = $objectFunctionCount
+            object_is_empty = $objectIsEmpty
+            object_has_code_bearing_content = $objectHasCodeBearingContent
+            object_derived_from = $objectDerivedFrom
+            object_codegen_source = $objectCodegenSource
             codegen_llvm_ir_emitted = if ($monoStatus -eq "mono_items_collected") { [bool]$codegenPayloadExecution.llvm_ir_emitted } else { $false }
             linker_handoff_created = $linkerHandoffCreated
             next_frontier = $nextFrontier
@@ -1213,7 +1303,9 @@ try {
             embedded_codegen_payload_execute_required = $true
             embedded_codegen_payload_llvm_ir_required = $true
             embedded_codegen_payload_object_emission_attempt_required = $true
-            linker_handoff_requires_wasm_object_bytes = $true
+            object_inspection_required_before_codegen_success = $true
+            linker_handoff_requires_mono_item_wasm_object = $true
+            current_codegen_lowering_blocker = if ($rustMonoItemWasmObjectEmitted) { $null } else { "codegen_lowering_to_object_not_implemented" }
         }
     }
 

@@ -1,3 +1,4 @@
+use rouwdi_object::{inspect_wasm_object, WasmObjectInspection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -200,6 +201,21 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub object_emission_api: Option<String>,
     pub object_bytes_emitted: bool,
     pub wasm_object_bytes_emitted: bool,
+    pub rust_mono_item_wasm_object_emitted: bool,
+    pub codegened_mono_item_count: u64,
+    pub codegened_symbols: Vec<String>,
+    pub object_contains_codegened_function: bool,
+    pub object_derived_from: Option<String>,
+    pub object_codegen_source: Option<String>,
+    pub object_inspection: Option<WasmObjectInspection>,
+    pub object_format: Option<String>,
+    pub object_section_count: Option<u64>,
+    pub object_has_code_section: Option<bool>,
+    pub object_has_linking_metadata: Option<bool>,
+    pub object_symbol_count: Option<u64>,
+    pub object_function_count: Option<u64>,
+    pub object_is_empty: Option<bool>,
+    pub object_has_code_bearing_content: Option<bool>,
     pub object_artifact_kind: Option<String>,
     pub object_artifact_sha256: Option<String>,
     pub object_artifact_size_bytes: Option<u64>,
@@ -215,6 +231,7 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub linker_required: bool,
     pub linker_handoff_created: bool,
     pub blocker_kind: Option<String>,
+    pub blocker_component: Option<String>,
     pub blocker_reason: Option<String>,
 }
 
@@ -714,6 +731,7 @@ fn execute_embedded_codegen_payload(
         .map(normalize_reported_vfs_path)
         .unwrap_or_else(|| CODEGEN_OBJECT_ARTIFACT_PATH.to_owned());
     let retrieved_object_bytes = store.data().written_files.get(&object_output_path);
+    let object_inspection = retrieved_object_bytes.map(|bytes| inspect_wasm_object(bytes));
     let retrieved_object_sha256 = retrieved_object_bytes.map(|bytes| sha256_hex(bytes));
     let retrieved_object_size = retrieved_object_bytes.map(|bytes| bytes.len() as u64);
     let reported_object_sha256 = json_string_field(output_json.as_ref(), "object_artifact_sha256")
@@ -736,6 +754,53 @@ fn execute_embedded_codegen_payload(
     let wasm_object_bytes_emitted = json_bool(output_json.as_ref(), "wasm_object_bytes_emitted")
         && object_bytes_emitted
         && object_artifact_kind.as_deref() == Some("wasm_object");
+    let reported_object_contains_codegened_function =
+        json_bool(output_json.as_ref(), "object_contains_codegened_function")
+            || json_bool(object_artifact, "object_contains_codegened_function");
+    let object_contains_codegened_function = wasm_object_bytes_emitted
+        && reported_object_contains_codegened_function
+        && object_inspection
+            .as_ref()
+            .is_some_and(|inspection| inspection.object_has_code_bearing_content);
+    let rust_mono_item_wasm_object_emitted = wasm_object_bytes_emitted
+        && object_contains_codegened_function
+        && json_bool(output_json.as_ref(), "rust_mono_item_wasm_object_emitted");
+    let codegened_mono_item_count = if rust_mono_item_wasm_object_emitted {
+        output_json
+            .as_ref()
+            .and_then(|value| value.get("codegened_mono_item_count"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let codegened_symbols = if rust_mono_item_wasm_object_emitted {
+        json_string_array(output_json.as_ref(), "codegened_symbols")
+    } else {
+        Vec::new()
+    };
+    let codegen_contact_state = if wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted
+    {
+        Some("codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned())
+    } else {
+        json_string_field(output_json.as_ref(), "codegen_contact_state")
+    };
+    let blocker_kind = if wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+        Some("codegen_lowering_to_object_not_implemented".to_owned())
+    } else {
+        json_string_field(output_json.as_ref(), "blocker_kind").filter(|kind| kind != "none")
+    };
+    let blocker_component = if wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+        Some("rustc_codegen_llvm mono item lowering".to_owned())
+    } else {
+        json_string_field(output_json.as_ref(), "blocker_component")
+            .filter(|component| component != "none")
+    };
+    let blocker_reason = if wasm_object_bytes_emitted && !rust_mono_item_wasm_object_emitted {
+        Some("rouwdi-owned Wasm object inspection found no code-bearing function tied to the mono item graph; linker handoff is blocked until rustc_codegen_llvm lowers the mono item into the LLVM module".to_owned())
+    } else {
+        json_string_field(output_json.as_ref(), "blocker_reason").filter(|reason| reason != "none")
+    };
     let codegen_artifact_kind = if object_bytes_emitted {
         object_artifact_kind.clone()
     } else {
@@ -792,7 +857,7 @@ fn execute_embedded_codegen_payload(
         stderr_text,
         backend_constructed: json_bool(output_json.as_ref(), "backend_constructed"),
         backend_name: json_string_field(output_json.as_ref(), "backend_name"),
-        codegen_contact_state: json_string_field(output_json.as_ref(), "codegen_contact_state"),
+        codegen_contact_state,
         mono_proof_consumed: json_bool(output_json.as_ref(), "mono_proof_consumed"),
         mir_body_hash: json_string_field(output_json.as_ref(), "mir_body_hash"),
         mono_item_count: output_json
@@ -829,6 +894,39 @@ fn execute_embedded_codegen_payload(
         object_emission_api: json_string_field(output_json.as_ref(), "object_emission_api"),
         object_bytes_emitted,
         wasm_object_bytes_emitted,
+        rust_mono_item_wasm_object_emitted,
+        codegened_mono_item_count,
+        codegened_symbols,
+        object_contains_codegened_function,
+        object_derived_from: json_string_field(output_json.as_ref(), "object_derived_from")
+            .or_else(|| json_string_field(object_artifact, "object_derived_from")),
+        object_codegen_source: json_string_field(output_json.as_ref(), "object_codegen_source")
+            .or_else(|| json_string_field(object_artifact, "object_codegen_source")),
+        object_format: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_format.clone()),
+        object_section_count: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_section_count),
+        object_has_code_section: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_has_code_section),
+        object_has_linking_metadata: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_has_linking_metadata),
+        object_symbol_count: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_symbol_count),
+        object_function_count: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_function_count),
+        object_is_empty: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_is_empty),
+        object_has_code_bearing_content: object_inspection
+            .as_ref()
+            .map(|inspection| inspection.object_has_code_bearing_content),
+        object_inspection,
         object_artifact_kind,
         object_artifact_sha256: retrieved_object_sha256.or(reported_object_sha256),
         object_artifact_size_bytes: retrieved_object_size.or_else(|| {
@@ -853,11 +951,10 @@ fn execute_embedded_codegen_payload(
         codegen_artifact_location,
         linker_required: json_bool(output_json.as_ref(), "linker_required"),
         linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created")
-            && wasm_object_bytes_emitted,
-        blocker_kind: json_string_field(output_json.as_ref(), "blocker_kind")
-            .filter(|kind| kind != "none"),
-        blocker_reason: json_string_field(output_json.as_ref(), "blocker_reason")
-            .filter(|reason| reason != "none"),
+            && rust_mono_item_wasm_object_emitted,
+        blocker_kind,
+        blocker_component,
+        blocker_reason,
         output_json,
     })
 }
@@ -2261,6 +2358,20 @@ fn json_string_field(value: Option<&serde_json::Value>, key: &str) -> Option<Str
         .and_then(|value| value.get(key))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+fn json_string_array(value: Option<&serde_json::Value>, key: &str) -> Vec<String> {
+    value
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn codegen_payload_argv() -> Vec<String> {

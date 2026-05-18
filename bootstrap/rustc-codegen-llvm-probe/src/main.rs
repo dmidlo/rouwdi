@@ -1,3 +1,6 @@
+#![recursion_limit = "256"]
+
+use rouwdi_object::{inspect_wasm_object, WasmObjectInspection};
 use sha2::{Digest, Sha256};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -67,6 +70,12 @@ struct ObjectEmissionSetup {
     api: String,
     object_bytes_emitted: bool,
     wasm_object_bytes_emitted: bool,
+    inspection: Option<WasmObjectInspection>,
+    object_contains_codegened_function: bool,
+    codegened_mono_item_count: u64,
+    codegened_symbols: Vec<String>,
+    object_derived_from: String,
+    object_codegen_source: String,
     artifact_kind: Option<String>,
     artifact_sha256: Option<String>,
     artifact_size_bytes: Option<usize>,
@@ -160,8 +169,13 @@ fn main() -> ExitCode {
     let object_emission = attempt_object_emission(&input);
 
     let llvm_ir_emitted = module_setup.llvm_ir.is_some();
-    let codegen_contact_state = if object_emission.wasm_object_bytes_emitted {
-        "wasm_object_bytes_emitted"
+    let rust_mono_item_wasm_object_emitted = object_emission.wasm_object_bytes_emitted
+        && object_emission.object_contains_codegened_function
+        && object_emission.codegened_mono_item_count > 0;
+    let codegen_contact_state = if rust_mono_item_wasm_object_emitted {
+        "rust_mono_item_wasm_object_emitted"
+    } else if object_emission.wasm_object_bytes_emitted {
+        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
     } else if object_emission.attempted
         && object_emission
             .blocker_kind
@@ -185,18 +199,37 @@ fn main() -> ExitCode {
     } else {
         "rustc_codegen_llvm_backend_constructed"
     };
-    let blocker_kind = target_machine_setup
-        .blocker_kind
-        .as_deref()
-        .or(module_setup.blocker_kind.as_deref())
-        .or(object_emission.blocker_kind.as_deref())
-        .unwrap_or("none");
-    let blocker_reason = target_machine_setup
-        .blocker_reason
-        .as_deref()
-        .or(module_setup.blocker_reason.as_deref())
-        .or(object_emission.blocker_reason.as_deref())
-        .unwrap_or("none");
+    let blocker_kind = if object_emission.wasm_object_bytes_emitted
+        && !rust_mono_item_wasm_object_emitted
+    {
+        "codegen_lowering_to_object_not_implemented"
+    } else {
+        target_machine_setup
+            .blocker_kind
+            .as_deref()
+            .or(module_setup.blocker_kind.as_deref())
+            .or(object_emission.blocker_kind.as_deref())
+            .unwrap_or("none")
+    };
+    let blocker_component = if object_emission.wasm_object_bytes_emitted
+        && !rust_mono_item_wasm_object_emitted
+    {
+        "rustc_codegen_llvm mono item lowering"
+    } else {
+        "none"
+    };
+    let blocker_reason = if object_emission.wasm_object_bytes_emitted
+        && !rust_mono_item_wasm_object_emitted
+    {
+        "LLVM emitted a valid Wasm object from the payload-created module, but rouwdi-owned inspection found no code-bearing function tied to the mono item graph; rustc_codegen_llvm mono-item lowering has not been invoked yet"
+    } else {
+        target_machine_setup
+            .blocker_reason
+            .as_deref()
+            .or(module_setup.blocker_reason.as_deref())
+            .or(object_emission.blocker_reason.as_deref())
+            .unwrap_or("none")
+    };
     let llvm_ir_artifact = if let Some(llvm_ir) = module_setup.llvm_ir.as_ref() {
         serde_json::json!({
             "artifact_kind": "llvm_ir",
@@ -230,6 +263,19 @@ fn main() -> ExitCode {
             "target_machine_identity": target_machine_identity(&target_machine_setup),
             "embedded_artifact_location": object_emission.artifact_location,
             "retrieval_method": object_emission.retrieval_method,
+            "object_inspection": object_emission.inspection.clone(),
+            "object_format": object_emission.inspection.as_ref().map(|inspection| inspection.object_format.as_str()),
+            "object_section_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_section_count),
+            "object_has_code_section": object_emission.inspection.as_ref().map(|inspection| inspection.object_has_code_section),
+            "object_has_linking_metadata": object_emission.inspection.as_ref().map(|inspection| inspection.object_has_linking_metadata),
+            "object_symbol_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_symbol_count),
+            "object_function_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_function_count),
+            "object_is_empty": object_emission.inspection.as_ref().map(|inspection| inspection.object_is_empty),
+            "object_contains_codegened_function": object_emission.object_contains_codegened_function,
+            "object_derived_from": object_emission.object_derived_from.clone(),
+            "object_codegen_source": object_emission.object_codegen_source.clone(),
+            "codegened_mono_item_count": object_emission.codegened_mono_item_count,
+            "codegened_symbols": object_emission.codegened_symbols.clone(),
         })
     } else {
         serde_json::Value::Null
@@ -239,7 +285,7 @@ fn main() -> ExitCode {
     } else {
         llvm_ir_artifact.clone()
     };
-    let linker_handoff = if object_emission.wasm_object_bytes_emitted {
+    let linker_handoff = if rust_mono_item_wasm_object_emitted {
         serde_json::json!({
             "compile_unit_id": input.compile_unit_id,
             "target_triple": input.target_triple,
@@ -321,9 +367,25 @@ fn main() -> ExitCode {
         "object_retrieval_method": object_emission.retrieval_method,
         "bitcode_emitted": false,
         "linker_required": true,
-        "linker_handoff_created": object_emission.wasm_object_bytes_emitted,
+        "linker_handoff_created": rust_mono_item_wasm_object_emitted,
         "linker_handoff": linker_handoff,
+        "rust_mono_item_wasm_object_emitted": rust_mono_item_wasm_object_emitted,
+        "codegened_mono_item_count": object_emission.codegened_mono_item_count,
+        "codegened_symbols": object_emission.codegened_symbols.clone(),
+        "object_contains_codegened_function": object_emission.object_contains_codegened_function,
+        "object_derived_from": object_emission.object_derived_from.clone(),
+        "object_codegen_source": object_emission.object_codegen_source.clone(),
+        "object_inspection": object_emission.inspection.clone(),
+        "object_format": object_emission.inspection.as_ref().map(|inspection| inspection.object_format.as_str()),
+        "object_section_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_section_count),
+        "object_has_code_section": object_emission.inspection.as_ref().map(|inspection| inspection.object_has_code_section),
+        "object_has_linking_metadata": object_emission.inspection.as_ref().map(|inspection| inspection.object_has_linking_metadata),
+        "object_symbol_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_symbol_count),
+        "object_function_count": object_emission.inspection.as_ref().map(|inspection| inspection.object_function_count),
+        "object_is_empty": object_emission.inspection.as_ref().map(|inspection| inspection.object_is_empty),
+        "object_has_code_bearing_content": object_emission.inspection.as_ref().map(|inspection| inspection.object_has_code_bearing_content),
         "blocker_kind": blocker_kind,
+        "blocker_component": blocker_component,
         "blocker_reason": blocker_reason
     });
 
@@ -744,11 +806,28 @@ fn attempt_object_emission(input: &ProbeInput) -> ObjectEmissionSetup {
             }
         }
 
+        let inspection = inspect_wasm_object(&object_bytes);
+        let object_contains_codegened_function = false;
+        let codegened_mono_item_count = 0;
+        let codegened_symbols = Vec::new();
+
         ObjectEmissionSetup {
             attempted: true,
             api,
             object_bytes_emitted: true,
             wasm_object_bytes_emitted: input.target_triple.starts_with("wasm32"),
+            inspection: Some(inspection),
+            object_contains_codegened_function,
+            codegened_mono_item_count,
+            codegened_symbols,
+            object_derived_from:
+                "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
+                    .to_owned(),
+            object_codegen_source: if object_contains_codegened_function {
+                "mono_item_graph".to_owned()
+            } else {
+                "empty_llvm_module_before_mono_item_lowering".to_owned()
+            },
             artifact_kind: Some(if input.target_triple.starts_with("wasm32") {
                 "wasm_object".to_owned()
             } else {
@@ -784,6 +863,14 @@ fn object_blocked(
         api,
         object_bytes_emitted: false,
         wasm_object_bytes_emitted: false,
+        inspection: None,
+        object_contains_codegened_function: false,
+        codegened_mono_item_count: 0,
+        codegened_symbols: Vec::new(),
+        object_derived_from:
+            "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
+                .to_owned(),
+        object_codegen_source: "object_emission_blocked_before_module_inspection".to_owned(),
         artifact_kind: None,
         artifact_sha256: None,
         artifact_size_bytes: None,

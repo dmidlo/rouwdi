@@ -1940,6 +1940,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rouwdi-object"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "rouwdi-proof"
 version = "0.1.0"
 dependencies = [
@@ -1975,6 +1982,7 @@ name = "rouwdi-rustc-upstream"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "rouwdi-object",
  "rustc_error_codes",
  "rustc_hir",
  "rustc_index",
@@ -2026,6 +2034,7 @@ name = "rouwdi-wasm"
 version = "0.1.0"
 dependencies = [
  "rouwdi-engine",
+ "rouwdi-object",
  "rouwdi-proof",
  "rouwdi-rustc",
  "rouwdi-vfs",

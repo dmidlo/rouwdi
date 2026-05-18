@@ -67,6 +67,11 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
     if payload["fabricated_mono_items"] == Value::Bool(true) {
         return Some("fabricated mono items are rejected".to_owned());
     }
+    if payload["linker_handoff_created"] == Value::Bool(true)
+        && payload["rust_mono_item_wasm_object_emitted"] != Value::Bool(true)
+    {
+        return Some("linker handoff requires mono-item-derived Wasm object".to_owned());
+    }
     if payload["instantiated"] != Value::Bool(true) {
         return Some("MIR payload must be instantiated".to_owned());
     }
@@ -231,10 +236,17 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             if payload["monomorphization_status"]
                 == Value::String("mono_items_collected".to_owned())
             {
-                if payload["codegen_object_bytes_emitted"] == Value::Bool(true)
+                if payload["rust_mono_item_wasm_object_emitted"] == Value::Bool(true)
                     && payload["linker_handoff_created"] == Value::Bool(true)
                 {
                     Value::String("linking".to_owned())
+                } else if payload["codegen_wasm_object_bytes_emitted"] == Value::Bool(true)
+                    && payload["rust_mono_item_wasm_object_emitted"] != Value::Bool(true)
+                {
+                    Value::String(
+                        "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+                            .to_owned(),
+                    )
                 } else {
                     Value::String("codegen".to_owned())
                 }
@@ -283,8 +295,10 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 .as_str()
                 .unwrap_or_default();
             assert!(
-                codegen_status == "wasm_object_bytes_emitted",
-                "canonical package must emit real Wasm object bytes, got {codegen_status}"
+                codegen_status == "rust_mono_item_wasm_object_emitted"
+                    || codegen_status
+                        == "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented",
+                "canonical package must either emit a mono-item Wasm object or block at exact codegen lowering, got {codegen_status}"
             );
             assert_eq!(payload["rustc_codegen_llvm_attempted"], Value::Bool(true));
             assert_eq!(
@@ -298,6 +312,8 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert!(
                 payload["codegen_blocker_kind"].is_null()
                     || payload["codegen_blocker_kind"] == Value::String("none".to_owned())
+                    || payload["codegen_blocker_kind"]
+                        == Value::String("codegen_lowering_to_object_not_implemented".to_owned())
             );
             assert_eq!(
                 payload["codegen_contact_state"],
@@ -331,6 +347,8 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert!(
                 payload["backend_payload_blocker_kind"].is_null()
                     || payload["backend_payload_blocker_kind"] == Value::String("none".to_owned())
+                    || payload["backend_payload_blocker_kind"]
+                        == Value::String("codegen_lowering_to_object_not_implemented".to_owned())
             );
             assert_eq!(payload["check_only_target_loadable"], Value::Bool(true));
             assert_eq!(
@@ -448,7 +466,44 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 Value::Bool(true)
             );
             assert_eq!(payload["codegen_object_sha256_verified"], Value::Bool(true));
-            assert_eq!(payload["linker_handoff_created"], Value::Bool(true));
+            assert_eq!(
+                payload["object_format"],
+                Value::String("wasm_object".to_owned())
+            );
+            assert!(payload["object_section_count"]
+                .as_u64()
+                .is_some_and(|count| count > 0));
+            assert!(payload["object_symbol_count"].is_number());
+            assert!(payload["object_function_count"].is_number());
+            assert!(payload["object_is_empty"].is_boolean());
+            assert!(payload["object_has_code_bearing_content"].is_boolean());
+            if payload["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
+                assert_eq!(
+                    payload["object_contains_codegened_function"],
+                    Value::Bool(true)
+                );
+                assert!(payload["codegened_mono_item_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0));
+                assert_eq!(
+                    payload["object_codegen_source"],
+                    Value::String("mono_item_graph".to_owned())
+                );
+                assert_eq!(payload["linker_handoff_created"], Value::Bool(true));
+            } else {
+                assert_eq!(
+                    payload["object_contains_codegened_function"],
+                    Value::Bool(false)
+                );
+                assert_eq!(payload["codegened_mono_item_count"], Value::from(0));
+                assert_eq!(payload["object_function_count"], Value::from(0));
+                assert_eq!(payload["object_is_empty"], Value::Bool(true));
+                assert_eq!(
+                    payload["codegen_blocker_kind"],
+                    Value::String("codegen_lowering_to_object_not_implemented".to_owned())
+                );
+                assert_eq!(payload["linker_handoff_created"], Value::Bool(false));
+            }
         }
         assert!(
             payload["mir_body_identity"]
@@ -507,7 +562,11 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                 && entry["host_probe_target_machine_created"] == Value::Bool(true)
                 && entry["codegen_contact_state"]
                     .as_str()
-                    .is_some_and(|status| status == "wasm_object_bytes_emitted")
+                    .is_some_and(|status| {
+                        status == "rust_mono_item_wasm_object_emitted"
+                            || status
+                                == "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
+                    })
                 && entry["mono_proof_consumed"] == Value::Bool(true)
                 && entry["llvm_wrapper_target"] == Value::String("wasm32-wasip1".to_owned())
                 && entry["llvm_wrapper_artifact_kind"] == Value::String("staticlib".to_owned())
@@ -555,7 +614,29 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     == Value::String("rouwdi_owned_virtual_fs".to_owned())
                 && entry["object_bytes_retrieved_by_rouwdi"] == Value::Bool(true)
                 && entry["object_sha256_verified"] == Value::Bool(true)
-                && entry["linker_handoff_created"] == Value::Bool(true)
+                && entry["object_format"] == Value::String("wasm_object".to_owned())
+                && entry["object_section_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+                && entry["object_symbol_count"].is_number()
+                && entry["object_function_count"].is_number()
+                && entry["object_is_empty"].is_boolean()
+                && entry["object_has_code_bearing_content"].is_boolean()
+                && if entry["rust_mono_item_wasm_object_emitted"] == Value::Bool(true) {
+                    entry["object_contains_codegened_function"] == Value::Bool(true)
+                        && entry["codegened_mono_item_count"]
+                            .as_u64()
+                            .is_some_and(|count| count > 0)
+                        && entry["object_codegen_source"]
+                            == Value::String("mono_item_graph".to_owned())
+                        && entry["linker_handoff_created"] == Value::Bool(true)
+                } else {
+                    entry["object_contains_codegened_function"] == Value::Bool(false)
+                        && entry["codegened_mono_item_count"] == Value::from(0)
+                        && entry["object_function_count"] == Value::from(0)
+                        && entry["object_is_empty"] == Value::Bool(true)
+                        && entry["linker_handoff_created"] == Value::Bool(false)
+                }
         }),
         "canonical manifest must retain the assembly-owned LLVM backend payload route"
     );

@@ -722,6 +722,20 @@ pub struct RustCodegenHandoffRecord {
     pub proof_path: String,
     pub object_bytes_emitted: bool,
     pub wasm_object_bytes_emitted: bool,
+    pub rust_mono_item_wasm_object_emitted: bool,
+    pub codegened_mono_item_count: u64,
+    pub codegened_symbols: Vec<String>,
+    pub object_contains_codegened_function: bool,
+    pub object_format: Option<String>,
+    pub object_section_count: Option<u64>,
+    pub object_has_code_section: Option<bool>,
+    pub object_has_linking_metadata: Option<bool>,
+    pub object_symbol_count: Option<u64>,
+    pub object_function_count: Option<u64>,
+    pub object_is_empty: Option<bool>,
+    pub object_has_code_bearing_content: Option<bool>,
+    pub object_derived_from: String,
+    pub object_codegen_source: String,
     pub object_path: Option<String>,
     pub object_sha256: Option<String>,
     pub object_artifact_kind: Option<String>,
@@ -759,8 +773,15 @@ impl RustCodegenHandoffRecord {
         } else {
             "object"
         };
-        let blocker_kind = if codegen_probe.object_bytes_emitted {
+        let rust_mono_item_wasm_object_emitted = codegen_probe.rust_mono_item_wasm_object_emitted
+            && codegen_probe.object_contains_codegened_function
+            && codegen_probe.codegened_mono_item_count > 0;
+        let object_is_probe_only =
+            codegen_probe.object_bytes_emitted && !rust_mono_item_wasm_object_emitted;
+        let blocker_kind = if rust_mono_item_wasm_object_emitted {
             "none".to_owned()
+        } else if object_is_probe_only {
+            "codegen_lowering_to_object_not_implemented".to_owned()
         } else if codegen_probe.object_emission_attempted {
             codegen_probe.blocker_kind.clone()
         } else if codegen_probe.llvm_ir_emitted {
@@ -770,11 +791,15 @@ impl RustCodegenHandoffRecord {
         };
         let blocker_component = if blocker_kind == "none" {
             "none".to_owned()
+        } else if object_is_probe_only {
+            "rustc_codegen_llvm mono item lowering".to_owned()
         } else {
             codegen_probe.blocker_component.clone()
         };
         let blocker_reason = if blocker_kind == "none" {
             "none".to_owned()
+        } else if object_is_probe_only {
+            codegen_probe.blocker_reason.clone()
         } else {
             codegen_component
                 .as_ref()
@@ -782,8 +807,10 @@ impl RustCodegenHandoffRecord {
                 .filter(|reason| !reason.trim().is_empty())
                 .unwrap_or_else(|| codegen_probe.blocker_reason.clone())
         };
-        let current_status = if codegen_probe.object_bytes_emitted {
-            "wasm_object_bytes_emitted".to_owned()
+        let current_status = if rust_mono_item_wasm_object_emitted {
+            "rust_mono_item_wasm_object_emitted".to_owned()
+        } else if object_is_probe_only {
+            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned()
         } else if codegen_probe.object_emission_attempted {
             codegen_probe.backend_payload_execution_status.clone()
         } else if codegen_probe.llvm_ir_emitted {
@@ -959,14 +986,30 @@ impl RustCodegenHandoffRecord {
             blocker_kind,
             blocker_component,
             blocker_reason,
-            next_command: if codegen_probe.object_bytes_emitted {
+            next_command: if rust_mono_item_wasm_object_emitted {
                 "Embed a rouwdi-owned wasm-ld/lld payload and invoke it with the emitted Wasm object plus target-pack runtime objects".to_owned()
+            } else if object_is_probe_only {
+                "Lower the collected rustc monomorphized item through rustc_codegen_llvm into the LLVM module before object emission; keep linker handoff closed until object inspection finds code-bearing mono-item content".to_owned()
             } else {
                 "Emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve them through rouwdi-owned logic, then open wasm-ld handoff".to_owned()
             },
             proof_path: "graph/rust-source-codegen-handoff.json".to_owned(),
             object_bytes_emitted: codegen_probe.object_bytes_emitted,
             wasm_object_bytes_emitted: codegen_probe.wasm_object_bytes_emitted,
+            rust_mono_item_wasm_object_emitted,
+            codegened_mono_item_count: codegen_probe.codegened_mono_item_count,
+            codegened_symbols: codegen_probe.codegened_symbols.clone(),
+            object_contains_codegened_function: codegen_probe.object_contains_codegened_function,
+            object_format: codegen_probe.object_format.clone(),
+            object_section_count: codegen_probe.object_section_count,
+            object_has_code_section: codegen_probe.object_has_code_section,
+            object_has_linking_metadata: codegen_probe.object_has_linking_metadata,
+            object_symbol_count: codegen_probe.object_symbol_count,
+            object_function_count: codegen_probe.object_function_count,
+            object_is_empty: codegen_probe.object_is_empty,
+            object_has_code_bearing_content: codegen_probe.object_has_code_bearing_content,
+            object_derived_from: codegen_probe.object_derived_from.clone(),
+            object_codegen_source: codegen_probe.object_codegen_source.clone(),
             object_path: codegen_probe.object_artifact_location.clone(),
             object_sha256: codegen_probe.object_artifact_sha256.clone(),
             object_artifact_kind: codegen_probe.object_artifact_kind.clone(),
@@ -995,8 +1038,8 @@ impl RustCodegenHandoffRecord {
             llvm_ir_emitted: codegen_probe.llvm_ir_emitted,
             llvm_ir_sha256: codegen_probe.llvm_ir_sha256.clone(),
             llvm_ir_size_bytes: codegen_probe.llvm_ir_byte_len,
-            linker_handoff_created: codegen_probe.object_bytes_emitted,
-            linker_handoff: if codegen_probe.object_bytes_emitted {
+            linker_handoff_created: rust_mono_item_wasm_object_emitted,
+            linker_handoff: if rust_mono_item_wasm_object_emitted {
                 match (
                     codegen_probe.object_artifact_sha256.clone(),
                     codegen_probe.object_artifact_size_bytes,
@@ -1243,22 +1286,17 @@ impl RustCodegenHandoffRecord {
                 );
             }
         }
-        if self.current_status == "object_bytes_emitted"
-            || self.current_status == "wasm_object_bytes_emitted"
-        {
-            if !self.object_bytes_emitted {
-                return Err("codegen success requires real object bytes".to_owned());
-            }
+        if self.object_bytes_emitted {
             if self.codegen_artifact_byte_len.unwrap_or_default() == 0
                 || self.object_artifact_size_bytes.unwrap_or_default() == 0
             {
-                return Err("codegen success requires a non-empty artifact byte length".to_owned());
+                return Err("object emission requires a non-empty artifact byte length".to_owned());
             }
             let object_sha = self
                 .object_sha256
                 .as_deref()
                 .or(self.object_artifact_sha256.as_deref())
-                .ok_or_else(|| "codegen success requires object_sha256".to_owned())?;
+                .ok_or_else(|| "object emission requires object_sha256".to_owned())?;
             if object_sha == self.mono_item_graph_hash || object_sha == self.mir_body_hash {
                 return Err("object hash must not reuse mono graph or MIR body hashes".to_owned());
             }
@@ -1271,6 +1309,9 @@ impl RustCodegenHandoffRecord {
                     || self.codegen_artifact_kind.as_deref() != Some("wasm_object")
                 {
                     return Err("wasm targets require real wasm_object bytes".to_owned());
+                }
+                if self.object_format.as_deref() != Some("wasm_object") {
+                    return Err("wasm object emission requires rouwdi object inspection".to_owned());
                 }
             }
             let location = self
@@ -1299,8 +1340,55 @@ impl RustCodegenHandoffRecord {
             {
                 return Err("object bytes must be retrieved by rouwdi-owned logic".to_owned());
             }
-        } else if self.object_bytes_emitted
-            || self.wasm_object_bytes_emitted
+            if self.object_is_empty.is_none()
+                || self.object_has_code_bearing_content.is_none()
+                || self.object_function_count.is_none()
+                || self.object_symbol_count.is_none()
+            {
+                return Err(
+                    "object bytes require parsed section/function/symbol inspection".to_owned(),
+                );
+            }
+            if self.rust_mono_item_wasm_object_emitted {
+                if !self.object_contains_codegened_function
+                    || self.codegened_mono_item_count == 0
+                    || self.codegened_symbols.is_empty()
+                    || self.object_codegen_source != "mono_item_graph"
+                    || !self.object_derived_from.contains("rustc_codegen_llvm")
+                    || self.object_is_empty == Some(true)
+                    || self.object_has_code_bearing_content != Some(true)
+                    || self.object_function_count.unwrap_or_default() == 0
+                {
+                    return Err(
+                        "mono-item object success requires code-bearing object content tied to the mono graph"
+                            .to_owned(),
+                    );
+                }
+                if self.current_status != "rust_mono_item_wasm_object_emitted" {
+                    return Err(
+                        "mono-item object success must use rust_mono_item_wasm_object_emitted status"
+                            .to_owned(),
+                    );
+                }
+            } else {
+                if self.linker_handoff_created || self.linker_handoff.is_some() {
+                    return Err(
+                        "linker handoff is forbidden until object inspection finds mono-item code"
+                            .to_owned(),
+                    );
+                }
+                if !self
+                    .current_status
+                    .starts_with("codegen_lowering_blocked_at_")
+                    || self.blocker_kind == "none"
+                {
+                    return Err(
+                        "probe-only object bytes must block at an exact codegen lowering frontier"
+                            .to_owned(),
+                    );
+                }
+            }
+        } else if self.wasm_object_bytes_emitted
             || self.object_path.is_some()
             || self.object_sha256.is_some()
             || self.object_artifact_sha256.is_some()
@@ -1324,11 +1412,15 @@ impl RustCodegenHandoffRecord {
                 return Err("LLVM IR hash must not reuse mono graph or MIR body hashes".to_owned());
             }
         }
-        if self.linker_handoff_created && !self.object_bytes_emitted {
-            return Err("linker handoff is forbidden without real object bytes".to_owned());
+        if self.linker_handoff_created && !self.rust_mono_item_wasm_object_emitted {
+            return Err(
+                "linker handoff is forbidden without mono-item-derived object bytes".to_owned(),
+            );
         }
-        if self.linker_handoff.is_some() && !self.object_bytes_emitted {
-            return Err("linker handoff is forbidden without real object bytes".to_owned());
+        if self.linker_handoff.is_some() && !self.rust_mono_item_wasm_object_emitted {
+            return Err(
+                "linker handoff is forbidden without mono-item-derived object bytes".to_owned(),
+            );
         }
         if let Some(linker_handoff) = &self.linker_handoff {
             let codegen_sha = self
@@ -2388,7 +2480,7 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
     }
 
     if let Some(codegen_handoff) = mir_handoff.codegen_handoff.as_ref() {
-        if !codegen_handoff.object_bytes_emitted && !codegen_handoff.llvm_ir_emitted {
+        if !codegen_handoff.rust_mono_item_wasm_object_emitted {
             let blocker_component = codegen_handoff.blocker_component.clone();
             let blocker_reason = format!(
                 "{}: {}",

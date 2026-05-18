@@ -202,6 +202,20 @@ pub struct RustcCodegenLlvmBackendProbe {
     pub object_emission_api: String,
     pub object_bytes_emitted: bool,
     pub wasm_object_bytes_emitted: bool,
+    pub rust_mono_item_wasm_object_emitted: bool,
+    pub codegened_mono_item_count: u64,
+    pub codegened_symbols: Vec<String>,
+    pub object_contains_codegened_function: bool,
+    pub object_format: Option<String>,
+    pub object_section_count: Option<u64>,
+    pub object_has_code_section: Option<bool>,
+    pub object_has_linking_metadata: Option<bool>,
+    pub object_symbol_count: Option<u64>,
+    pub object_function_count: Option<u64>,
+    pub object_is_empty: Option<bool>,
+    pub object_has_code_bearing_content: Option<bool>,
+    pub object_derived_from: String,
+    pub object_codegen_source: String,
     pub object_artifact_kind: Option<String>,
     pub object_artifact_sha256: Option<String>,
     pub object_artifact_size_bytes: Option<u64>,
@@ -2706,8 +2720,9 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
                 .to_owned(),
         backend_payload_first_undefined_symbol: String::new(),
         backend_payload_llvm_undefined_symbols: Vec::new(),
-        backend_payload_execution_status: "wasm_object_bytes_emitted".to_owned(),
-        backend_payload_blocker_kind: "none".to_owned(),
+        backend_payload_execution_status:
+            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented".to_owned(),
+        backend_payload_blocker_kind: "codegen_lowering_to_object_not_implemented".to_owned(),
         llvm_wrapper_target: "wasm32-wasip1".to_owned(),
         llvm_wrapper_target_artifact_kind: "staticlib".to_owned(),
         llvm_wrapper_target_path:
@@ -2733,14 +2748,30 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
             "rustc_metadata".to_owned(),
             "rustc_llvm".to_owned(),
         ],
-        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, emit real LLVM IR bytes, emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve them through the rouwdi-owned virtual filesystem, and open the wasm-ld handoff".to_owned(),
-        blocker_kind: "none".to_owned(),
-        blocker_component: "none".to_owned(),
-        blocker_reason: "none".to_owned(),
+        llvm_payload_route: "assembly-owned wasm32-wasip1 rustc_codegen_llvm backend payload route: check-only target loadability exits 0, a wasm32-wasip1 llvm-wrapper archive and target-compatible LLVM library closure are emitted, the executable payload links through WASI clang/wasm-ld, dist/rouwdi.wasm embeds the payload, and the embedded registry executes it to construct rustc_codegen_llvm, create an LLVM module, create a WebAssembly target machine, emit real LLVM IR bytes, emit real Wasm object bytes through LLVMTargetMachineEmitToMemoryBuffer, retrieve and inspect them through rouwdi-owned logic, and block before linker handoff because the current object is empty/probe-only and not derived from mono item lowering".to_owned(),
+        blocker_kind: "codegen_lowering_to_object_not_implemented".to_owned(),
+        blocker_component: "rustc_codegen_llvm mono item lowering".to_owned(),
+        blocker_reason: "LLVM emitted a valid Wasm object from an empty payload-created module; rouwdi-owned object inspection found no code-bearing function tied to the mono item graph, so linker handoff remains closed".to_owned(),
         object_emission_attempted: true,
         object_emission_api: "LLVMTargetMachineEmitToMemoryBuffer(LLVMObjectFile)".to_owned(),
         object_bytes_emitted: true,
         wasm_object_bytes_emitted: true,
+        rust_mono_item_wasm_object_emitted: false,
+        codegened_mono_item_count: 0,
+        codegened_symbols: Vec::new(),
+        object_contains_codegened_function: false,
+        object_format: Some("wasm_object".to_owned()),
+        object_section_count: Some(1),
+        object_has_code_section: Some(false),
+        object_has_linking_metadata: Some(true),
+        object_symbol_count: Some(0),
+        object_function_count: Some(0),
+        object_is_empty: Some(true),
+        object_has_code_bearing_content: Some(false),
+        object_derived_from:
+            "rustc_codegen_llvm::LlvmCodegenBackend::new + LLVMTargetMachineEmitToMemoryBuffer"
+                .to_owned(),
+        object_codegen_source: "empty_llvm_module_before_mono_item_lowering".to_owned(),
         object_artifact_kind: Some("wasm_object".to_owned()),
         object_artifact_sha256: Some(
             "0e4d3959d217324e5ca237cb9dc19cd1f40907a25da90c40ec68d71b67101985"
@@ -4452,9 +4483,12 @@ mod tests {
         assert!(probe.backend_payload_llvm_undefined_symbols.is_empty());
         assert_eq!(
             probe.backend_payload_execution_status,
-            "wasm_object_bytes_emitted"
+            "codegen_lowering_blocked_at_codegen_lowering_to_object_not_implemented"
         );
-        assert_eq!(probe.backend_payload_blocker_kind, "none");
+        assert_eq!(
+            probe.backend_payload_blocker_kind,
+            "codegen_lowering_to_object_not_implemented"
+        );
         assert_eq!(probe.llvm_wrapper_target, "wasm32-wasip1");
         assert_eq!(probe.llvm_wrapper_target_artifact_kind, "staticlib");
         assert!(probe
@@ -4471,9 +4505,15 @@ mod tests {
         assert!(probe.target_llvm_library_closure_available);
         assert_eq!(probe.target_llvm_library_closure_status, "available");
         assert!(!probe.enzyme_libloading_blocker_present);
-        assert_eq!(probe.blocker_kind, "none");
-        assert_eq!(probe.blocker_component, "none");
-        assert_eq!(probe.blocker_reason, "none");
+        assert_eq!(
+            probe.blocker_kind,
+            "codegen_lowering_to_object_not_implemented"
+        );
+        assert_eq!(
+            probe.blocker_component,
+            "rustc_codegen_llvm mono item lowering"
+        );
+        assert!(probe.blocker_reason.contains("no code-bearing function"));
         assert!(probe
             .target_loadable_components
             .contains(&"rustc_codegen_ssa".to_owned()));
@@ -4484,6 +4524,19 @@ mod tests {
         );
         assert!(probe.object_bytes_emitted);
         assert!(probe.wasm_object_bytes_emitted);
+        assert!(!probe.rust_mono_item_wasm_object_emitted);
+        assert_eq!(probe.codegened_mono_item_count, 0);
+        assert!(probe.codegened_symbols.is_empty());
+        assert!(!probe.object_contains_codegened_function);
+        assert_eq!(probe.object_format.as_deref(), Some("wasm_object"));
+        assert_eq!(probe.object_function_count, Some(0));
+        assert_eq!(probe.object_symbol_count, Some(0));
+        assert_eq!(probe.object_is_empty, Some(true));
+        assert_eq!(probe.object_has_code_bearing_content, Some(false));
+        assert_eq!(
+            probe.object_codegen_source,
+            "empty_llvm_module_before_mono_item_lowering"
+        );
         assert_eq!(probe.object_artifact_kind.as_deref(), Some("wasm_object"));
         assert_eq!(
             probe.object_artifact_sha256.as_deref(),

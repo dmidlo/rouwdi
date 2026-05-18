@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 rustc_error_codes = { path = "../../third_party/rust/compiler/rustc_error_codes" }
 rustc_index = { path = "../../third_party/rust/compiler/rustc_index", default-features = false }
+rouwdi-object.workspace = true
 rustc_hir = { path = "../../third_party/rust/compiler/rustc_hir", optional = true }
 rustc_middle = { path = "../../third_party/rust/compiler/rustc_middle", optional = true }
 rustc_mir_build = { path = "../../third_party/rust/compiler/rustc_mir_build", optional = true }

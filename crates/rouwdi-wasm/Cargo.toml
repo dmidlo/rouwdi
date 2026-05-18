@@ -19,6 +19,7 @@ serde.workspace = true
 sha2.workspace = true
 wasmi.workspace = true
 rouwdi-engine = { path = "../rouwdi-engine" }
+rouwdi-object.workspace = true
 rouwdi-proof = { path = "../rouwdi-proof" }
 rouwdi-rustc = { path = "../rouwdi-rustc" }
 rouwdi-vfs = { path = "../rouwdi-vfs" }
