@@ -1,0 +1,13 @@
+[package]
+name = "multiple-local-dependencies"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "multiple-local-dependencies"
+path = "src/main.rs"
+
+[dependencies]
+alpha = { path = "alpha" }
+beta = { path = "beta" }

@@ -1,5 +1,6 @@
 use rouwdi_cargo::{
-    CargoBuildPlan, CargoFeatureResolution, CargoLockfile, CargoSourceFetchPlan, CargoWorkspace,
+    CargoBuildPlan, CargoDependencyCompilePlan, CargoFeatureResolution, CargoLockfile,
+    CargoSourceFetchPlan, CargoWorkspace,
 };
 use rouwdi_compiletime::CompileTimePlan;
 use rouwdi_contract::{ArtifactKind, NormalizedContract};
@@ -78,6 +79,65 @@ pub struct ArtifactManifestEntry {
     pub runtime_proof_hash: String,
     pub fixture_name: String,
     pub runtime_proof_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrateArtifactManifestEntry {
+    pub compile_unit_id: String,
+    pub crate_name: String,
+    pub package: String,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub target_kind: String,
+    pub target_triple: String,
+    pub artifact_kind: String,
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+    pub byte_length: u64,
+    pub metadata_path: Option<String>,
+    pub metadata_sha256: Option<String>,
+    pub mir_hash: String,
+    pub mono_graph_hash: String,
+    pub object_hash: String,
+    pub archive_hash: Option<String>,
+    pub exported_symbols: Vec<String>,
+    pub crate_disambiguator: String,
+    pub produced_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyEdgeProof {
+    pub dependent_compile_unit_id: String,
+    pub dependency_compile_unit_id: String,
+    pub dependent_crate: String,
+    pub dependency_crate: String,
+    pub extern_crate_name: String,
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+    pub metadata_path: Option<String>,
+    pub metadata_sha256: Option<String>,
+    pub rustc_arg: String,
+    pub edge_satisfied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternInputProof {
+    pub compile_unit_id: String,
+    pub extern_crate_name: String,
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+    pub metadata_path: Option<String>,
+    pub metadata_sha256: Option<String>,
+    pub rustc_arg: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkerInputProof {
+    pub compile_unit_id: String,
+    pub input_kind: String,
+    pub path: String,
+    pub sha256: String,
+    pub dependency_compile_unit_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +301,12 @@ pub struct RouwdiRunManifest {
     pub compiler_pipeline: Vec<RustCompilerPipelineRecord>,
     pub artifact_pipeline: Vec<ArtifactPipelineRecord>,
     pub artifacts: Vec<ArtifactManifestEntry>,
+    pub crate_artifacts: Vec<CrateArtifactManifestEntry>,
+    pub dependency_edges: Vec<DependencyEdgeProof>,
+    pub compile_order: Vec<String>,
+    pub extern_inputs: Vec<ExternInputProof>,
+    pub linker_inputs: Vec<LinkerInputProof>,
+    pub final_artifact: Option<ArtifactManifestEntry>,
     pub bootstrap_diagnostics: Vec<BootstrapDiagnostic>,
     pub proof_files: Vec<String>,
 }
@@ -255,6 +321,7 @@ pub struct ProofBundle {
     pub cargo_features: CargoFeatureResolution,
     pub source_fetch_plan: CargoSourceFetchPlan,
     pub build_plan: CargoBuildPlan,
+    pub dependency_compile_plan: CargoDependencyCompilePlan,
     pub compile_time_plan: CompileTimePlan,
     pub rust_source_lex: Vec<RustSourceLexProof>,
     pub rust_source_parse: Vec<RustParseStageRecord>,
@@ -309,6 +376,10 @@ impl ProofBundle {
             (
                 "graph/build-plan.json",
                 serde_json::to_vec_pretty(&self.build_plan)?,
+            ),
+            (
+                "graph/cargo-dependency-compile-plan.json",
+                serde_json::to_vec_pretty(&self.dependency_compile_plan)?,
             ),
             (
                 "graph/compiletime-plan.json",
@@ -909,6 +980,12 @@ mod tests {
             compiler_pipeline: Vec::new(),
             artifact_pipeline: Vec::new(),
             artifacts: Vec::new(),
+            crate_artifacts: Vec::new(),
+            dependency_edges: Vec::new(),
+            compile_order: Vec::new(),
+            extern_inputs: Vec::new(),
+            linker_inputs: Vec::new(),
+            final_artifact: None,
             bootstrap_diagnostics: Vec::new(),
             proof_files: vec!["run/proofs/hashes.json".to_owned()],
         };

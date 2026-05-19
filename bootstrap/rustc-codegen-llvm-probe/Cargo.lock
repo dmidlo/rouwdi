@@ -1176,6 +1176,7 @@ dependencies = [
  "rustc_codegen_llvm",
  "rustc_feature",
  "rustc_interface",
+ "rustc_metadata",
  "rustc_session",
  "rustc_span",
  "rustc_target",

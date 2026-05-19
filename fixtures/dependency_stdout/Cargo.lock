@@ -1,0 +1,12 @@
+version = 4
+
+[[package]]
+name = "dependency-stdout"
+version = "0.1.0"
+dependencies = [
+ "printer",
+]
+
+[[package]]
+name = "printer"
+version = "0.1.0"

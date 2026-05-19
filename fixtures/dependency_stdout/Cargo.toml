@@ -1,0 +1,12 @@
+[package]
+name = "dependency-stdout"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "dependency-stdout"
+path = "src/main.rs"
+
+[dependencies]
+printer = { path = "printer" }

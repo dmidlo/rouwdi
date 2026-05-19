@@ -1,0 +1,12 @@
+[package]
+name = "transitive-local-dependency"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "transitive-local-dependency"
+path = "src/main.rs"
+
+[dependencies]
+middle = { path = "middle" }

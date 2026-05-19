@@ -1,0 +1,12 @@
+[package]
+name = "local-lib-call"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "local-lib-call"
+path = "src/main.rs"
+
+[dependencies]
+helper = { path = "helper" }

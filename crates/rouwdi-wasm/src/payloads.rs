@@ -152,6 +152,7 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub source_path: String,
     pub source_sha256: String,
     pub codegen_input_source_origin: String,
+    pub crate_artifact_kind: String,
     pub execution_source: String,
     pub external: bool,
     pub opened_external_file: bool,
@@ -242,6 +243,12 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub codegen_artifact_location: Option<String>,
     pub linker_required: bool,
     pub linker_handoff_created: bool,
+    #[serde(skip_serializing)]
+    pub crate_artifact_bytes: Option<Vec<u8>>,
+    pub crate_artifact_path: Option<String>,
+    pub crate_artifact_sha256: Option<String>,
+    pub crate_artifact_size_bytes: Option<u64>,
+    pub crate_metadata_sha256: Option<String>,
     #[serde(skip_serializing)]
     pub final_module_bytes: Option<Vec<u8>>,
     pub final_module_artifact_path: Option<String>,
@@ -739,6 +746,49 @@ pub fn linked_wasi_module_artifact_for_engine(
     })
 }
 
+pub fn crate_artifact_for_engine(
+    request: &EmbeddedLinkedWasiModuleRequest,
+) -> Option<rouwdi_engine::EmbeddedCrateArtifact> {
+    if request.crate_artifact_kind != "library" {
+        return None;
+    }
+    let report = load_codegen_backend_payload(request).ok()?;
+    let bytes = report.crate_artifact_bytes?;
+    let sha256 = report.crate_artifact_sha256?;
+    if sha256 != sha256_hex(&bytes) {
+        return None;
+    }
+    let size_bytes = report.crate_artifact_size_bytes?;
+    if size_bytes != bytes.len() as u64 {
+        return None;
+    }
+    if !report.object_bytes_emitted || !report.object_sha256_verified {
+        return None;
+    }
+    Some(rouwdi_engine::EmbeddedCrateArtifact {
+        compile_unit_id: request.compile_unit_id.clone(),
+        package: request.package.clone(),
+        crate_name: request.crate_name.clone(),
+        target_triple: request.target_triple.clone(),
+        artifact_kind: "rlib".to_owned(),
+        payload_artifact_path: report
+            .crate_artifact_path
+            .unwrap_or_else(|| format!("lib{}.rlib", request.crate_name.replace('-', "_"))),
+        bytes,
+        sha256,
+        size_bytes,
+        source_path: request.source_path.clone(),
+        source_sha256: request.source_sha256.clone(),
+        metadata_sha256: report.crate_metadata_sha256,
+        object_sha256: report.object_artifact_sha256,
+        exported_symbols: report.codegened_symbols,
+        codegen_input_sha256: request.source_sha256.clone(),
+        codegen_input_source_sha256: request.source_sha256.clone(),
+        codegen_input_source_bytes_sha256: request.source_sha256.clone(),
+        codegen_input_source_origin: "vfs_compile_unit_source".to_owned(),
+    })
+}
+
 fn execute_embedded_codegen_payload(
     payload: &EmbeddedCodegenPayload,
     request: &EmbeddedLinkedWasiModuleRequest,
@@ -770,6 +820,8 @@ fn execute_embedded_codegen_payload(
         .map(|export| export.name().to_owned())
         .collect::<Vec<_>>();
     let argv = codegen_payload_argv(request);
+    let initial_written_files = initial_codegen_written_files(request);
+    let initial_created_dirs = initial_codegen_created_dirs(&initial_written_files);
     let mut store = Store::new(
         &engine,
         PayloadWasiState {
@@ -781,8 +833,8 @@ fn execute_embedded_codegen_payload(
             random_counter: 0,
             next_fd: WASI_PREOPEN_FD + 1,
             fds: BTreeMap::new(),
-            written_files: BTreeMap::new(),
-            created_dirs: BTreeSet::new(),
+            written_files: initial_written_files,
+            created_dirs: initial_created_dirs,
             wasi_trace: Vec::new(),
         },
     );
@@ -940,6 +992,25 @@ fn execute_embedded_codegen_payload(
     } else {
         json_string_field(codegen_artifact, "embedded_artifact_location")
     };
+    let crate_artifact_value = output_json
+        .as_ref()
+        .and_then(|value| value.get("crate_artifact"));
+    let crate_artifact_path = crate_artifact_value
+        .and_then(|artifact| json_string_field(Some(artifact), "artifact_path"))
+        .map(|path| normalize_reported_vfs_path(&path));
+    let crate_artifact_bytes = crate_artifact_path
+        .as_ref()
+        .and_then(|path| store.data().written_files.get(path).cloned());
+    let crate_artifact_sha256 = crate_artifact_bytes.as_ref().map(|bytes| sha256_hex(bytes));
+    let crate_artifact_size_bytes = crate_artifact_bytes
+        .as_ref()
+        .map(|bytes| bytes.len() as u64);
+    let crate_metadata_sha256 =
+        json_string_field(crate_artifact_value, "metadata_sha256").or_else(|| {
+            crate_artifact_value
+                .and_then(|artifact| artifact.get("metadata_proof"))
+                .and_then(|metadata| json_string_field(Some(metadata), "sha256"))
+        });
     let final_module_artifact = final_module_artifact_value(output_json.as_ref());
     let final_module_artifact_path = final_module_artifact
         .and_then(|artifact| json_string_field(Some(artifact), "artifact_path"))
@@ -979,6 +1050,7 @@ fn execute_embedded_codegen_payload(
         source_path: request.source_path.clone(),
         source_sha256: request.source_sha256.clone(),
         codegen_input_source_origin: "vfs_compile_unit_source".to_owned(),
+        crate_artifact_kind: request.crate_artifact_kind.clone(),
         execution_source: "embedded_registry".to_owned(),
         external: false,
         opened_external_file: false,
@@ -1127,6 +1199,11 @@ fn execute_embedded_codegen_payload(
         linker_required: json_bool(output_json.as_ref(), "linker_required"),
         linker_handoff_created: json_bool(output_json.as_ref(), "linker_handoff_created")
             && rust_mono_item_wasm_object_emitted,
+        crate_artifact_bytes,
+        crate_artifact_path,
+        crate_artifact_sha256,
+        crate_artifact_size_bytes,
+        crate_metadata_sha256,
         final_module_bytes,
         final_module_artifact_path,
         final_module_sha256,
@@ -2237,7 +2314,7 @@ fn wasi_fd_readdir(
         return WASI_ERRNO_INVAL;
     }
     let entries = if fd == WASI_PREOPEN_FD {
-        virtual_dir_entries("")
+        virtual_dir_entries_with_written("", &caller.data().written_files)
     } else {
         let Some(VirtualFd::Directory { entries, .. }) = caller.data().fds.get(&fd) else {
             return WASI_ERRNO_BADF;
@@ -2386,16 +2463,44 @@ fn wasi_path_filestat_get(
 }
 
 fn wasi_path_link(
-    _caller: Caller<'_, PayloadWasiState>,
-    _old_fd: i32,
+    mut caller: Caller<'_, PayloadWasiState>,
+    old_fd: i32,
     _old_flags: i32,
-    _old_path_ptr: i32,
-    _old_path_len: i32,
-    _new_fd: i32,
-    _new_path_ptr: i32,
-    _new_path_len: i32,
+    old_path_ptr: i32,
+    old_path_len: i32,
+    new_fd: i32,
+    new_path_ptr: i32,
+    new_path_len: i32,
 ) -> i32 {
-    WASI_ERRNO_NOSYS
+    if old_fd != WASI_PREOPEN_FD || new_fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let Some(old_path) = read_path(&caller, old_path_ptr, old_path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let Some(new_path) = read_path(&caller, new_path_ptr, new_path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let old_normalized = normalize_virtual_path(&old_path);
+    let new_normalized = normalize_virtual_path(&new_path);
+    let bytes = caller
+        .data()
+        .written_files
+        .get(&old_normalized)
+        .cloned()
+        .or_else(|| virtual_file(&old_normalized).map(|file| file.bytes.to_vec()));
+    let Some(bytes) = bytes else {
+        return WASI_ERRNO_NOENT;
+    };
+    caller
+        .data_mut()
+        .written_files
+        .insert(new_normalized.clone(), bytes);
+    record_wasi_trace(
+        &mut caller,
+        format!("path_link {old_normalized:?} -> {new_normalized:?}"),
+    );
+    WASI_ERRNO_SUCCESS
 }
 
 fn wasi_path_open(
@@ -2482,13 +2587,12 @@ fn wasi_path_open(
         return status;
     }
     if virtual_dir_exists(&normalized) || caller.data().created_dirs.contains(&normalized) {
+        let entries = virtual_dir_entries_with_written(&normalized, &caller.data().written_files);
         caller.data_mut().next_fd = next_fd.saturating_add(1);
-        caller.data_mut().fds.insert(
-            next_fd,
-            VirtualFd::Directory {
-                entries: virtual_dir_entries(&normalized),
-            },
-        );
+        caller
+            .data_mut()
+            .fds
+            .insert(next_fd, VirtualFd::Directory { entries });
         record_wasi_trace(
             &mut caller,
             format!("path_open opened_directory fd={next_fd} normalized={normalized:?}"),
@@ -2604,15 +2708,38 @@ fn wasi_path_remove_directory(
 }
 
 fn wasi_path_rename(
-    _caller: Caller<'_, PayloadWasiState>,
-    _fd: i32,
-    _path_ptr: i32,
-    _path_len: i32,
-    _new_fd: i32,
-    _new_path_ptr: i32,
-    _new_path_len: i32,
+    mut caller: Caller<'_, PayloadWasiState>,
+    fd: i32,
+    path_ptr: i32,
+    path_len: i32,
+    new_fd: i32,
+    new_path_ptr: i32,
+    new_path_len: i32,
 ) -> i32 {
-    WASI_ERRNO_NOSYS
+    if fd != WASI_PREOPEN_FD || new_fd != WASI_PREOPEN_FD {
+        return WASI_ERRNO_BADF;
+    }
+    let Some(path) = read_path(&caller, path_ptr, path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let Some(new_path) = read_path(&caller, new_path_ptr, new_path_len) else {
+        return WASI_ERRNO_INVAL;
+    };
+    let normalized = normalize_virtual_path(&path);
+    let new_normalized = normalize_virtual_path(&new_path);
+    if let Some(bytes) = caller.data_mut().written_files.remove(&normalized) {
+        caller
+            .data_mut()
+            .written_files
+            .insert(new_normalized.clone(), bytes);
+        record_wasi_trace(
+            &mut caller,
+            format!("path_rename {normalized:?} -> {new_normalized:?}"),
+        );
+        WASI_ERRNO_SUCCESS
+    } else {
+        WASI_ERRNO_NOENT
+    }
 }
 
 fn wasi_path_unlink_file(
@@ -2933,6 +3060,46 @@ fn virtual_dir_entries(path: &str) -> Vec<VirtualDirEntry> {
     entries
 }
 
+fn virtual_dir_entries_with_written(
+    path: &str,
+    written_files: &BTreeMap<String, Vec<u8>>,
+) -> Vec<VirtualDirEntry> {
+    let normalized = normalize_virtual_path(path);
+    let mut entries = virtual_dir_entries(&normalized);
+    for file_path in written_files.keys() {
+        if parent_virtual_path(file_path) == normalized {
+            if let Some(name) = file_path.rsplit('/').next() {
+                entries.push(VirtualDirEntry {
+                    name: name.to_owned(),
+                    filetype: WASI_FILETYPE_REGULAR_FILE,
+                });
+            }
+        }
+    }
+    for file_path in written_files.keys() {
+        let parent = parent_virtual_path(file_path);
+        if parent.starts_with(normalized.as_str()) {
+            let suffix = if normalized.is_empty() {
+                parent.as_str()
+            } else {
+                parent
+                    .strip_prefix(normalized.as_str())
+                    .unwrap_or(parent.as_str())
+                    .trim_start_matches('/')
+            };
+            if let Some(child) = suffix.split('/').find(|part| !part.is_empty()) {
+                entries.push(VirtualDirEntry {
+                    name: child.to_owned(),
+                    filetype: WASI_FILETYPE_DIRECTORY,
+                });
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.dedup_by(|left, right| left.name == right.name);
+    entries
+}
+
 fn virtual_child_dirs(path: &str) -> &'static [&'static str] {
     match path {
         "" => &["third_party"],
@@ -3118,7 +3285,56 @@ fn codegen_payload_argv(request: &EmbeddedLinkedWasiModuleRequest) -> Vec<String
             argv.push(item.clone());
         }
     }
+    if request.crate_artifact_kind != "binary"
+        || !request.extern_inputs.is_empty()
+        || !request.link_dependency_inputs.is_empty()
+    {
+        argv.push("--crate-artifact-kind".to_owned());
+        argv.push(request.crate_artifact_kind.clone());
+    }
+    for input in &request.extern_inputs {
+        argv.push("--extern-artifact".to_owned());
+        argv.push(format!(
+            "{}={}={}",
+            input.extern_crate_name, input.artifact_path, input.artifact_sha256
+        ));
+    }
+    for input in &request.link_dependency_inputs {
+        argv.push("--link-dependency-artifact".to_owned());
+        argv.push(format!("{}={}", input.artifact_path, input.artifact_sha256));
+    }
     argv
+}
+
+fn initial_codegen_written_files(
+    request: &EmbeddedLinkedWasiModuleRequest,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for input in request
+        .extern_inputs
+        .iter()
+        .chain(request.link_dependency_inputs.iter())
+    {
+        let normalized = normalize_virtual_path(&input.artifact_path);
+        files
+            .entry(normalized)
+            .or_insert_with(|| input.bytes.clone());
+    }
+    files
+}
+
+fn initial_codegen_created_dirs(files: &BTreeMap<String, Vec<u8>>) -> BTreeSet<String> {
+    let mut dirs = BTreeSet::new();
+    for path in files.keys() {
+        let mut current = parent_virtual_path(path);
+        while !current.is_empty() {
+            if !dirs.insert(current.clone()) {
+                break;
+            }
+            current = parent_virtual_path(&current);
+        }
+    }
+    dirs
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -3330,6 +3546,7 @@ mod tests {
             profile: "release".to_owned(),
             target_triple: "wasm32-wasip1".to_owned(),
             crate_name: "rouwdi_payload".to_owned(),
+            crate_artifact_kind: "binary".to_owned(),
             mir_body_hash: mir_json
                 .get("mir_body_hash")
                 .and_then(serde_json::Value::as_str)
@@ -3341,6 +3558,8 @@ mod tests {
                 .expect("dynamic MIR payload must emit mono item graph hash")
                 .to_owned(),
             mono_items,
+            extern_inputs: Vec::new(),
+            link_dependency_inputs: Vec::new(),
         };
         let report = load_codegen_backend_payload(&request).expect("codegen payload must execute");
 

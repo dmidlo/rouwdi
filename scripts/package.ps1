@@ -438,6 +438,161 @@ function Invoke-SourceFaithfulFixtureGate {
     }
 }
 
+function Invoke-DependencyFixtureGate {
+    param(
+        [string]$Name,
+        [string]$FixtureRelativePath,
+        [string]$WasmPath,
+        [string[]]$ExpectedCrates,
+        [string[]]$ExpectedCompileOrder,
+        [string]$ExpectedStdoutContains = ""
+    )
+
+    $fixtureRoot = Join-Path $RepoRoot $FixtureRelativePath
+    $workspaceManifest = Join-Path $RepoRoot "Cargo.toml"
+    Push-Location $fixtureRoot
+    try {
+        Write-Host "running dependency fixture $Name through dist/rouwdi.wasm"
+        $output = & cargo run -q --manifest-path $workspaceManifest -p rouwdi -- run-wasm $WasmPath build rouwdi.toml 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($exitCode -ne 0) {
+        $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+        throw "Dependency fixture $Name failed through dist/rouwdi.wasm with exit code ${exitCode}: $outputText"
+    }
+
+    $report = Convert-CommandJsonObject -Lines $output
+    if ([string]$report.status -ne "succeeded") {
+        throw "Dependency fixture $Name build status was $($report.status), expected succeeded"
+    }
+    $runRoot = Join-Path $fixtureRoot ([string]$report.run_root)
+    $manifestPath = Join-Path $fixtureRoot ([string]$report.manifest_path)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Dependency fixture $Name manifest is missing: $manifestPath"
+    }
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+
+    $compilePlanPath = Join-Path $runRoot "graph\cargo-dependency-compile-plan.json"
+    if (-not (Test-Path -LiteralPath $compilePlanPath -PathType Leaf)) {
+        throw "Dependency fixture $Name missing graph/cargo-dependency-compile-plan.json"
+    }
+    $compilePlan = Get-Content -Raw -LiteralPath $compilePlanPath | ConvertFrom-Json
+    $topologicalOrder = @($compilePlan.topological_order)
+    if ($topologicalOrder.Count -lt $ExpectedCompileOrder.Count) {
+        throw "Dependency fixture $Name topological order is incomplete"
+    }
+    $lastIndex = -1
+    foreach ($expected in $ExpectedCompileOrder) {
+        $index = [array]::IndexOf($topologicalOrder, $expected)
+        if ($index -lt 0) {
+            throw "Dependency fixture $Name missing compile-order unit $expected"
+        }
+        if ($index -le $lastIndex) {
+            throw "Dependency fixture $Name compile order is not topological at $expected"
+        }
+        $lastIndex = $index
+    }
+
+    $crateArtifacts = @($manifest.crate_artifacts)
+    if ($crateArtifacts.Count -lt $ExpectedCrates.Count) {
+        throw "Dependency fixture $Name emitted too few crate artifacts"
+    }
+    foreach ($crate in $ExpectedCrates) {
+        $crateArtifact = $crateArtifacts | Where-Object { [string]$_.crate_name -eq $crate } | Select-Object -First 1
+        if ($null -eq $crateArtifact) {
+            throw "Dependency fixture $Name missing crate artifact for $crate"
+        }
+        foreach ($field in @("source_sha256", "artifact_sha256", "metadata_sha256", "mir_hash", "mono_graph_hash", "object_hash", "artifact_path", "produced_by")) {
+            if ([string]::IsNullOrWhiteSpace([string]$crateArtifact.$field)) {
+                throw "Dependency fixture $Name crate $crate missing $field"
+            }
+        }
+        if ([string]$crateArtifact.produced_by -notlike "embedded_codegen_payload*") {
+            throw "Dependency fixture $Name crate $crate was not produced by the embedded compiler payload"
+        }
+        $artifactPath = Join-Path $fixtureRoot ([string]$crateArtifact.artifact_path)
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "Dependency fixture $Name crate artifact path is missing: $artifactPath"
+        }
+        $artifactIdentity = Get-ArtifactIdentity -Path $artifactPath
+        if ($artifactIdentity.sha256 -ne [string]$crateArtifact.artifact_sha256) {
+            throw "Dependency fixture $Name crate $crate artifact hash does not match bytes"
+        }
+    }
+
+    $dependencyEdges = @($manifest.dependency_edges)
+    $externInputs = @($manifest.extern_inputs)
+    if ($dependencyEdges.Count -lt $ExpectedCrates.Count) {
+        throw "Dependency fixture $Name emitted too few dependency edge proofs"
+    }
+    foreach ($edge in $dependencyEdges) {
+        if ($edge.edge_satisfied -ne $true) {
+            throw "Dependency fixture $Name has unsatisfied dependency edge $($edge.dependency_compile_unit_id) -> $($edge.dependent_compile_unit_id)"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$edge.artifact_sha256) -or ([string]$edge.artifact_sha256).Length -ne 64) {
+            throw "Dependency fixture $Name dependency edge is missing artifact SHA-256"
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$edge.metadata_sha256) -or ([string]$edge.metadata_sha256).Length -ne 64) {
+            throw "Dependency fixture $Name dependency edge is missing metadata proof"
+        }
+        if (-not ([string]$edge.rustc_arg).StartsWith("--extern ")) {
+            throw "Dependency fixture $Name dependency edge did not record a real --extern input"
+        }
+    }
+    if ($externInputs.Count -lt $dependencyEdges.Count) {
+        throw "Dependency fixture $Name extern input proofs do not cover dependency edges"
+    }
+
+    $linkerInputs = @($manifest.linker_inputs)
+    foreach ($crate in $ExpectedCrates) {
+        $crateArtifact = $crateArtifacts | Where-Object { [string]$_.crate_name -eq $crate } | Select-Object -First 1
+        $linked = $linkerInputs | Where-Object {
+            [string]$_.input_kind -eq "dependency_rlib" -and [string]$_.sha256 -eq [string]$crateArtifact.artifact_sha256
+        } | Select-Object -First 1
+        if ($null -eq $linked) {
+            throw "Dependency fixture $Name linker inputs do not include dependency artifact for $crate"
+        }
+    }
+
+    $finalArtifact = $manifest.final_artifact
+    if ($null -eq $finalArtifact -or [string]$finalArtifact.target_triple -ne "wasm32-wasip1") {
+        throw "Dependency fixture $Name missing final WASI artifact"
+    }
+    $interfacePath = Join-Path $runRoot "proofs\interface-wasi.json"
+    $runtimePath = Join-Path $runRoot "proofs\runtime-wasi.json"
+    if (-not (Test-Path -LiteralPath $interfacePath -PathType Leaf)) {
+        throw "Dependency fixture $Name interface proof is missing"
+    }
+    if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+        throw "Dependency fixture $Name runtime proof is missing"
+    }
+    $interface = Get-Content -Raw -LiteralPath $interfacePath | ConvertFrom-Json
+    $runtime = Get-Content -Raw -LiteralPath $runtimePath | ConvertFrom-Json
+    if ([string]$interface.status -ne "Succeeded" -or $interface.artifact_built -ne $true) {
+        throw "Dependency fixture $Name interface proof did not pass"
+    }
+    if ([string]$runtime.status -ne "Succeeded" -or $runtime.executed -ne $true -or [int]$runtime.actual_exit_code -ne 0) {
+        throw "Dependency fixture $Name runtime proof did not pass"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedStdoutContains) -and -not ([string]$runtime.stdout).Contains($ExpectedStdoutContains)) {
+        throw "Dependency fixture $Name runtime stdout did not contain $ExpectedStdoutContains"
+    }
+
+    return [ordered]@{
+        name = $Name
+        fixture = $FixtureRelativePath
+        crates = @($ExpectedCrates)
+        compile_order = @($topologicalOrder)
+        crate_artifact_count = $crateArtifacts.Count
+        dependency_edge_count = $dependencyEdges.Count
+        linker_input_count = $linkerInputs.Count
+        final_artifact_sha256 = [string]$finalArtifact.sha256
+        runtime_stdout = [string]$runtime.stdout
+    }
+}
+
 function Write-EmbeddedPayloadSource {
     param(
         [hashtable]$RootMetadata,
@@ -1182,6 +1337,12 @@ try {
         (Invoke-SourceFaithfulFixtureGate -Name "module_path" -FixtureRelativePath "fixtures/module_path" -WasmPath $canonicalArtifact -ExpectedStdoutContains ""),
         (Invoke-SourceFaithfulFixtureGate -Name "stdout_hello" -FixtureRelativePath "fixtures/stdout_hello" -WasmPath $canonicalArtifact -ExpectedStdoutContains "rouwdi")
     )
+    $dependencyFixtures = @(
+        (Invoke-DependencyFixtureGate -Name "local_lib_call" -FixtureRelativePath "fixtures/local_lib_call" -WasmPath $canonicalArtifact -ExpectedCrates @("helper") -ExpectedCompileOrder @("helper:rust:helper:wasm32-wasip1", "local_lib_call:rust:local-lib-call:wasm32-wasip1")),
+        (Invoke-DependencyFixtureGate -Name "dependency_stdout" -FixtureRelativePath "fixtures/dependency_stdout" -WasmPath $canonicalArtifact -ExpectedCrates @("printer") -ExpectedCompileOrder @("printer:rust:printer:wasm32-wasip1", "dependency_stdout:rust:dependency-stdout:wasm32-wasip1") -ExpectedStdoutContains "dep-rouwdi"),
+        (Invoke-DependencyFixtureGate -Name "transitive_local_dependency" -FixtureRelativePath "fixtures/transitive_local_dependency" -WasmPath $canonicalArtifact -ExpectedCrates @("leaf", "middle") -ExpectedCompileOrder @("leaf:rust:leaf:wasm32-wasip1", "middle:rust:middle:wasm32-wasip1", "transitive_local_dependency:rust:transitive-local-dependency:wasm32-wasip1")),
+        (Invoke-DependencyFixtureGate -Name "multiple_local_dependencies" -FixtureRelativePath "fixtures/multiple_local_dependencies" -WasmPath $canonicalArtifact -ExpectedCrates @("alpha", "beta") -ExpectedCompileOrder @("alpha:rust:alpha:wasm32-wasip1", "beta:rust:beta:wasm32-wasip1", "multiple_local_dependencies:rust:multiple-local-dependencies:wasm32-wasip1"))
+    )
 
     $embeddedPayload = [ordered]@{
         name = "rouwdi-mir-handoff-payload"
@@ -1380,7 +1541,12 @@ try {
             passed = ($sourceFaithfulFixtures.Count -eq 4)
             fixtures = @($sourceFaithfulFixtures)
         }
-        next_frontier = if ([bool]$runtimeProofRoot.passed) { "dependency_crate_graph" } else { $nextFrontier }
+        dependency_crate_fixture_suite = [ordered]@{
+            required = $true
+            passed = ($dependencyFixtures.Count -eq 4)
+            fixtures = @($dependencyFixtures)
+        }
+        next_frontier = if ([bool]$runtimeProofRoot.passed -and $dependencyFixtures.Count -eq 4) { "complete" } else { $nextFrontier }
         artifact = $canonicalIdentity
         source_build_artifact = $sourceIdentity
         rejected_cdylib_stub = [ordered]@{

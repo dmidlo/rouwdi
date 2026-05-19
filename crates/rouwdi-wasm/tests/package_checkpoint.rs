@@ -256,8 +256,69 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
                 return Some("stdout_hello fixture must prove stdout contains rouwdi".to_owned());
             }
         }
-        if manifest["next_frontier"] != Value::String("dependency_crate_graph".to_owned()) {
-            return Some("root next_frontier must advance past runtime proof".to_owned());
+        let dependency_suite = &manifest["dependency_crate_fixture_suite"];
+        if dependency_suite["required"] != Value::Bool(true) {
+            return Some("dependency crate fixture suite must be required".to_owned());
+        }
+        if dependency_suite["passed"] != Value::Bool(true) {
+            return Some("dependency crate fixture suite must pass".to_owned());
+        }
+        let Some(dependency_fixtures) = dependency_suite["fixtures"].as_array() else {
+            return Some("dependency crate fixture suite must list fixtures".to_owned());
+        };
+        let required_dependency_fixtures = [
+            "local_lib_call",
+            "dependency_stdout",
+            "transitive_local_dependency",
+            "multiple_local_dependencies",
+        ];
+        for fixture_name in required_dependency_fixtures {
+            let Some(fixture) = dependency_fixtures
+                .iter()
+                .find(|entry| entry["name"] == Value::String(fixture_name.to_owned()))
+            else {
+                return Some(format!(
+                    "dependency crate fixture suite is missing {fixture_name}"
+                ));
+            };
+            if fixture["crate_artifact_count"]
+                .as_u64()
+                .is_none_or(|count| count == 0)
+            {
+                return Some(format!(
+                    "{fixture_name} must emit dependency crate artifacts"
+                ));
+            }
+            if fixture["dependency_edge_count"]
+                .as_u64()
+                .is_none_or(|count| count == 0)
+            {
+                return Some(format!("{fixture_name} must prove dependency edges"));
+            }
+            if fixture["linker_input_count"]
+                .as_u64()
+                .is_none_or(|count| count == 0)
+            {
+                return Some(format!("{fixture_name} must prove linker inputs"));
+            }
+            if fixture["final_artifact_sha256"]
+                .as_str()
+                .is_none_or(|hash| hash.len() != 64)
+            {
+                return Some(format!("{fixture_name} must record final artifact hash"));
+            }
+            if fixture_name == "dependency_stdout"
+                && !fixture["runtime_stdout"]
+                    .as_str()
+                    .is_some_and(|stdout| stdout.contains("dep-rouwdi"))
+            {
+                return Some(
+                    "dependency_stdout fixture must prove stdout from dependency code".to_owned(),
+                );
+            }
+        }
+        if manifest["next_frontier"] != Value::String("complete".to_owned()) {
+            return Some("root next_frontier must advance past dependency crate graph".to_owned());
         }
     }
     if payload["instantiated"] != Value::Bool(true) {

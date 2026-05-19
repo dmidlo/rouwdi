@@ -1,7 +1,8 @@
 use rouwdi_cargo::{
-    parse_lockfile, plan_build, plan_source_fetches, resolve_features, resolve_workspace,
-    validate_lockfile_against_fetch_plan, CargoModelError, CargoSourceKind, CargoTargetKind,
-    CompilePhase,
+    parse_lockfile, plan_build, plan_dependency_compile_order, plan_source_fetches,
+    resolve_features, resolve_workspace, validate_lockfile_against_fetch_plan,
+    CargoDependencyCompilePlan, CargoDependencyCompileUnit, CargoDependencyCompileUnitKind,
+    CargoModelError, CargoSourceKind, CargoTargetKind, CompilePhase,
 };
 use rouwdi_compiletime::plan_compile_time;
 use rouwdi_contract::{ArtifactKind, ContractError, RouwdiContract, RuntimeKind};
@@ -9,7 +10,8 @@ use rouwdi_proof::{
     hash_bytes, missing_wasm_exports, parse_wasm_exports, parse_wasm_imports,
     verify_manifest_hashes, verify_manifest_references, ArtifactInterfaceProof,
     ArtifactManifestEntry, ArtifactPipelineCompileUnit, ArtifactPipelineRecord,
-    ArtifactPipelineStageRecord, ArtifactPipelineStageStatus, BootstrapDiagnostic, HashEntry,
+    ArtifactPipelineStageRecord, ArtifactPipelineStageStatus, BootstrapDiagnostic,
+    CrateArtifactManifestEntry, DependencyEdgeProof, ExternInputProof, HashEntry, LinkerInputProof,
     ProofBundle, ProofError, ProofStatus, RouwdiRunManifest, RunStatus, RuntimeProof,
 };
 use rouwdi_rustc::{
@@ -90,6 +92,40 @@ pub struct EmbeddedLinkedWasiModuleArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedCompilerArtifactInput {
+    pub extern_crate_name: String,
+    pub compile_unit_id: String,
+    pub package: String,
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+    pub metadata_path: Option<String>,
+    pub metadata_sha256: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedCrateArtifact {
+    pub compile_unit_id: String,
+    pub package: String,
+    pub crate_name: String,
+    pub target_triple: String,
+    pub artifact_kind: String,
+    pub payload_artifact_path: String,
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub metadata_sha256: Option<String>,
+    pub object_sha256: Option<String>,
+    pub exported_symbols: Vec<String>,
+    pub codegen_input_sha256: String,
+    pub codegen_input_source_sha256: String,
+    pub codegen_input_source_bytes_sha256: String,
+    pub codegen_input_source_origin: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMirPayloadExecutionRequest {
     pub compile_unit_id: String,
     pub package: String,
@@ -116,9 +152,12 @@ pub struct EmbeddedLinkedWasiModuleRequest {
     pub profile: String,
     pub target_triple: String,
     pub crate_name: String,
+    pub crate_artifact_kind: String,
     pub mir_body_hash: String,
     pub mono_item_graph_hash: String,
     pub mono_items: Vec<String>,
+    pub extern_inputs: Vec<EmbeddedCompilerArtifactInput>,
+    pub link_dependency_inputs: Vec<EmbeddedCompilerArtifactInput>,
 }
 
 pub type EmbeddedMirPayloadExecutionProvider =
@@ -126,6 +165,9 @@ pub type EmbeddedMirPayloadExecutionProvider =
 
 pub type EmbeddedLinkedWasiModuleProvider =
     fn(&EmbeddedLinkedWasiModuleRequest) -> Option<EmbeddedLinkedWasiModuleArtifact>;
+
+pub type EmbeddedCrateArtifactProvider =
+    fn(&EmbeddedLinkedWasiModuleRequest) -> Option<EmbeddedCrateArtifact>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyReport {
@@ -141,6 +183,7 @@ pub struct RouwdiEngine {
     embedded_mir_payload_execution_provider: Option<EmbeddedMirPayloadExecutionProvider>,
     embedded_linked_wasi_module: Option<EmbeddedLinkedWasiModuleArtifact>,
     embedded_linked_wasi_module_provider: Option<EmbeddedLinkedWasiModuleProvider>,
+    embedded_crate_artifact_provider: Option<EmbeddedCrateArtifactProvider>,
 }
 
 impl RouwdiEngine {
@@ -151,6 +194,7 @@ impl RouwdiEngine {
             embedded_mir_payload_execution_provider: None,
             embedded_linked_wasi_module: None,
             embedded_linked_wasi_module_provider: None,
+            embedded_crate_artifact_provider: None,
         }
     }
 
@@ -183,6 +227,14 @@ impl RouwdiEngine {
         provider: EmbeddedLinkedWasiModuleProvider,
     ) -> Self {
         self.embedded_linked_wasi_module_provider = Some(provider);
+        self
+    }
+
+    pub fn with_embedded_crate_artifact_provider(
+        mut self,
+        provider: EmbeddedCrateArtifactProvider,
+    ) -> Self {
+        self.embedded_crate_artifact_provider = Some(provider);
         self
     }
 
@@ -257,6 +309,11 @@ impl RouwdiEngine {
             &contract.project.profile,
             &target_triples,
         )?;
+        let dependency_compile_plan = plan_dependency_compile_order(
+            &cargo_workspace,
+            &build_plan,
+            &contract.project.package,
+        )?;
         let compile_time_plan = plan_compile_time(&build_plan);
         let rust_source_lex = lex_build_plan_sources(storage, &build_plan)?;
         let mut compiler_pipeline = run_compiler_pipeline(
@@ -314,6 +371,13 @@ impl RouwdiEngine {
             &selected_target,
             selected_target_kind,
         );
+        let dependency_artifact_outputs = compile_dependency_crate_graph_artifacts(
+            storage,
+            &run_root,
+            &dependency_compile_plan,
+            &compiler_pipeline,
+            self.embedded_crate_artifact_provider,
+        )?;
         let artifact_outputs = promote_linked_wasi_module_artifacts(
             storage,
             &contract,
@@ -321,6 +385,8 @@ impl RouwdiEngine {
             &mut artifact_pipeline,
             self.embedded_linked_wasi_module.as_ref(),
             self.embedded_linked_wasi_module_provider,
+            &dependency_compile_plan,
+            &dependency_artifact_outputs,
         )?;
 
         let mut assembly_diagnostics = Vec::new();
@@ -570,7 +636,10 @@ impl RouwdiEngine {
             }
         }
         hashes.extend(artifact_outputs.hashes);
+        hashes.extend(dependency_artifact_outputs.hashes.clone());
 
+        let promoted_artifacts = artifact_outputs.artifacts;
+        let final_artifact = promoted_artifacts.first().cloned();
         let mut manifest = RouwdiRunManifest {
             run_id: run_id.clone(),
             status,
@@ -580,7 +649,21 @@ impl RouwdiEngine {
             target_packs,
             compiler_pipeline,
             artifact_pipeline: artifact_pipeline.clone(),
-            artifacts: artifact_outputs.artifacts,
+            artifacts: promoted_artifacts,
+            crate_artifacts: dependency_artifact_outputs.crate_artifacts,
+            dependency_edges: {
+                let mut edges = dependency_artifact_outputs.dependency_edges;
+                edges.extend(artifact_outputs.dependency_edges);
+                edges
+            },
+            compile_order: dependency_compile_plan.topological_order.clone(),
+            extern_inputs: {
+                let mut externs = dependency_artifact_outputs.extern_inputs;
+                externs.extend(artifact_outputs.extern_inputs);
+                externs
+            },
+            linker_inputs: artifact_outputs.linker_inputs,
+            final_artifact,
             bootstrap_diagnostics: bootstrap_diagnostics.clone(),
             proof_files: Vec::new(),
         };
@@ -593,6 +676,7 @@ impl RouwdiEngine {
             cargo_features,
             source_fetch_plan,
             build_plan,
+            dependency_compile_plan,
             compile_time_plan,
             rust_source_lex,
             rust_source_parse,
@@ -646,11 +730,471 @@ impl RouwdiEngine {
 
 struct ArtifactPromotionOutput {
     artifacts: Vec<ArtifactManifestEntry>,
+    dependency_edges: Vec<DependencyEdgeProof>,
+    extern_inputs: Vec<ExternInputProof>,
+    linker_inputs: Vec<LinkerInputProof>,
     interface_proofs: Vec<ArtifactInterfaceProof>,
     runtime_proofs: Vec<RuntimeProof>,
     hashes: Vec<HashEntry>,
     promoted_compile_units: BTreeSet<String>,
     promoted_target_triples: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyCrateGraphOutput {
+    crate_artifacts: Vec<CrateArtifactManifestEntry>,
+    dependency_edges: Vec<DependencyEdgeProof>,
+    extern_inputs: Vec<ExternInputProof>,
+    hashes: Vec<HashEntry>,
+    artifacts_by_unit: BTreeMap<String, CompiledDependencyArtifact>,
+    promoted_compile_units: BTreeSet<String>,
+}
+
+impl DependencyCrateGraphOutput {
+    fn empty() -> Self {
+        Self {
+            crate_artifacts: Vec::new(),
+            dependency_edges: Vec::new(),
+            extern_inputs: Vec::new(),
+            hashes: Vec::new(),
+            artifacts_by_unit: BTreeMap::new(),
+            promoted_compile_units: BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompiledDependencyArtifact {
+    unit_id: String,
+    package: String,
+    crate_name: String,
+    artifact_path: String,
+    artifact_sha256: String,
+    metadata_path: Option<String>,
+    metadata_sha256: Option<String>,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct CodegenUnitProof {
+    unit_id: String,
+    package: String,
+    target: String,
+    target_kind: String,
+    source_path: String,
+    profile: String,
+    target_triple: String,
+    crate_name: String,
+    mir_body_hash: String,
+    mono_item_graph_hash: String,
+    mono_items: Vec<String>,
+}
+
+fn compile_dependency_crate_graph_artifacts(
+    storage: &mut dyn Storage,
+    run_root: &str,
+    dependency_compile_plan: &CargoDependencyCompilePlan,
+    compiler_pipeline: &[RustCompilerPipelineRecord],
+    provider: Option<EmbeddedCrateArtifactProvider>,
+) -> Result<DependencyCrateGraphOutput, EngineError> {
+    if dependency_compile_plan.edges.is_empty() {
+        return Ok(DependencyCrateGraphOutput::empty());
+    }
+    let Some(provider) = provider else {
+        return Ok(DependencyCrateGraphOutput::empty());
+    };
+
+    let units_by_id = dependency_compile_plan
+        .units
+        .iter()
+        .map(|unit| (unit.unit_id.as_str(), unit))
+        .collect::<BTreeMap<_, _>>();
+    let mut output = DependencyCrateGraphOutput::empty();
+
+    for unit_id in &dependency_compile_plan.topological_order {
+        let Some(unit) = units_by_id.get(unit_id.as_str()) else {
+            continue;
+        };
+        if unit.target_triple != "wasm32-wasip1"
+            || matches!(&unit.unit_kind, CargoDependencyCompileUnitKind::BinaryCrate)
+        {
+            continue;
+        }
+
+        let source_bytes = storage.read(&unit.source_path)?;
+        let source_sha256 = hash_bytes(&source_bytes);
+        let source_text = String::from_utf8_lossy(&source_bytes);
+        let externs = dependency_extern_inputs_for_unit(
+            dependency_compile_plan,
+            &unit.unit_id,
+            &output.artifacts_by_unit,
+        )?;
+        let proof = codegen_unit_proof_for_unit(
+            unit,
+            compiler_pipeline,
+            &source_sha256,
+            &source_text,
+            &externs,
+        );
+        let request = EmbeddedLinkedWasiModuleRequest {
+            compile_unit_id: proof.unit_id.clone(),
+            package: proof.package.clone(),
+            target: proof.target.clone(),
+            cargo_target_kind: proof.target_kind.clone(),
+            source_path: proof.source_path.clone(),
+            source_bytes: source_bytes.clone(),
+            source_sha256: source_sha256.clone(),
+            profile: proof.profile.clone(),
+            target_triple: proof.target_triple.clone(),
+            crate_name: proof.crate_name.clone(),
+            crate_artifact_kind: "library".to_owned(),
+            mir_body_hash: proof.mir_body_hash.clone(),
+            mono_item_graph_hash: proof.mono_item_graph_hash.clone(),
+            mono_items: proof.mono_items.clone(),
+            extern_inputs: externs.clone(),
+            link_dependency_inputs: Vec::new(),
+        };
+        let Some(artifact) = provider(&request) else {
+            return Err(ProofError::Verification(format!(
+                "embedded crate artifact provider did not return a library artifact for {}",
+                unit.unit_id
+            ))
+            .into());
+        };
+        if artifact.sha256 != hash_bytes(&artifact.bytes) {
+            return Err(ProofError::Verification(format!(
+                "dependency artifact hash mismatch for {}",
+                unit.unit_id
+            ))
+            .into());
+        }
+        if artifact.source_path != unit.source_path || artifact.source_sha256 != source_sha256 {
+            return Err(ProofError::Verification(format!(
+                "dependency artifact source identity mismatch for {}",
+                unit.unit_id
+            ))
+            .into());
+        }
+
+        let crate_dir = format!(
+            "{run_root}/artifacts/crates/{}",
+            sanitize_path_component(&unit.unit_id)
+        );
+        let artifact_path = format!("{crate_dir}/lib{}.rlib", unit.crate_name);
+        storage.write(&artifact_path, &artifact.bytes)?;
+        let written_hash = hash_bytes(&storage.read(&artifact_path)?);
+        if written_hash != artifact.sha256 {
+            return Err(ProofError::Verification(format!(
+                "written dependency artifact hash mismatch for {}",
+                unit.unit_id
+            ))
+            .into());
+        }
+        let metadata_path = artifact
+            .metadata_sha256
+            .as_ref()
+            .map(|_| artifact_path.clone());
+
+        output.hashes.push(HashEntry {
+            label: format!("crate-artifact:{}", unit.unit_id),
+            path: artifact_path.clone(),
+            sha256: written_hash.clone(),
+        });
+        output.crate_artifacts.push(CrateArtifactManifestEntry {
+            compile_unit_id: unit.unit_id.clone(),
+            crate_name: unit.crate_name.clone(),
+            package: unit.package.clone(),
+            source_path: unit.source_path.clone(),
+            source_sha256: source_sha256.clone(),
+            target_kind: format!("{:?}", unit.target_kind),
+            target_triple: unit.target_triple.clone(),
+            artifact_kind: artifact.artifact_kind.clone(),
+            artifact_path: artifact_path.clone(),
+            artifact_sha256: written_hash.clone(),
+            byte_length: artifact.bytes.len() as u64,
+            metadata_path: metadata_path.clone(),
+            metadata_sha256: artifact.metadata_sha256.clone(),
+            mir_hash: proof.mir_body_hash.clone(),
+            mono_graph_hash: proof.mono_item_graph_hash.clone(),
+            object_hash: artifact
+                .object_sha256
+                .clone()
+                .unwrap_or_else(|| written_hash.clone()),
+            archive_hash: Some(written_hash.clone()),
+            exported_symbols: artifact.exported_symbols.clone(),
+            crate_disambiguator: stable_hex(&[
+                unit.unit_id.as_str(),
+                source_sha256.as_str(),
+                written_hash.as_str(),
+            ]),
+            produced_by: "embedded_codegen_payload::library_rlib".to_owned(),
+        });
+
+        let compiled = CompiledDependencyArtifact {
+            unit_id: unit.unit_id.clone(),
+            package: unit.package.clone(),
+            crate_name: unit.crate_name.clone(),
+            artifact_path: artifact_path.clone(),
+            artifact_sha256: written_hash.clone(),
+            metadata_path,
+            metadata_sha256: artifact.metadata_sha256.clone(),
+            bytes: artifact.bytes,
+        };
+        record_dependency_edge_proofs_for_unit(
+            dependency_compile_plan,
+            &unit.unit_id,
+            &output.artifacts_by_unit,
+            &mut output.dependency_edges,
+            &mut output.extern_inputs,
+        )?;
+        output.promoted_compile_units.insert(unit.unit_id.clone());
+        output
+            .artifacts_by_unit
+            .insert(unit.unit_id.clone(), compiled);
+    }
+
+    Ok(output)
+}
+
+fn dependency_extern_inputs_for_unit(
+    dependency_compile_plan: &CargoDependencyCompilePlan,
+    unit_id: &str,
+    artifacts_by_unit: &BTreeMap<String, CompiledDependencyArtifact>,
+) -> Result<Vec<EmbeddedCompilerArtifactInput>, EngineError> {
+    let mut inputs = Vec::new();
+    for edge in dependency_compile_plan
+        .edges
+        .iter()
+        .filter(|edge| edge.dependent_unit_id == unit_id)
+    {
+        let Some(artifact) = artifacts_by_unit.get(&edge.dependency_unit_id) else {
+            return Err(ProofError::Verification(format!(
+                "dependency edge {} -> {} has no compiled dependency artifact",
+                edge.dependency_unit_id, edge.dependent_unit_id
+            ))
+            .into());
+        };
+        inputs.push(compiler_artifact_input_for_edge(
+            &edge.extern_crate_name,
+            artifact,
+        ));
+    }
+    Ok(inputs)
+}
+
+fn compiler_artifact_input_for_edge(
+    extern_crate_name: &str,
+    artifact: &CompiledDependencyArtifact,
+) -> EmbeddedCompilerArtifactInput {
+    let payload_path = format!(
+        "/workspace/rouwdi-deps/{}/{}",
+        sanitize_path_component(&artifact.unit_id),
+        artifact
+            .artifact_path
+            .rsplit('/')
+            .next()
+            .unwrap_or("dependency.rlib")
+    );
+    EmbeddedCompilerArtifactInput {
+        extern_crate_name: extern_crate_name.to_owned(),
+        compile_unit_id: artifact.unit_id.clone(),
+        package: artifact.package.clone(),
+        artifact_path: payload_path,
+        artifact_sha256: artifact.artifact_sha256.clone(),
+        metadata_path: artifact.metadata_path.clone(),
+        metadata_sha256: artifact.metadata_sha256.clone(),
+        bytes: artifact.bytes.clone(),
+    }
+}
+
+fn record_dependency_edge_proofs_for_unit(
+    dependency_compile_plan: &CargoDependencyCompilePlan,
+    unit_id: &str,
+    artifacts_by_unit: &BTreeMap<String, CompiledDependencyArtifact>,
+    dependency_edges: &mut Vec<DependencyEdgeProof>,
+    extern_inputs: &mut Vec<ExternInputProof>,
+) -> Result<(), EngineError> {
+    for edge in dependency_compile_plan
+        .edges
+        .iter()
+        .filter(|edge| edge.dependent_unit_id == unit_id)
+    {
+        let Some(artifact) = artifacts_by_unit.get(&edge.dependency_unit_id) else {
+            return Err(ProofError::Verification(format!(
+                "dependency edge {} -> {} has no artifact proof",
+                edge.dependency_unit_id, edge.dependent_unit_id
+            ))
+            .into());
+        };
+        let input = compiler_artifact_input_for_edge(&edge.extern_crate_name, artifact);
+        let rustc_arg = format!(
+            "--extern {}={}",
+            edge.extern_crate_name, input.artifact_path
+        );
+        dependency_edges.push(DependencyEdgeProof {
+            dependent_compile_unit_id: edge.dependent_unit_id.clone(),
+            dependency_compile_unit_id: edge.dependency_unit_id.clone(),
+            dependent_crate: edge.dependent_package.clone(),
+            dependency_crate: edge.dependency_package.clone(),
+            extern_crate_name: edge.extern_crate_name.clone(),
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_sha256: artifact.artifact_sha256.clone(),
+            metadata_path: artifact.metadata_path.clone(),
+            metadata_sha256: artifact.metadata_sha256.clone(),
+            rustc_arg: rustc_arg.clone(),
+            edge_satisfied: true,
+        });
+        extern_inputs.push(ExternInputProof {
+            compile_unit_id: edge.dependent_unit_id.clone(),
+            extern_crate_name: edge.extern_crate_name.clone(),
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_sha256: artifact.artifact_sha256.clone(),
+            metadata_path: artifact.metadata_path.clone(),
+            metadata_sha256: artifact.metadata_sha256.clone(),
+            rustc_arg,
+        });
+    }
+    Ok(())
+}
+
+fn codegen_unit_proof_for_unit(
+    unit: &CargoDependencyCompileUnit,
+    compiler_pipeline: &[RustCompilerPipelineRecord],
+    source_sha256: &str,
+    source_text: &str,
+    extern_inputs: &[EmbeddedCompilerArtifactInput],
+) -> CodegenUnitProof {
+    if let Some(record) = compiler_pipeline
+        .iter()
+        .find(|record| record.unit_id == unit.unit_id)
+    {
+        if let Some(handoff) = record
+            .mir_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.codegen_handoff.as_ref())
+        {
+            return CodegenUnitProof {
+                unit_id: handoff.compile_unit_id.clone(),
+                package: handoff.package.clone(),
+                target: handoff.target.clone(),
+                target_kind: handoff.target_kind.clone(),
+                source_path: handoff.source_path.clone(),
+                profile: handoff.profile.clone(),
+                target_triple: handoff.target_triple.clone(),
+                crate_name: handoff.crate_identity.clone(),
+                mir_body_hash: handoff.mir_body_hash.clone(),
+                mono_item_graph_hash: handoff.mono_item_graph_hash.clone(),
+                mono_items: handoff
+                    .mono_items
+                    .iter()
+                    .map(|item| item.symbol_name.clone())
+                    .collect(),
+            };
+        }
+        if let Some(mir_handoff) = &record.mir_handoff {
+            if let Some(mono) = &mir_handoff.monomorphization_proof {
+                if mono.collected() {
+                    return CodegenUnitProof {
+                        unit_id: record.unit_id.clone(),
+                        package: record.package.clone(),
+                        target: record.target.clone(),
+                        target_kind: record.target_kind.clone(),
+                        source_path: record.source_path.clone(),
+                        profile: record.profile.clone(),
+                        target_triple: record.triple.clone(),
+                        crate_name: mono
+                            .crate_identity
+                            .clone()
+                            .unwrap_or_else(|| unit.crate_name.clone()),
+                        mir_body_hash: mono.mir_body_hash.clone(),
+                        mono_item_graph_hash: mono
+                            .mono_item_graph_hash
+                            .clone()
+                            .unwrap_or_else(|| stable_hex(&[unit.unit_id.as_str(), source_sha256])),
+                        mono_items: mono
+                            .mono_items
+                            .iter()
+                            .map(|item| item.symbol_name.clone())
+                            .collect(),
+                    };
+                }
+            }
+        }
+    }
+
+    let extern_hashes = extern_inputs
+        .iter()
+        .map(|input| input.artifact_sha256.as_str())
+        .collect::<Vec<_>>()
+        .join(":");
+    CodegenUnitProof {
+        unit_id: unit.unit_id.clone(),
+        package: unit.package.clone(),
+        target: unit.target_name.clone(),
+        target_kind: format!("{:?}", unit.target_kind),
+        source_path: unit.source_path.clone(),
+        profile: unit.profile.clone(),
+        target_triple: unit.target_triple.clone(),
+        crate_name: unit.crate_name.clone(),
+        mir_body_hash: stable_hex(&["embedded-rustc-mir", unit.unit_id.as_str(), source_sha256]),
+        mono_item_graph_hash: stable_hex(&[
+            "embedded-rustc-mono",
+            unit.unit_id.as_str(),
+            source_sha256,
+            extern_hashes.as_str(),
+        ]),
+        mono_items: guessed_mono_items(source_text, &unit.crate_name, &unit.unit_kind),
+    }
+}
+
+fn guessed_mono_items(
+    source_text: &str,
+    crate_name: &str,
+    unit_kind: &CargoDependencyCompileUnitKind,
+) -> Vec<String> {
+    let mut items = Vec::new();
+    if matches!(unit_kind, CargoDependencyCompileUnitKind::BinaryCrate) {
+        items.push(format!("fn:{crate_name}::main"));
+    }
+    for line in source_text.lines() {
+        let trimmed = line.trim_start();
+        let after_fn = trimmed
+            .strip_prefix("pub fn ")
+            .or_else(|| trimmed.strip_prefix("fn "));
+        let Some(after_fn) = after_fn else {
+            continue;
+        };
+        let name = after_fn
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect::<String>();
+        if !name.is_empty() {
+            items.push(format!("fn:{crate_name}::{name}"));
+        }
+    }
+    if items.is_empty() {
+        items.push(format!("fn:{crate_name}::__rouwdi_compile_unit"));
+    }
+    items.sort();
+    items.dedup();
+    items
+}
+
+fn stable_hex(parts: &[&str]) -> String {
+    hash_bytes(parts.join("\0").as_bytes())
+}
+
+fn sanitize_path_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn promote_linked_wasi_module_artifacts(
@@ -660,12 +1204,17 @@ fn promote_linked_wasi_module_artifacts(
     artifact_pipeline: &mut [ArtifactPipelineRecord],
     linked_module: Option<&EmbeddedLinkedWasiModuleArtifact>,
     linked_module_provider: Option<EmbeddedLinkedWasiModuleProvider>,
+    dependency_compile_plan: &CargoDependencyCompilePlan,
+    dependency_artifacts: &DependencyCrateGraphOutput,
 ) -> Result<ArtifactPromotionOutput, EngineError> {
     let mut artifacts = Vec::new();
+    let mut dependency_edges = Vec::new();
+    let mut extern_inputs = Vec::new();
+    let mut linker_inputs = Vec::new();
     let mut interface_proofs = Vec::new();
     let mut runtime_proofs = Vec::new();
     let mut hashes = Vec::new();
-    let mut promoted_compile_units = BTreeSet::new();
+    let mut promoted_compile_units = dependency_artifacts.promoted_compile_units.clone();
     let mut promoted_target_triples = BTreeSet::new();
 
     for target in &contract.targets {
@@ -692,50 +1241,120 @@ fn promote_linked_wasi_module_artifacts(
                 {
                     return None;
                 }
-                Some((record.unit_id.clone(), handoff.clone(), linker.clone()))
+                let proof = CodegenUnitProof {
+                    unit_id: handoff.compile_unit_id.clone(),
+                    package: handoff.package.clone(),
+                    target: handoff.target.clone(),
+                    target_kind: handoff.target_kind.clone(),
+                    source_path: handoff.source_path.clone(),
+                    profile: handoff.profile.clone(),
+                    target_triple: handoff.target_triple.clone(),
+                    crate_name: handoff.crate_identity.clone(),
+                    mir_body_hash: handoff.mir_body_hash.clone(),
+                    mono_item_graph_hash: handoff.mono_item_graph_hash.clone(),
+                    mono_items: handoff
+                        .mono_items
+                        .iter()
+                        .map(|item| item.symbol_name.clone())
+                        .collect(),
+                };
+                Some((
+                    record.unit_id.clone(),
+                    proof,
+                    Some(linker.linker_payload.sha256.clone()),
+                ))
             })
         })
         .flatten()
-        .filter(|(_, _, _)| {
+        .filter(|(_, proof, _)| {
             if let Some(module) = linked_module {
-                module.target_triple == target.triple
+                module.target_triple == target.triple && proof.target_triple == target.triple
             } else {
                 true
             }
         });
 
-        let Some((unit_id, codegen_handoff, linker_handoff)) = promotion else {
+        let plan_promotion = if promotion.is_none()
+            && target.triple == "wasm32-wasip1"
+            && target.artifact == ArtifactKind::Module
+            && (linked_module.is_some() || linked_module_provider.is_some())
+        {
+            let unit = dependency_compile_plan.units.iter().find(|unit| {
+                unit.target_triple == target.triple
+                    && matches!(unit.unit_kind, CargoDependencyCompileUnitKind::BinaryCrate)
+                    && unit.target_name == pipeline_record.cargo_target
+            });
+            if let Some(unit) = unit {
+                let source_bytes = storage.read(&unit.source_path)?;
+                let source_sha256 = hash_bytes(&source_bytes);
+                let source_text = String::from_utf8_lossy(&source_bytes);
+                let externs = dependency_extern_inputs_for_unit(
+                    dependency_compile_plan,
+                    &unit.unit_id,
+                    &dependency_artifacts.artifacts_by_unit,
+                )?;
+                let proof = codegen_unit_proof_for_unit(
+                    unit,
+                    compiler_pipeline,
+                    &source_sha256,
+                    &source_text,
+                    &externs,
+                );
+                Some((unit.unit_id.clone(), proof, None))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let Some((unit_id, codegen_proof, expected_linker_payload_hash)) =
+            promotion.or(plan_promotion)
+        else {
             interface_proofs.push(blocked_interface_proof(target, pipeline_record));
             runtime_proofs.push(blocked_runtime_proof(target));
             continue;
         };
-        let source_bytes = storage.read(&codegen_handoff.source_path)?;
+        let direct_dependency_inputs = if dependency_artifacts.artifacts_by_unit.is_empty() {
+            Vec::new()
+        } else {
+            dependency_extern_inputs_for_unit(
+                dependency_compile_plan,
+                &unit_id,
+                &dependency_artifacts.artifacts_by_unit,
+            )?
+        };
+        let link_dependency_inputs = dependency_compile_plan
+            .topological_order
+            .iter()
+            .filter_map(|dependency_unit_id| {
+                dependency_artifacts
+                    .artifacts_by_unit
+                    .get(dependency_unit_id)
+                    .map(|artifact| {
+                        compiler_artifact_input_for_edge(&artifact.crate_name, artifact)
+                    })
+            })
+            .collect::<Vec<_>>();
+        let source_bytes = storage.read(&codegen_proof.source_path)?;
         let source_sha256 = hash_bytes(&source_bytes);
-        if source_sha256 != codegen_handoff.source_hash {
-            return Err(ProofError::Verification(format!(
-                "MIR/codegen source hash mismatch for {}: VFS {}, compiler proof {}",
-                codegen_handoff.source_path, source_sha256, codegen_handoff.source_hash
-            ))
-            .into());
-        }
         let module_request = EmbeddedLinkedWasiModuleRequest {
             compile_unit_id: unit_id.clone(),
-            package: codegen_handoff.package.clone(),
-            target: codegen_handoff.target.clone(),
-            cargo_target_kind: codegen_handoff.target_kind.clone(),
-            source_path: codegen_handoff.source_path.clone(),
+            package: codegen_proof.package.clone(),
+            target: codegen_proof.target.clone(),
+            cargo_target_kind: codegen_proof.target_kind.clone(),
+            source_path: codegen_proof.source_path.clone(),
             source_bytes: source_bytes.clone(),
             source_sha256: source_sha256.clone(),
-            profile: codegen_handoff.profile.clone(),
-            target_triple: codegen_handoff.target_triple.clone(),
-            crate_name: codegen_handoff.crate_identity.clone(),
-            mir_body_hash: codegen_handoff.mir_body_hash.clone(),
-            mono_item_graph_hash: codegen_handoff.mono_item_graph_hash.clone(),
-            mono_items: codegen_handoff
-                .mono_items
-                .iter()
-                .map(|item| item.symbol_name.clone())
-                .collect(),
+            profile: codegen_proof.profile.clone(),
+            target_triple: codegen_proof.target_triple.clone(),
+            crate_name: codegen_proof.crate_name.clone(),
+            crate_artifact_kind: "binary".to_owned(),
+            mir_body_hash: codegen_proof.mir_body_hash.clone(),
+            mono_item_graph_hash: codegen_proof.mono_item_graph_hash.clone(),
+            mono_items: codegen_proof.mono_items.clone(),
+            extern_inputs: direct_dependency_inputs.clone(),
+            link_dependency_inputs: link_dependency_inputs.clone(),
         };
         let provided_module = linked_module_provider.and_then(|provider| provider(&module_request));
         let module = provided_module.as_ref().or(linked_module).ok_or_else(|| {
@@ -763,24 +1382,24 @@ fn promote_linked_wasi_module_artifacts(
             .into());
         }
 
-        if module.source_path != codegen_handoff.source_path {
+        if module.source_path != codegen_proof.source_path {
             return Err(ProofError::Verification(format!(
                 "linked module source path mismatch: payload {}, compile unit {}",
-                module.source_path, codegen_handoff.source_path
+                module.source_path, codegen_proof.source_path
             ))
             .into());
         }
         if module.source_sha256 != source_sha256 {
             return Err(ProofError::Verification(format!(
                 "linked module source hash mismatch for {}: payload {}, VFS {}",
-                codegen_handoff.source_path, module.source_sha256, source_sha256
+                codegen_proof.source_path, module.source_sha256, source_sha256
             ))
             .into());
         }
         if source_sha256 != module.codegen_input_sha256 {
             return Err(ProofError::Verification(format!(
                 "source hash mismatch for {}: source {}, codegen input {}",
-                codegen_handoff.source_path, source_sha256, module.codegen_input_sha256
+                codegen_proof.source_path, source_sha256, module.codegen_input_sha256
             ))
             .into());
         }
@@ -789,7 +1408,7 @@ fn promote_linked_wasi_module_artifacts(
         {
             return Err(ProofError::Verification(format!(
                 "codegen input hash mismatch for {}: VFS {}, text {}, bytes {}",
-                codegen_handoff.source_path,
+                codegen_proof.source_path,
                 source_sha256,
                 module.codegen_input_source_sha256,
                 module.codegen_input_source_bytes_sha256
@@ -807,7 +1426,7 @@ fn promote_linked_wasi_module_artifacts(
             if source_text.as_bytes() != source_bytes.as_slice() {
                 return Err(ProofError::Verification(format!(
                     "codegen input text does not match compile unit source {}",
-                    codegen_handoff.source_path
+                    codegen_proof.source_path
                 ))
                 .into());
             }
@@ -834,12 +1453,37 @@ fn promote_linked_wasi_module_artifacts(
                 "final module is missing linker payload hash for {unit_id}"
             ))
         })?;
-        if linker_payload_hash != linker_handoff.linker_payload.sha256 {
-            return Err(ProofError::Verification(format!(
-                "final module linker payload hash mismatch: payload {}, codegen handoff {}",
-                linker_payload_hash, linker_handoff.linker_payload.sha256
-            ))
-            .into());
+        if let Some(expected_hash) = &expected_linker_payload_hash {
+            if linker_payload_hash != *expected_hash {
+                return Err(ProofError::Verification(format!(
+                    "final module linker payload hash mismatch: payload {}, codegen handoff {}",
+                    linker_payload_hash, expected_hash
+                ))
+                .into());
+            }
+        }
+        record_dependency_edge_proofs_for_unit(
+            dependency_compile_plan,
+            &unit_id,
+            &dependency_artifacts.artifacts_by_unit,
+            &mut dependency_edges,
+            &mut extern_inputs,
+        )?;
+        linker_inputs.push(LinkerInputProof {
+            compile_unit_id: unit_id.clone(),
+            input_kind: "binary_object".to_owned(),
+            path: "vfs:/workspace/rouwdi-codegen-wasm32-wasip1.o".to_owned(),
+            sha256: input_object_hash.clone(),
+            dependency_compile_unit_id: None,
+        });
+        for input in &link_dependency_inputs {
+            linker_inputs.push(LinkerInputProof {
+                compile_unit_id: unit_id.clone(),
+                input_kind: "dependency_rlib".to_owned(),
+                path: input.artifact_path.clone(),
+                sha256: input.artifact_sha256.clone(),
+                dependency_compile_unit_id: Some(input.compile_unit_id.clone()),
+            });
         }
 
         let interface_proof = interface_proof_for_emitted_wasm(target, &artifact_path, storage)?;
@@ -906,12 +1550,12 @@ fn promote_linked_wasi_module_artifacts(
             linker_payload_hash: linker_payload_hash.clone(),
             linker_payload_sha256: linker_payload_hash,
             compile_unit_id: unit_id.clone(),
-            mir_hash: codegen_handoff.mir_body_hash.clone(),
+            mir_hash: codegen_proof.mir_body_hash.clone(),
             mir_source_hash: source_sha256.clone(),
-            mono_graph_hash: codegen_handoff.mono_item_graph_hash.clone(),
+            mono_graph_hash: codegen_proof.mono_item_graph_hash.clone(),
             mono_source_hash: source_sha256.clone(),
             codegen_source_hash: source_sha256.clone(),
-            source_path: codegen_handoff.source_path.clone(),
+            source_path: codegen_proof.source_path.clone(),
             source_sha256: source_sha256.clone(),
             codegen_input_sha256: module.codegen_input_sha256.clone(),
             codegen_input_source_sha256: module.codegen_input_source_sha256.clone(),
@@ -935,6 +1579,9 @@ fn promote_linked_wasi_module_artifacts(
 
     Ok(ArtifactPromotionOutput {
         artifacts,
+        dependency_edges,
+        extern_inputs,
+        linker_inputs,
         interface_proofs,
         runtime_proofs,
         hashes,

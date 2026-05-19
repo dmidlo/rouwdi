@@ -3,6 +3,7 @@
 use rouwdi_object::{inspect_wasm_object, WasmObjectInspection};
 use sha2::{Digest, Sha256};
 use std::alloc::{alloc, dealloc, Layout};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::path::PathBuf;
@@ -23,12 +24,15 @@ struct ProbeInput {
     source_bytes: Vec<u8>,
     source_sha256: String,
     crate_identity: String,
+    crate_artifact_kind: String,
     target_triple: String,
     target_spec: String,
     mir_body_hash: String,
     mono_item_count: u64,
     mono_item_graph_hash: String,
     mono_items: Vec<String>,
+    extern_artifacts: Vec<ProbeExternArtifact>,
+    link_dependency_artifacts: Vec<ProbeLinkDependencyArtifact>,
 }
 
 impl Default for ProbeInput {
@@ -44,14 +48,30 @@ impl Default for ProbeInput {
             source_bytes: Vec::new(),
             source_sha256: String::new(),
             crate_identity: "rouwdi_payload".to_owned(),
+            crate_artifact_kind: "binary".to_owned(),
             target_triple: "wasm32-wasip1".to_owned(),
             target_spec: "rustc_target::spec::wasm32_wasip1".to_owned(),
             mir_body_hash: "a5e137ef6793c0b8".to_owned(),
             mono_item_count: 1,
             mono_item_graph_hash: "bec5817d61819666".to_owned(),
             mono_items: Vec::new(),
+            extern_artifacts: Vec::new(),
+            link_dependency_artifacts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ProbeExternArtifact {
+    extern_crate_name: String,
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeLinkDependencyArtifact {
+    path: String,
+    sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +123,7 @@ struct ObjectEmissionSetup {
     artifact_location: Option<String>,
     target_triple: String,
     retrieval_method: Option<String>,
+    crate_artifact: Option<CrateArtifactOutput>,
     blocker_kind: Option<String>,
     blocker_reason: Option<String>,
 }
@@ -129,6 +150,16 @@ struct LinkExecution {
     current_status: String,
     blocker_kind: String,
     blocker_reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct CrateArtifactOutput {
+    artifact_path: String,
+    artifact_sha256: String,
+    artifact_size_bytes: usize,
+    metadata_sha256: Option<String>,
+    metadata_member: Option<String>,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -373,15 +404,16 @@ fn main() -> ExitCode {
         && object_emission.object_contains_codegened_function
         && object_emission.codegened_mono_item_count > 0;
     let linker_payload_identity = linker_payload_identity();
-    let link_execution = if rust_mono_item_wasm_object_emitted {
-        Some(attempt_wasm_link(
-            &input,
-            &object_emission,
-            &linker_payload_identity,
-        ))
-    } else {
-        None
-    };
+    let link_execution =
+        if rust_mono_item_wasm_object_emitted && input.crate_artifact_kind != "library" {
+            Some(attempt_wasm_link(
+                &input,
+                &object_emission,
+                &linker_payload_identity,
+            ))
+        } else {
+            None
+        };
     let codegen_lowering_status = if rust_mono_item_wasm_object_emitted {
         "rust_mono_item_wasm_object_emitted"
     } else if object_emission.wasm_object_bytes_emitted {
@@ -551,12 +583,37 @@ fn main() -> ExitCode {
     } else {
         serde_json::Value::Null
     };
+    let crate_artifact = object_emission
+        .crate_artifact
+        .as_ref()
+        .map(|artifact| {
+            serde_json::json!({
+                "artifact_kind": "rlib",
+                "target_triple": input.target_triple,
+                "source_path": input.source_path,
+                "source_sha256": input.source_sha256,
+                "size_bytes": artifact.artifact_size_bytes,
+                "sha256": artifact.artifact_sha256,
+                "producer_backend": "rustc_codegen_llvm",
+                "artifact_path": format!("vfs:/workspace/{}", artifact.artifact_path),
+                "metadata_sha256": artifact.metadata_sha256,
+                "metadata_proof": {
+                    "member": artifact.metadata_member,
+                    "sha256": artifact.metadata_sha256,
+                    "embedded_in": format!("vfs:/workspace/{}", artifact.artifact_path)
+                },
+                "object_hash": object_emission.artifact_sha256,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
     let interface_proof = link_execution
         .as_ref()
         .and_then(|link| link.interface_proof.as_ref())
         .map(interface_proof_json)
         .unwrap_or(serde_json::Value::Null);
-    let linker_handoff = if rust_mono_item_wasm_object_emitted {
+    let linker_handoff = if rust_mono_item_wasm_object_emitted
+        && input.crate_artifact_kind != "library"
+    {
         let link = link_execution
             .as_ref()
             .expect("link execution is attempted once mono-item object exists");
@@ -619,22 +676,33 @@ fn main() -> ExitCode {
         "backend_name": backend_name,
         "codegen_contact_state": codegen_contact_state,
         "compile_unit_id": input.compile_unit_id,
-        "package": input.package,
-        "target": input.target,
-        "target_kind": input.target_kind,
-        "profile": input.profile,
-        "source_path": input.source_path,
-        "source_sha256": input.source_sha256,
+            "package": input.package,
+            "target": input.target,
+            "target_kind": input.target_kind,
+            "profile": input.profile,
+            "source_path": input.source_path,
+            "source_sha256": input.source_sha256,
         "codegen_input_source_sha256": input.source_sha256,
         "codegen_input_source_bytes_sha256": input.source_sha256,
-        "codegen_input_source_origin": "vfs_compile_unit_source",
-        "crate_identity": input.crate_identity,
-        "target_triple": input.target_triple,
+            "codegen_input_source_origin": "vfs_compile_unit_source",
+            "crate_identity": input.crate_identity,
+            "crate_artifact_kind": input.crate_artifact_kind,
+            "target_triple": input.target_triple,
         "target_spec": input.target_spec,
         "mir_body_hash": input.mir_body_hash,
         "mono_item_count": input.mono_item_count,
         "mono_item_graph_hash": input.mono_item_graph_hash,
-        "mono_items": input.mono_items,
+            "mono_items": input.mono_items,
+            "extern_artifacts": input.extern_artifacts.iter().map(|artifact| serde_json::json!({
+                "extern_crate_name": artifact.extern_crate_name,
+                "path": artifact.path,
+                "sha256": artifact.sha256,
+                "rustc_arg": format!("--extern {}={}", artifact.extern_crate_name, artifact.path),
+            })).collect::<Vec<_>>(),
+            "link_dependency_artifacts": input.link_dependency_artifacts.iter().map(|artifact| serde_json::json!({
+                "path": artifact.path,
+                "sha256": artifact.sha256,
+            })).collect::<Vec<_>>(),
         "mono_proof_consumed": input.mono_item_count > 0
             && !input.mono_item_graph_hash.trim().is_empty()
             && !input.mir_body_hash.trim().is_empty(),
@@ -663,6 +731,7 @@ fn main() -> ExitCode {
         "llvm_ir_artifact": llvm_ir_artifact,
         "object_artifact": object_artifact,
         "codegen_artifact": codegen_artifact,
+        "crate_artifact": crate_artifact,
         "final_module_artifact": final_module_artifact,
         "interface_proof": interface_proof,
         "runtime_proof_attempted": false,
@@ -681,8 +750,8 @@ fn main() -> ExitCode {
         "object_target_triple": object_emission.target_triple,
         "object_retrieval_method": object_emission.retrieval_method,
         "bitcode_emitted": false,
-        "linker_required": true,
-        "linker_handoff_created": rust_mono_item_wasm_object_emitted,
+        "linker_required": input.crate_artifact_kind != "library",
+        "linker_handoff_created": rust_mono_item_wasm_object_emitted && input.crate_artifact_kind != "library",
         "linker_handoff": linker_handoff,
         "rust_mono_item_wasm_object_emitted": rust_mono_item_wasm_object_emitted,
         "codegened_mono_item_count": object_emission.codegened_mono_item_count,
@@ -748,6 +817,7 @@ fn parse_input() -> Result<ProbeInput, String> {
                 input.source_bytes = decode_hex(&next_value(&mut args, &arg)?)?;
             }
             "--crate-identity" => input.crate_identity = next_value(&mut args, &arg)?,
+            "--crate-artifact-kind" => input.crate_artifact_kind = next_value(&mut args, &arg)?,
             "--target-triple" => input.target_triple = next_value(&mut args, &arg)?,
             "--target-spec" => input.target_spec = next_value(&mut args, &arg)?,
             "--mir-body-hash" => input.mir_body_hash = next_value(&mut args, &arg)?,
@@ -758,6 +828,18 @@ fn parse_input() -> Result<ProbeInput, String> {
             }
             "--mono-item-graph-hash" => input.mono_item_graph_hash = next_value(&mut args, &arg)?,
             "--mono-item" => input.mono_items.push(next_value(&mut args, &arg)?),
+            "--extern-artifact" => {
+                input
+                    .extern_artifacts
+                    .push(parse_extern_artifact(&next_value(&mut args, &arg)?)?);
+            }
+            "--link-dependency-artifact" => {
+                input
+                    .link_dependency_artifacts
+                    .push(parse_link_dependency_artifact(&next_value(
+                        &mut args, &arg,
+                    )?)?);
+            }
             unknown => return Err(format!("unknown argument: {unknown}")),
         }
     }
@@ -780,6 +862,43 @@ fn parse_input() -> Result<ProbeInput, String> {
         ));
     }
     Ok(input)
+}
+
+fn parse_extern_artifact(value: &str) -> Result<ProbeExternArtifact, String> {
+    let mut parts = value.splitn(3, '=');
+    let extern_crate_name = parts
+        .next()
+        .filter(|part| !part.trim().is_empty())
+        .ok_or_else(|| "--extern-artifact requires name=path=sha256".to_owned())?;
+    let path = parts
+        .next()
+        .filter(|part| !part.trim().is_empty())
+        .ok_or_else(|| "--extern-artifact requires name=path=sha256".to_owned())?;
+    let sha256 = parts
+        .next()
+        .filter(|part| part.len() == 64)
+        .ok_or_else(|| "--extern-artifact requires a 64-character sha256".to_owned())?;
+    Ok(ProbeExternArtifact {
+        extern_crate_name: extern_crate_name.to_owned(),
+        path: path.to_owned(),
+        sha256: sha256.to_owned(),
+    })
+}
+
+fn parse_link_dependency_artifact(value: &str) -> Result<ProbeLinkDependencyArtifact, String> {
+    let mut parts = value.rsplitn(2, '=');
+    let sha256 = parts
+        .next()
+        .filter(|part| part.len() == 64)
+        .ok_or_else(|| "--link-dependency-artifact requires path=sha256".to_owned())?;
+    let path = parts
+        .next()
+        .filter(|part| !part.trim().is_empty())
+        .ok_or_else(|| "--link-dependency-artifact requires path=sha256".to_owned())?;
+    Ok(ProbeLinkDependencyArtifact {
+        path: path.to_owned(),
+        sha256: sha256.to_owned(),
+    })
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<String, String> {
@@ -805,7 +924,10 @@ fn hex_digit(byte: u8) -> Result<u8, String> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(format!("invalid hex digit in --source-hex: {}", byte as char)),
+        _ => Err(format!(
+            "invalid hex digit in --source-hex: {}",
+            byte as char
+        )),
     }
 }
 
@@ -1061,6 +1183,7 @@ fn attempt_object_emission(input: &ProbeInput) -> ObjectEmissionSetup {
                 artifact_location: Some(format!("vfs:/workspace/{OBJECT_ARTIFACT_PATH}")),
                 target_triple,
                 retrieval_method: Some("rouwdi_owned_virtual_fs".to_owned()),
+                crate_artifact: lowered.crate_artifact,
                 blocker_kind: None,
                 blocker_reason: None,
             }
@@ -1078,6 +1201,7 @@ struct LoweredObject {
     object_bytes: Vec<u8>,
     additional_link_object_paths: Vec<String>,
     codegened_symbols: Vec<String>,
+    crate_artifact: Option<CrateArtifactOutput>,
 }
 
 #[allow(rustc::bad_opt_access)]
@@ -1101,7 +1225,11 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
         .join("rustlib")
         .join(&input.target_triple)
         .join("lib");
-    opts.crate_types = vec![rustc_session::config::CrateType::Executable];
+    opts.crate_types = vec![if input.crate_artifact_kind == "library" {
+        rustc_session::config::CrateType::Rlib
+    } else {
+        rustc_session::config::CrateType::Executable
+    }];
     opts.crate_name = Some(sanitize_crate_name(&input.crate_identity));
     opts.sysroot = rustc_session::config::Sysroot::new(Some(sysroot_path.clone()));
     opts.target_triple = rustc_target::spec::TargetTuple::from_tuple(&input.target_triple);
@@ -1121,6 +1249,45 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
             rustc_session::search_paths::PathKind::Crate,
             target_libdir,
         ));
+    for extern_artifact in &input.extern_artifacts {
+        if let Some(parent) = PathBuf::from(&extern_artifact.path).parent() {
+            opts.search_paths
+                .push(rustc_session::search_paths::SearchPath::new(
+                    rustc_session::search_paths::PathKind::Dependency,
+                    parent.to_path_buf(),
+                ));
+        }
+    }
+    for dependency_artifact in &input.link_dependency_artifacts {
+        if let Some(parent) = PathBuf::from(&dependency_artifact.path).parent() {
+            opts.search_paths
+                .push(rustc_session::search_paths::SearchPath::new(
+                    rustc_session::search_paths::PathKind::Dependency,
+                    parent.to_path_buf(),
+                ));
+        }
+    }
+    let externs = input
+        .extern_artifacts
+        .iter()
+        .map(|artifact| {
+            let mut locations = BTreeSet::new();
+            locations.insert(rustc_session::utils::CanonicalizedPath::new(PathBuf::from(
+                &artifact.path,
+            )));
+            (
+                artifact.extern_crate_name.clone(),
+                rustc_session::config::ExternEntry {
+                    location: rustc_session::config::ExternLocation::ExactPaths(locations),
+                    is_private_dep: false,
+                    add_prelude: true,
+                    nounused_dep: false,
+                    force: false,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    opts.externs = rustc_session::config::Externs::new(externs);
     opts.output_types = rustc_session::config::OutputTypes::new(&[(
         rustc_session::config::OutputType::Object,
         Some(rustc_session::config::OutFileName::Real(PathBuf::from(
@@ -1176,11 +1343,30 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
                     rustc_interface::passes::write_interface(tcx);
                     eprintln!("rouwdi-codegen-progress: analysis-start");
                     tcx.ensure_ok().analysis(());
+                    let metadata_bytes = if input.crate_artifact_kind == "library" {
+                        eprintln!("rouwdi-codegen-progress: metadata-emit-start");
+                        let metadata = rustc_metadata::fs::encode_and_write_metadata(tcx);
+                        let bytes = metadata.stub_or_full().to_vec();
+                        eprintln!(
+                            "rouwdi-codegen-progress: metadata-emit-complete bytes={}",
+                            bytes.len()
+                        );
+                        Some(bytes)
+                    } else {
+                        None
+                    };
                     eprintln!("rouwdi-codegen-progress: sync-codegen-start");
-                    let object_bytes = rustc_codegen_llvm::rouwdi_codegen_wasm_objects(tcx);
+                    let mut object_bytes = rustc_codegen_llvm::rouwdi_codegen_wasm_objects(tcx)?;
+                    if let Some(bytes) = metadata_bytes {
+                        object_bytes.push(rustc_codegen_llvm::RouwdiWasmObject {
+                            role: "rust_metadata".to_owned(),
+                            path: "lib.rmeta".to_owned(),
+                            bytes,
+                        });
+                    }
                     eprintln!("rouwdi-codegen-progress: sync-codegen-returned");
                     tcx.report_unused_features();
-                    object_bytes
+                    Ok(object_bytes)
                 })
             },
         )
@@ -1216,15 +1402,177 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
         })?;
     }
 
+    let crate_artifact = if input.crate_artifact_kind == "library" {
+        Some(build_dependency_rlib_from_objects(input, &objects)?)
+    } else {
+        None
+    };
+
     Ok(LoweredObject {
         object_bytes,
         additional_link_object_paths: objects
             .iter()
-            .filter(|object| object.role != "mono_item_codegen_unit")
+            .filter(|object| {
+                object.role != "mono_item_codegen_unit" && object.role != "rust_metadata"
+            })
             .map(|object| object.path.clone())
             .collect(),
         codegened_symbols: expected_codegened_symbols(input),
+        crate_artifact,
     })
+}
+
+fn build_dependency_rlib_from_objects(
+    input: &ProbeInput,
+    objects: &[rustc_codegen_llvm::RouwdiWasmObject],
+) -> Result<CrateArtifactOutput, String> {
+    let crate_name = sanitize_crate_name(&input.crate_identity);
+    let artifact_path = format!("lib{crate_name}.rlib");
+    let _ = std::fs::remove_file(&artifact_path);
+
+    let metadata = objects
+        .iter()
+        .find(|object| object.role == "rust_metadata")
+        .ok_or_else(|| "library compile emitted no Rust metadata".to_owned())?;
+    if metadata.bytes.is_empty() {
+        return Err("library compile emitted empty Rust metadata".to_owned());
+    }
+
+    let object_members = objects
+        .iter()
+        .filter(|object| object.role != "rust_metadata")
+        .filter(|object| !object.bytes.is_empty())
+        .collect::<Vec<_>>();
+    if object_members.is_empty() {
+        return Err("library compile emitted no linkable object members".to_owned());
+    }
+
+    let mut members = Vec::with_capacity(object_members.len() + 1);
+    members.push(("lib.rmeta".to_owned(), metadata.bytes.clone()));
+    for (index, object) in object_members.iter().enumerate() {
+        let name = if object.role == "allocator_shim_codegen_unit" {
+            "alloc.o".to_owned()
+        } else if index == 0 {
+            "lib.o".to_owned()
+        } else {
+            format!("lib{index}.o")
+        };
+        members.push((name, object.bytes.clone()));
+    }
+
+    let bytes = write_gnu_archive(&members)?;
+    std::fs::write(&artifact_path, &bytes)
+        .map_err(|error| format!("dependency rlib {artifact_path} was not written: {error}"))?;
+    let (metadata_member, metadata_sha256) = rlib_metadata_member_hash(&bytes);
+    Ok(CrateArtifactOutput {
+        artifact_path: artifact_path.clone(),
+        artifact_sha256: sha256_hex(&bytes),
+        artifact_size_bytes: bytes.len(),
+        metadata_sha256,
+        metadata_member,
+        bytes,
+    })
+}
+
+fn write_gnu_archive(members: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    let mut archive = b"!<arch>\n".to_vec();
+    for (name, data) in members {
+        if name.is_empty() {
+            return Err("archive member name cannot be empty".to_owned());
+        }
+        if name.len() > 15 {
+            return Err(format!(
+                "archive member name {name} is too long for the rouwdi dependency archive writer"
+            ));
+        }
+        let header = format!(
+            "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+            format!("{name}/"),
+            0,
+            0,
+            0,
+            0o100644,
+            data.len()
+        );
+        if header.len() != 60 {
+            return Err(format!(
+                "archive member {name} produced invalid header length {}",
+                header.len()
+            ));
+        }
+        archive.extend_from_slice(header.as_bytes());
+        archive.extend_from_slice(data);
+        if data.len() % 2 != 0 {
+            archive.push(b'\n');
+        }
+    }
+    Ok(archive)
+}
+
+fn add_extern_artifacts_to_options(input: &ProbeInput, opts: &mut rustc_session::config::Options) {
+    for extern_artifact in &input.extern_artifacts {
+        if let Some(parent) = PathBuf::from(&extern_artifact.path).parent() {
+            opts.search_paths
+                .push(rustc_session::search_paths::SearchPath::new(
+                    rustc_session::search_paths::PathKind::Dependency,
+                    parent.to_path_buf(),
+                ));
+        }
+    }
+    let externs = input
+        .extern_artifacts
+        .iter()
+        .map(|artifact| {
+            let mut locations = BTreeSet::new();
+            locations.insert(rustc_session::utils::CanonicalizedPath::new(PathBuf::from(
+                &artifact.path,
+            )));
+            (
+                artifact.extern_crate_name.clone(),
+                rustc_session::config::ExternEntry {
+                    location: rustc_session::config::ExternLocation::ExactPaths(locations),
+                    is_private_dep: false,
+                    add_prelude: true,
+                    nounused_dep: false,
+                    force: false,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    opts.externs = rustc_session::config::Externs::new(externs);
+}
+
+fn rlib_metadata_member_hash(bytes: &[u8]) -> (Option<String>, Option<String>) {
+    if !bytes.starts_with(b"!<arch>\n") {
+        return (None, None);
+    }
+    let mut offset = 8usize;
+    while offset.saturating_add(60) <= bytes.len() {
+        let header = &bytes[offset..offset + 60];
+        let raw_name = String::from_utf8_lossy(&header[0..16])
+            .trim()
+            .trim_end_matches('/')
+            .to_owned();
+        let size_text = String::from_utf8_lossy(&header[48..58]).trim().to_owned();
+        let Ok(size) = size_text.parse::<usize>() else {
+            break;
+        };
+        let data_start = offset + 60;
+        let data_end = data_start.saturating_add(size);
+        if data_end > bytes.len() {
+            break;
+        }
+        let data = &bytes[data_start..data_end];
+        if raw_name.contains("rmeta")
+            || data
+                .windows(b"rustc".len())
+                .any(|window| window == b"rustc")
+        {
+            return (Some(raw_name), Some(sha256_hex(data)));
+        }
+        offset = data_end + (size % 2);
+    }
+    (None, Some(sha256_hex(bytes)))
 }
 
 fn linker_payload_identity() -> LinkerPayloadIdentity {
@@ -1259,6 +1607,13 @@ fn attempt_wasm_link(
     if let Some(hash) = &allocator_object_hash {
         input_artifact_hashes.push(hash.clone());
     }
+    for dependency in &input.link_dependency_artifacts {
+        let actual_hash = std::fs::read(&dependency.path)
+            .ok()
+            .map(|bytes| sha256_hex(&bytes))
+            .unwrap_or_else(|| "missing-dependency-artifact".to_owned());
+        input_artifact_hashes.push(actual_hash);
+    }
     let output_path = FINAL_WASI_MODULE_PATH.to_owned();
     let target_libdir = format!("{}/lib/rustlib/{}/lib", sysroot_path(), input.target_triple);
     let self_contained_dir = format!("{target_libdir}/self-contained");
@@ -1275,6 +1630,9 @@ fn attempt_wasm_link(
     ];
     if allocator_object_hash.is_some() {
         command_args.push(ALLOCATOR_OBJECT_ARTIFACT_PATH.to_owned());
+    }
+    for dependency in &input.link_dependency_artifacts {
+        command_args.push(dependency.path.clone());
     }
     command_args.extend([
         format!("{target_libdir}/libpanic_abort-771e1103f866bdb4.rlib"),
@@ -1596,6 +1954,7 @@ fn object_blocked(
         artifact_location: None,
         target_triple,
         retrieval_method: None,
+        crate_artifact: None,
         blocker_kind: Some(blocker_kind.to_owned()),
         blocker_reason: Some(blocker_reason),
     }

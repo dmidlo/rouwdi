@@ -9,6 +9,7 @@ edition = "2021"
 rustc_codegen_llvm = { path = "../../third_party/rust/compiler/rustc_codegen_llvm" }
 rustc_feature = { path = "../../third_party/rust/compiler/rustc_feature" }
 rustc_interface = { path = "../../third_party/rust/compiler/rustc_interface" }
+rustc_metadata = { path = "../../third_party/rust/compiler/rustc_metadata" }
 rustc_session = { path = "../../third_party/rust/compiler/rustc_session" }
 rustc_span = { path = "../../third_party/rust/compiler/rustc_span" }
 rustc_target = { path = "../../third_party/rust/compiler/rustc_target" }

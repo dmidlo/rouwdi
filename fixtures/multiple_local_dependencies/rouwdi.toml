@@ -1,0 +1,44 @@
+contract_version = 1
+
+[project]
+manifest_path = "Cargo.toml"
+package = "multiple-local-dependencies"
+bin = "multiple-local-dependencies"
+profile = "release"
+default_features = true
+features = []
+
+[source]
+mode = "snapshot"
+root = "."
+
+[resolver]
+lockfile = "Cargo.lock"
+offline = true
+frozen = true
+
+[toolchain]
+channel = "stable"
+edition_floor = "2021"
+std = true
+
+[[targets]]
+name = "wasi"
+triple = "wasm32-wasip1"
+artifact = "module"
+
+[targets.interface]
+required_exports = ["_start"]
+
+[targets.runtime]
+required = true
+kind = "wasi"
+args = []
+timeout_seconds = 10
+expected_exit_code = 0
+
+[proof]
+emit_hashes = true
+emit_build_graph = true
+emit_source_snapshot = true
+emit_runtime_transcripts = true

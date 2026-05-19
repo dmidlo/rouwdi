@@ -37,6 +37,8 @@ pub enum CargoModelError {
         dependency: String,
         expected: String,
     },
+    #[error("Cargo dependency compile graph contains a cycle involving {0}")]
+    DependencyCompileCycle(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +168,68 @@ pub struct CargoBuildPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoDependencyCompilePlan {
+    pub units: Vec<CargoDependencyCompileUnit>,
+    pub edges: Vec<CargoDependencyCompileEdge>,
+    pub topological_order: Vec<String>,
+    pub system_crates: Vec<CargoSystemCrate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoDependencyCompileUnit {
+    pub unit_id: String,
+    pub package_id: String,
+    pub package: String,
+    pub crate_name: String,
+    pub target_name: String,
+    pub target_kind: CargoTargetKind,
+    pub unit_kind: CargoDependencyCompileUnitKind,
+    pub source_path: String,
+    pub edition: String,
+    pub profile: String,
+    pub target_triple: String,
+    pub dependency_edges: Vec<String>,
+    pub extern_crate_names: Vec<String>,
+    pub dependency_artifact_requirements: Vec<CargoDependencyArtifactRequirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoDependencyCompileEdge {
+    pub dependency_unit_id: String,
+    pub dependent_unit_id: String,
+    pub dependency_package: String,
+    pub dependent_package: String,
+    pub extern_crate_name: String,
+    pub artifact_requirement: CargoDependencyArtifactRequirement,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CargoDependencyCompileUnitKind {
+    BinaryCrate,
+    LibraryCrate,
+    TransitiveLibraryCrate,
+    ProcMacroCrate,
+    BuildScript,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoDependencyArtifactRequirement {
+    pub artifact_kind: String,
+    pub metadata_required: bool,
+    pub object_or_archive_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoSystemCrate {
+    pub crate_name: String,
+    pub target_triple: String,
+    pub artifact_kind: String,
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompileUnit {
     pub id: String,
     pub package: String,
@@ -192,6 +256,165 @@ pub struct CompileUnitEdge {
     pub from: String,
     pub to: String,
     pub reason: String,
+}
+
+pub fn plan_dependency_compile_order(
+    workspace: &CargoWorkspace,
+    build_plan: &CargoBuildPlan,
+    selected_package: &str,
+) -> Result<CargoDependencyCompilePlan, CargoModelError> {
+    let packages_by_name = workspace
+        .packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+    let units_by_id = build_plan
+        .units
+        .iter()
+        .map(|unit| (unit.id.as_str(), unit))
+        .collect::<BTreeMap<_, _>>();
+    let rust_units = build_plan
+        .units
+        .iter()
+        .filter(|unit| unit.phase == CompilePhase::Rust)
+        .collect::<Vec<_>>();
+    let rust_unit_ids = rust_units
+        .iter()
+        .map(|unit| unit.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut incoming = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut outgoing = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut plan_edges = Vec::new();
+    for edge in &build_plan.edges {
+        if !rust_unit_ids.contains(edge.from.as_str()) || !rust_unit_ids.contains(edge.to.as_str())
+        {
+            continue;
+        }
+        let from = units_by_id
+            .get(edge.from.as_str())
+            .expect("rust unit id set came from build plan");
+        let to = units_by_id
+            .get(edge.to.as_str())
+            .expect("rust unit id set came from build plan");
+        let extern_crate_name = dependency_crate_name_from_edge_reason(&edge.reason)
+            .unwrap_or_else(|| from.package.clone())
+            .replace('-', "_");
+        let requirement = CargoDependencyArtifactRequirement {
+            artifact_kind: "rlib-or-equivalent-wasm-archive".to_owned(),
+            metadata_required: true,
+            object_or_archive_required: true,
+        };
+        incoming
+            .entry(edge.to.clone())
+            .or_default()
+            .insert(edge.from.clone());
+        outgoing
+            .entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
+        plan_edges.push(CargoDependencyCompileEdge {
+            dependency_unit_id: edge.from.clone(),
+            dependent_unit_id: edge.to.clone(),
+            dependency_package: from.package.clone(),
+            dependent_package: to.package.clone(),
+            extern_crate_name,
+            artifact_requirement: requirement,
+            reason: edge.reason.clone(),
+        });
+    }
+
+    let topological_order = topological_rust_unit_order(&rust_units, &incoming, &outgoing)?;
+    let root_direct_dependencies = build_plan
+        .edges
+        .iter()
+        .filter(|edge| {
+            units_by_id
+                .get(edge.to.as_str())
+                .is_some_and(|unit| unit.package == selected_package)
+                && rust_unit_ids.contains(edge.from.as_str())
+                && rust_unit_ids.contains(edge.to.as_str())
+        })
+        .map(|edge| edge.from.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let plan_units = rust_units
+        .iter()
+        .map(|unit| {
+            let package = packages_by_name
+                .get(unit.package.as_str())
+                .ok_or_else(|| CargoModelError::MissingSelectedPackage(unit.package.clone()))?;
+            let unit_edges = plan_edges
+                .iter()
+                .filter(|edge| edge.dependent_unit_id == unit.id)
+                .map(|edge| edge.dependency_unit_id.clone())
+                .collect::<Vec<_>>();
+            let externs = plan_edges
+                .iter()
+                .filter(|edge| edge.dependent_unit_id == unit.id)
+                .map(|edge| edge.extern_crate_name.clone())
+                .collect::<Vec<_>>();
+            let requirements = plan_edges
+                .iter()
+                .filter(|edge| edge.dependent_unit_id == unit.id)
+                .map(|edge| edge.artifact_requirement.clone())
+                .collect::<Vec<_>>();
+            let unit_kind = match unit.target_kind {
+                CargoTargetKind::Bin | CargoTargetKind::Example => {
+                    CargoDependencyCompileUnitKind::BinaryCrate
+                }
+                CargoTargetKind::Lib if unit.package == selected_package => {
+                    CargoDependencyCompileUnitKind::LibraryCrate
+                }
+                CargoTargetKind::Lib if root_direct_dependencies.contains(unit.id.as_str()) => {
+                    CargoDependencyCompileUnitKind::LibraryCrate
+                }
+                CargoTargetKind::Lib => CargoDependencyCompileUnitKind::TransitiveLibraryCrate,
+                CargoTargetKind::Test | CargoTargetKind::Bench => {
+                    CargoDependencyCompileUnitKind::BinaryCrate
+                }
+            };
+            Ok(CargoDependencyCompileUnit {
+                unit_id: unit.id.clone(),
+                package_id: package_id(package),
+                package: unit.package.clone(),
+                crate_name: crate_name_for_unit(unit),
+                target_name: unit.target.clone(),
+                target_kind: unit.target_kind.clone(),
+                unit_kind,
+                source_path: unit.source_path.clone().unwrap_or_default(),
+                edition: package.edition.clone().unwrap_or_else(|| "2015".to_owned()),
+                profile: unit.profile.clone(),
+                target_triple: unit.triple.clone(),
+                dependency_edges: unit_edges,
+                extern_crate_names: externs,
+                dependency_artifact_requirements: requirements,
+            })
+        })
+        .collect::<Result<Vec<_>, CargoModelError>>()?;
+
+    let triples = rust_units
+        .iter()
+        .map(|unit| unit.triple.clone())
+        .collect::<BTreeSet<_>>();
+    let mut system_crates = Vec::new();
+    for triple in triples {
+        for crate_name in ["core", "alloc", "std", "compiler_builtins"] {
+            system_crates.push(CargoSystemCrate {
+                crate_name: crate_name.to_owned(),
+                target_triple: triple.clone(),
+                artifact_kind: "embedded-target-pack-rlib".to_owned(),
+                provider: "rouwdi-target-pack".to_owned(),
+            });
+        }
+    }
+
+    Ok(CargoDependencyCompilePlan {
+        units: plan_units,
+        edges: plan_edges,
+        topological_order,
+        system_crates,
+    })
 }
 
 pub fn resolve_workspace(
@@ -1107,6 +1330,76 @@ fn dependency_package_name(dependency: &CargoDependency) -> String {
 
 fn rust_unit_id(package: &str, target: &str, triple: &str) -> String {
     format!("{}:rust:{target}:{triple}", package.replace('-', "_"))
+}
+
+fn package_id(package: &CargoPackage) -> String {
+    format!(
+        "path+{}#{}-{}",
+        package.manifest_path,
+        package.name,
+        package
+            .version
+            .clone()
+            .unwrap_or_else(|| "0.0.0".to_owned())
+    )
+}
+
+fn crate_name_for_unit(unit: &CompileUnit) -> String {
+    match unit.target_kind {
+        CargoTargetKind::Lib => unit.target.replace('-', "_"),
+        _ => unit.package.replace('-', "_"),
+    }
+}
+
+fn dependency_crate_name_from_edge_reason(reason: &str) -> Option<String> {
+    reason
+        .strip_prefix("Normal dependency ")
+        .or_else(|| reason.strip_prefix("Build dependency "))
+        .map(str::to_owned)
+}
+
+fn topological_rust_unit_order(
+    rust_units: &[&CompileUnit],
+    incoming: &BTreeMap<String, BTreeSet<String>>,
+    outgoing: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Vec<String>, CargoModelError> {
+    let mut remaining_incoming = rust_units
+        .iter()
+        .map(|unit| {
+            (
+                unit.id.clone(),
+                incoming.get(&unit.id).cloned().unwrap_or_default(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut ready = remaining_incoming
+        .iter()
+        .filter(|(_, predecessors)| predecessors.is_empty())
+        .map(|(unit_id, _)| unit_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::new();
+
+    while let Some(unit_id) = ready.pop_first() {
+        if !remaining_incoming.contains_key(&unit_id) {
+            continue;
+        }
+        remaining_incoming.remove(&unit_id);
+        order.push(unit_id.clone());
+        for dependent in outgoing.get(&unit_id).cloned().unwrap_or_default() {
+            if let Some(predecessors) = remaining_incoming.get_mut(&dependent) {
+                predecessors.remove(&unit_id);
+                if predecessors.is_empty() {
+                    ready.insert(dependent);
+                }
+            }
+        }
+    }
+
+    if let Some(cycle_unit) = remaining_incoming.keys().next() {
+        Err(CargoModelError::DependencyCompileCycle(cycle_unit.clone()))
+    } else {
+        Ok(order)
+    }
 }
 
 pub fn parse_lockfile(
@@ -2228,6 +2521,102 @@ name = "demo"
         let err = dependency_applies_to_triple(&dep, "wasm32-wasip1").unwrap_err();
 
         assert!(err.to_string().contains("unsupported target cfg"));
+    }
+
+    #[test]
+    fn dependency_compile_plan_orders_transitive_libraries_before_binary() {
+        let workspace = CargoWorkspace {
+            root_manifest_path: "Cargo.toml".to_owned(),
+            packages: vec![
+                CargoPackage {
+                    name: "app".to_owned(),
+                    version: Some("0.1.0".to_owned()),
+                    edition: Some("2021".to_owned()),
+                    manifest_path: "app/Cargo.toml".to_owned(),
+                    build_script: None,
+                    targets: vec![CargoTarget {
+                        name: "app".to_owned(),
+                        kind: CargoTargetKind::Bin,
+                        path: Some("app/src/main.rs".to_owned()),
+                        proc_macro: false,
+                    }],
+                    dependencies: vec![CargoDependency {
+                        name: "middle".to_owned(),
+                        package: None,
+                        requirement: None,
+                        path: Some("middle".to_owned()),
+                        git: None,
+                        registry: None,
+                        optional: false,
+                        default_features: true,
+                        features: Vec::new(),
+                        scope: DependencyScope::Normal,
+                        target_cfg: None,
+                    }],
+                    features: Vec::new(),
+                },
+                CargoPackage {
+                    name: "middle".to_owned(),
+                    version: Some("0.1.0".to_owned()),
+                    edition: Some("2021".to_owned()),
+                    manifest_path: "middle/Cargo.toml".to_owned(),
+                    build_script: None,
+                    targets: vec![CargoTarget {
+                        name: "middle".to_owned(),
+                        kind: CargoTargetKind::Lib,
+                        path: Some("middle/src/lib.rs".to_owned()),
+                        proc_macro: false,
+                    }],
+                    dependencies: vec![CargoDependency {
+                        name: "leaf".to_owned(),
+                        package: None,
+                        requirement: None,
+                        path: Some("leaf".to_owned()),
+                        git: None,
+                        registry: None,
+                        optional: false,
+                        default_features: true,
+                        features: Vec::new(),
+                        scope: DependencyScope::Normal,
+                        target_cfg: None,
+                    }],
+                    features: Vec::new(),
+                },
+                lib_package("leaf"),
+            ],
+        };
+        let feature_resolution = resolve_features(&workspace, "app", true, &[]).unwrap();
+        let build_plan = plan_build(
+            &workspace,
+            &feature_resolution,
+            "app",
+            "app",
+            CargoTargetKind::Bin,
+            "release",
+            &["wasm32-wasip1".to_owned()],
+        )
+        .unwrap();
+
+        let compile_plan = plan_dependency_compile_order(&workspace, &build_plan, "app").unwrap();
+
+        assert_eq!(
+            compile_plan.topological_order,
+            vec![
+                "leaf:rust:leaf:wasm32-wasip1",
+                "middle:rust:middle:wasm32-wasip1",
+                "app:rust:app:wasm32-wasip1"
+            ]
+        );
+        assert!(compile_plan.edges.iter().any(|edge| {
+            edge.dependency_unit_id == "leaf:rust:leaf:wasm32-wasip1"
+                && edge.dependent_unit_id == "middle:rust:middle:wasm32-wasip1"
+                && edge.extern_crate_name == "leaf"
+                && edge.artifact_requirement.metadata_required
+        }));
+        assert!(compile_plan.units.iter().any(|unit| {
+            unit.unit_id == "leaf:rust:leaf:wasm32-wasip1"
+                && unit.unit_kind == CargoDependencyCompileUnitKind::TransitiveLibraryCrate
+        }));
     }
 
     fn lib_package(name: &str) -> CargoPackage {

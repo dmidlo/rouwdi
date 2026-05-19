@@ -1,0 +1,19 @@
+version = 4
+
+[[package]]
+name = "leaf"
+version = "0.1.0"
+
+[[package]]
+name = "middle"
+version = "0.1.0"
+dependencies = [
+ "leaf",
+]
+
+[[package]]
+name = "transitive-local-dependency"
+version = "0.1.0"
+dependencies = [
+ "middle",
+]

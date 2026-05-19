@@ -42,9 +42,8 @@ pub fn build_with_storage(storage: &mut dyn Storage, contract_path: &str) -> i32
         .with_embedded_mir_payload_execution_provider(
             payloads::mir_payload_execution_for_engine_request,
         )
-        .with_embedded_linked_wasi_module_provider(
-            payloads::linked_wasi_module_artifact_for_engine,
-        );
+        .with_embedded_linked_wasi_module_provider(payloads::linked_wasi_module_artifact_for_engine)
+        .with_embedded_crate_artifact_provider(payloads::crate_artifact_for_engine);
     match engine.build(
         storage,
         BuildRequest {
@@ -74,7 +73,8 @@ pub fn cli_main() -> i32 {
                 )
                 .with_embedded_linked_wasi_module_provider(
                     payloads::linked_wasi_module_artifact_for_engine,
-                );
+                )
+                .with_embedded_crate_artifact_provider(payloads::crate_artifact_for_engine);
             match engine.build(&mut storage, BuildRequest { contract_path }) {
                 Ok(report) => {
                     println!(
@@ -172,9 +172,12 @@ pub fn cli_main() -> i32 {
                 profile: "release".to_owned(),
                 target_triple: "wasm32-wasip1".to_owned(),
                 crate_name: "rouwdi_payload".to_owned(),
+                crate_artifact_kind: "binary".to_owned(),
                 mir_body_hash: "diagnostic-codegen-payload".to_owned(),
                 mono_item_graph_hash: "diagnostic-codegen-payload".to_owned(),
                 mono_items: vec!["fn:rouwdi_payload::main".to_owned()],
+                extern_inputs: Vec::new(),
+                link_dependency_inputs: Vec::new(),
             };
             match payloads::load_codegen_backend_payload(&request) {
                 Ok(report) => {
@@ -200,6 +203,73 @@ pub fn cli_main() -> i32 {
                                 && report.final_module_artifact_path.is_some()
                                 && report.runtime_proof_attempted
                                 && report.runtime_proof_passed))
+                    {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    println!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
+                    1
+                }
+            }
+        }
+        "codegen-library-payloads" => {
+            let source_path = args.next().unwrap_or_else(|| "src/lib.rs".to_owned());
+            let crate_name = args.next().unwrap_or_else(|| "rouwdi_payload".to_owned());
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let source_bytes = match std::fs::read(cwd.join(&source_path)) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!("failed to read codegen payload source {source_path}: {err}");
+                    return 1;
+                }
+            };
+            let source_sha256 = {
+                use sha2::{Digest, Sha256};
+                let digest = Sha256::digest(&source_bytes);
+                let mut out = String::with_capacity(digest.len() * 2);
+                for byte in digest {
+                    use std::fmt::Write as _;
+                    let _ = write!(&mut out, "{byte:02x}");
+                }
+                out
+            };
+            let request = rouwdi_engine::EmbeddedLinkedWasiModuleRequest {
+                compile_unit_id: format!("{crate_name}:rust:{crate_name}:wasm32-wasip1"),
+                package: crate_name.clone(),
+                target: crate_name.clone(),
+                cargo_target_kind: "Lib".to_owned(),
+                source_path,
+                source_bytes,
+                source_sha256,
+                profile: "release".to_owned(),
+                target_triple: "wasm32-wasip1".to_owned(),
+                crate_name: crate_name.clone(),
+                crate_artifact_kind: "library".to_owned(),
+                mir_body_hash: "diagnostic-codegen-library-payload".to_owned(),
+                mono_item_graph_hash: "diagnostic-codegen-library-payload".to_owned(),
+                mono_items: vec![format!("fn:{crate_name}::__rouwdi_compile_unit")],
+                extern_inputs: Vec::new(),
+                link_dependency_inputs: Vec::new(),
+            };
+            match payloads::load_codegen_backend_payload(&request) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).unwrap_or_default()
+                    );
+                    if report.hash_verified
+                        && report.size_verified
+                        && report.module_instantiated
+                        && report.start_called
+                        && report.execution_source == "embedded_registry"
+                        && !report.external
+                        && report.backend_constructed
+                        && report.object_bytes_emitted
+                        && report.crate_artifact_sha256.is_some()
+                        && report.crate_metadata_sha256.is_some()
                     {
                         0
                     } else {
@@ -308,6 +378,7 @@ version = "0.1.0"
             .with_embedded_linked_wasi_module_provider(
                 payloads::linked_wasi_module_artifact_for_engine,
             )
+            .with_embedded_crate_artifact_provider(payloads::crate_artifact_for_engine)
             .build(
                 &mut storage,
                 BuildRequest {
