@@ -1,3 +1,4 @@
+use rouwdi_engine::{EmbeddedLinkedWasiModuleRequest, EmbeddedMirPayloadExecutionRequest};
 use rouwdi_object::{inspect_wasm_object, WasmObjectInspection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -148,6 +149,9 @@ pub struct EmbeddedCodegenPayloadExecutionReport {
     pub backend: String,
     pub backend_family: String,
     pub target_triple: String,
+    pub source_path: String,
+    pub source_sha256: String,
+    pub codegen_input_source_origin: String,
     pub execution_source: String,
     pub external: bool,
     pub opened_external_file: bool,
@@ -500,6 +504,13 @@ pub fn mir_payload_report() -> Option<EmbeddedCompilerPayloadReport> {
 pub fn load_embedded_compiler_payload(
     name: &str,
 ) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
+    load_embedded_compiler_payload_with_input(name, None)
+}
+
+pub fn load_embedded_compiler_payload_with_input(
+    name: &str,
+    input_json: Option<String>,
+) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let name = name.to_owned();
@@ -507,7 +518,9 @@ pub fn load_embedded_compiler_payload(
         return std::thread::Builder::new()
             .name("rouwdi-embedded-payload-loader".to_owned())
             .stack_size(512 * 1024 * 1024)
-            .spawn(move || load_embedded_compiler_payload_inline(&thread_name))
+            .spawn(move || {
+                load_embedded_compiler_payload_inline(&thread_name, input_json.as_deref())
+            })
             .map_err(|error| EmbeddedCompilerPayloadLoadError {
                 name: name.clone(),
                 execution_source: "embedded_registry".to_owned(),
@@ -527,12 +540,13 @@ pub fn load_embedded_compiler_payload(
 
     #[cfg(target_arch = "wasm32")]
     {
-        load_embedded_compiler_payload_inline(name)
+        load_embedded_compiler_payload_inline(name, input_json.as_deref())
     }
 }
 
 fn load_embedded_compiler_payload_inline(
     name: &str,
+    input_json: Option<&str>,
 ) -> Result<EmbeddedCompilerPayloadLoadReport, EmbeddedCompilerPayloadLoadError> {
     let Some(payload) = embedded_compiler_payloads()
         .iter()
@@ -547,12 +561,14 @@ fn load_embedded_compiler_payload_inline(
         });
     };
 
-    execute_embedded_payload(payload).map_err(|error| EmbeddedCompilerPayloadLoadError {
-        name: payload.name.to_owned(),
-        execution_source: "embedded_registry".to_owned(),
-        external: false,
-        opened_external_file: false,
-        error,
+    execute_embedded_payload(payload, input_json).map_err(|error| {
+        EmbeddedCompilerPayloadLoadError {
+            name: payload.name.to_owned(),
+            execution_source: "embedded_registry".to_owned(),
+            external: false,
+            opened_external_file: false,
+            error,
+        }
     })
 }
 
@@ -562,13 +578,15 @@ pub fn load_mir_handoff_payload(
 }
 
 pub fn load_codegen_backend_payload(
+    request: &EmbeddedLinkedWasiModuleRequest,
 ) -> Result<EmbeddedCodegenPayloadExecutionReport, EmbeddedCompilerPayloadLoadError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let request = request.clone();
         return std::thread::Builder::new()
             .name("rouwdi-embedded-codegen-payload-loader".to_owned())
             .stack_size(1024 * 1024 * 1024)
-            .spawn(load_codegen_backend_payload_inline)
+            .spawn(move || load_codegen_backend_payload_inline(&request))
             .map_err(|error| EmbeddedCompilerPayloadLoadError {
                 name: "rouwdi-llvm-codegen-backend-payload".to_owned(),
                 execution_source: "embedded_registry".to_owned(),
@@ -588,11 +606,12 @@ pub fn load_codegen_backend_payload(
 
     #[cfg(target_arch = "wasm32")]
     {
-        load_codegen_backend_payload_inline()
+        load_codegen_backend_payload_inline(request)
     }
 }
 
 fn load_codegen_backend_payload_inline(
+    request: &EmbeddedLinkedWasiModuleRequest,
 ) -> Result<EmbeddedCodegenPayloadExecutionReport, EmbeddedCompilerPayloadLoadError> {
     let Some(payload) = embedded_codegen_payloads()
         .iter()
@@ -607,17 +626,35 @@ fn load_codegen_backend_payload_inline(
         });
     };
 
-    execute_embedded_codegen_payload(payload).map_err(|error| EmbeddedCompilerPayloadLoadError {
-        name: payload.name.to_owned(),
-        execution_source: "embedded_registry".to_owned(),
-        external: false,
-        opened_external_file: false,
-        error,
+    execute_embedded_codegen_payload(payload, request).map_err(|error| {
+        EmbeddedCompilerPayloadLoadError {
+            name: payload.name.to_owned(),
+            execution_source: "embedded_registry".to_owned(),
+            external: false,
+            opened_external_file: false,
+            error,
+        }
     })
 }
 
 pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMirPayloadExecution> {
     let report = load_mir_handoff_payload().ok()?;
+    mir_payload_execution_from_report(report)
+}
+
+pub fn mir_payload_execution_for_engine_request(
+    request: &EmbeddedMirPayloadExecutionRequest,
+) -> Option<rouwdi_rustc::RustEmbeddedMirPayloadExecution> {
+    let input_json = mir_payload_input_json(request);
+    let report =
+        load_embedded_compiler_payload_with_input("rouwdi-mir-handoff-payload", Some(input_json))
+            .ok()?;
+    mir_payload_execution_from_report(report)
+}
+
+fn mir_payload_execution_from_report(
+    report: EmbeddedCompilerPayloadLoadReport,
+) -> Option<rouwdi_rustc::RustEmbeddedMirPayloadExecution> {
     Some(rouwdi_rustc::RustEmbeddedMirPayloadExecution {
         payload_identity: report.name,
         registry_identity: report.registry_identity,
@@ -662,8 +699,9 @@ pub fn mir_payload_execution_for_engine() -> Option<rouwdi_rustc::RustEmbeddedMi
 }
 
 pub fn linked_wasi_module_artifact_for_engine(
+    request: &EmbeddedLinkedWasiModuleRequest,
 ) -> Option<rouwdi_engine::EmbeddedLinkedWasiModuleArtifact> {
-    let report = load_codegen_backend_payload().ok()?;
+    let report = load_codegen_backend_payload(request).ok()?;
     let bytes = report.final_module_bytes?;
     let sha256 = report.final_module_sha256?;
     if sha256 != sha256_hex(&bytes) {
@@ -679,8 +717,8 @@ pub fn linked_wasi_module_artifact_for_engine(
     {
         return None;
     }
-    let codegen_input_source = "fn main() {}\n".to_owned();
-    let codegen_input_sha256 = sha256_hex(codegen_input_source.as_bytes());
+    let codegen_input_source_text = String::from_utf8(request.source_bytes.clone()).ok();
+    let codegen_input_sha256 = request.source_sha256.clone();
     Some(rouwdi_engine::EmbeddedLinkedWasiModuleArtifact {
         target_triple: report.target_triple,
         payload_artifact_path: report
@@ -689,8 +727,13 @@ pub fn linked_wasi_module_artifact_for_engine(
         bytes,
         sha256,
         size_bytes,
-        codegen_input_sha256,
-        codegen_input_source,
+        source_path: request.source_path.clone(),
+        source_sha256: request.source_sha256.clone(),
+        codegen_input_sha256: codegen_input_sha256.clone(),
+        codegen_input_source_sha256: codegen_input_sha256.clone(),
+        codegen_input_source_bytes_sha256: codegen_input_sha256,
+        codegen_input_source_origin: "vfs_compile_unit_source".to_owned(),
+        codegen_input_source_text,
         reported_input_object_hash: report.final_module_input_object_hash,
         reported_linker_payload_hash: report.final_module_linker_payload_hash,
     })
@@ -698,6 +741,7 @@ pub fn linked_wasi_module_artifact_for_engine(
 
 fn execute_embedded_codegen_payload(
     payload: &EmbeddedCodegenPayload,
+    request: &EmbeddedLinkedWasiModuleRequest,
 ) -> Result<EmbeddedCodegenPayloadExecutionReport, String> {
     let actual_sha256 = sha256_hex(payload.bytes);
     let actual_size_bytes = payload.bytes.len() as u64;
@@ -725,7 +769,7 @@ fn execute_embedded_codegen_payload(
         .exports()
         .map(|export| export.name().to_owned())
         .collect::<Vec<_>>();
-    let argv = codegen_payload_argv();
+    let argv = codegen_payload_argv(request);
     let mut store = Store::new(
         &engine,
         PayloadWasiState {
@@ -932,6 +976,9 @@ fn execute_embedded_codegen_payload(
         backend: payload.backend.to_owned(),
         backend_family: payload.backend_family.to_owned(),
         target_triple: payload.target_triple.to_owned(),
+        source_path: request.source_path.clone(),
+        source_sha256: request.source_sha256.clone(),
+        codegen_input_source_origin: "vfs_compile_unit_source".to_owned(),
         execution_source: "embedded_registry".to_owned(),
         external: false,
         opened_external_file: false,
@@ -1325,6 +1372,7 @@ fn run_linked_wasi_runtime_proof(bytes: &[u8], module_hash: &str) -> serde_json:
 
 fn execute_embedded_payload(
     payload: &EmbeddedCompilerPayload,
+    input_json: Option<&str>,
 ) -> Result<EmbeddedCompilerPayloadLoadReport, String> {
     let actual_sha256 = sha256_hex(payload.bytes);
     let actual_size_bytes = payload.bytes.len() as u64;
@@ -1407,13 +1455,29 @@ fn execute_embedded_payload(
     trace_payload_loader("descriptor read");
     let valid_input_ptr = call_u32_export(&instance, &mut store, MIR_VALID_INPUT_PTR_SYMBOL)?;
     let valid_input_len = call_u32_export(&instance, &mut store, MIR_VALID_INPUT_LEN_SYMBOL)?;
-    let valid_input_json = read_guest_string(
+    let static_valid_input_json = read_guest_string(
         &memory,
         &store,
         valid_input_ptr,
         valid_input_len,
         "valid input",
     )?;
+    let valid_input_json = if let Some(input_json) = input_json {
+        let input_bytes = input_json.as_bytes();
+        if input_bytes.len() > valid_input_len as usize {
+            return Err(format!(
+                "embedded MIR payload dynamic input is {} bytes but the ABI input area is only {} bytes",
+                input_bytes.len(),
+                valid_input_len
+            ));
+        }
+        memory
+            .write(&mut store, valid_input_ptr as usize, input_bytes)
+            .map_err(|error| format!("failed to write dynamic MIR payload input: {error}"))?;
+        input_json.to_owned()
+    } else {
+        static_valid_input_json
+    };
     trace_payload_loader("valid input read");
     let result_area_ptr = call_u32_export(&instance, &mut store, MIR_RESULT_AREA_PTR_SYMBOL)?;
     let output_ptr_slot = result_area_ptr;
@@ -1429,18 +1493,27 @@ fn execute_embedded_payload(
     let execute = instance
         .get_typed_func::<(i32, i32, i32, i32, i32, i32), i32>(&store, MIR_EXECUTE_SYMBOL)
         .map_err(|error| format!("missing/corrupt execute export: {error}"))?;
-    let execute_outcome = call_execute_with_resumable_fuel(
+    let execute_outcome = match call_execute_with_resumable_fuel(
         &execute,
         &mut store,
         (
             valid_input_ptr as i32,
-            valid_input_len as i32,
+            valid_input_json.len() as i32,
             output_ptr_slot as i32,
             output_len_slot as i32,
             error_ptr_slot as i32,
             error_len_slot as i32,
         ),
-    )?;
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let stdout = String::from_utf8_lossy(&store.data().stdout);
+            let stderr = String::from_utf8_lossy(&store.data().stderr);
+            return Err(format!(
+                "{error}; payload_stdout={stdout:?}; payload_stderr={stderr:?}"
+            ));
+        }
+    };
     let execute_status = execute_outcome.status;
     trace_payload_loader("execute returned");
 
@@ -2970,27 +3043,91 @@ fn object_contains_any_reported_codegened_symbol(
     })
 }
 
-fn codegen_payload_argv() -> Vec<String> {
-    vec![
+fn mir_payload_input_json(request: &EmbeddedMirPayloadExecutionRequest) -> String {
+    serde_json::json!({
+        "abi": "rouwdi.compiler-payload.mir-handoff",
+        "version": 1,
+        "compile_unit_id": request.compile_unit_id,
+        "contract_hash": request.contract_sha256,
+        "source_snapshot_hash": request.source_sha256,
+        "source_tree_hash": request.source_snapshot_sha256,
+        "package": request.package,
+        "target": request.target,
+        "target_kind": request.target_kind,
+        "triple": request.target_triple,
+        "profile": request.profile,
+        "source_path": request.source_path,
+        "source_text": request.source_text,
+        "source_sha256": request.source_sha256,
+        "sysroot_path": "/workspace/third_party/rust/build/x86_64-pc-windows-msvc/stage1",
+        "target_rustlib_path": "/workspace/third_party/rust/build/x86_64-pc-windows-msvc/stage1/lib/rustlib/wasm32-wasip1/lib",
+        "upstream_context_handle": {
+            "abi": "UpstreamContextHandleV1",
+            "strategy": "payload_owned_context",
+            "owner": "payload",
+            "scope": "payload-local",
+            "handle": 0,
+            "opaque": true,
+            "serializable": false,
+            "may_cross_wasm_instance_boundaries": false,
+            "raw_pointer": false
+        }
+    })
+    .to_string()
+}
+
+fn codegen_payload_argv(request: &EmbeddedLinkedWasiModuleRequest) -> Vec<String> {
+    let mut argv = vec![
         "rouwdi-rustc-codegen-llvm-probe.wasm".to_owned(),
         "--json".to_owned(),
         "--compile-unit-id".to_owned(),
-        "app:rust:app:wasm32-wasip1".to_owned(),
+        request.compile_unit_id.clone(),
+        "--package".to_owned(),
+        request.package.clone(),
+        "--target".to_owned(),
+        request.target.clone(),
+        "--target-kind".to_owned(),
+        request.cargo_target_kind.clone(),
+        "--profile".to_owned(),
+        request.profile.clone(),
+        "--source-path".to_owned(),
+        request.source_path.clone(),
+        "--source-sha256".to_owned(),
+        request.source_sha256.clone(),
+        "--source-hex".to_owned(),
+        hex_encode(&request.source_bytes),
         "--crate-identity".to_owned(),
-        "rouwdi_payload".to_owned(),
+        request.crate_name.clone(),
         "--target-triple".to_owned(),
-        "wasm32-wasip1".to_owned(),
+        request.target_triple.clone(),
         "--target-spec".to_owned(),
         "rustc_target::spec::wasm32_wasip1".to_owned(),
         "--mir-body-hash".to_owned(),
-        "a5e137ef6793c0b8".to_owned(),
+        request.mir_body_hash.clone(),
         "--mono-item-count".to_owned(),
-        "1".to_owned(),
+        request.mono_items.len().max(1).to_string(),
         "--mono-item-graph-hash".to_owned(),
-        "bec5817d61819666".to_owned(),
-        "--mono-item".to_owned(),
-        "fn:rouwdi_payload::main".to_owned(),
-    ]
+        request.mono_item_graph_hash.clone(),
+    ];
+    if request.mono_items.is_empty() {
+        argv.push("--mono-item".to_owned());
+        argv.push(format!("fn:{}::main", request.crate_name));
+    } else {
+        for item in &request.mono_items {
+            argv.push("--mono-item".to_owned());
+            argv.push(item.clone());
+        }
+    }
+    argv
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn to_string(error: impl ToString) -> String {
@@ -3106,5 +3243,111 @@ mod tests {
                     .as_deref()
                     .is_some_and(|hash| hash.len() == 64)
         );
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-mir-payload")]
+    fn embedded_mir_payload_accepts_dynamic_vfs_source_input() {
+        let source = "fn main() {}\n";
+        let source_sha256 = sha256_hex(source.as_bytes());
+        let request = EmbeddedMirPayloadExecutionRequest {
+            compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "Bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            source_text: source.to_owned(),
+            source_sha256: source_sha256.clone(),
+            source_snapshot_sha256: source_sha256,
+            contract_sha256: "0".repeat(64),
+            target_triple: "wasm32-wasip1".to_owned(),
+            profile: "release".to_owned(),
+        };
+        let input_json = mir_payload_input_json(&request);
+        let report = load_embedded_compiler_payload_with_input(
+            "rouwdi-mir-handoff-payload",
+            Some(input_json),
+        )
+        .expect("dynamic MIR payload input must execute");
+
+        assert!(report.output_bytes_read);
+        assert_eq!(
+            report.execution_state,
+            "embedded_payload_mono_items_collected"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-mir-payload")]
+    fn embedded_codegen_payload_links_dynamic_vfs_source_input() {
+        let source = "fn main() {}\n";
+        let source_sha256 = sha256_hex(source.as_bytes());
+        let mir_request = EmbeddedMirPayloadExecutionRequest {
+            compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            target_kind: "Bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            source_text: source.to_owned(),
+            source_sha256: source_sha256.clone(),
+            profile: "release".to_owned(),
+            target_triple: "wasm32-wasip1".to_owned(),
+            source_snapshot_sha256: source_sha256.clone(),
+            contract_sha256: "0".repeat(64),
+        };
+        let mir_input_json = mir_payload_input_json(&mir_request);
+        let mir_report = load_embedded_compiler_payload_with_input(
+            "rouwdi-mir-handoff-payload",
+            Some(mir_input_json),
+        )
+        .expect("dynamic MIR payload input must execute");
+        let mir_json = mir_report
+            .output_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .expect("dynamic MIR payload must emit JSON");
+        let mono_items = mir_json
+            .get("mono_items")
+            .and_then(serde_json::Value::as_array)
+            .expect("dynamic MIR payload must emit mono items")
+            .iter()
+            .filter_map(|item| item.get("symbol_name"))
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(
+            !mono_items.is_empty(),
+            "dynamic MIR payload must collect mono items"
+        );
+        let request = EmbeddedLinkedWasiModuleRequest {
+            compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "app".to_owned(),
+            cargo_target_kind: "Bin".to_owned(),
+            source_path: "src/main.rs".to_owned(),
+            source_bytes: source.as_bytes().to_vec(),
+            source_sha256,
+            profile: "release".to_owned(),
+            target_triple: "wasm32-wasip1".to_owned(),
+            crate_name: "rouwdi_payload".to_owned(),
+            mir_body_hash: mir_json
+                .get("mir_body_hash")
+                .and_then(serde_json::Value::as_str)
+                .expect("dynamic MIR payload must emit MIR body hash")
+                .to_owned(),
+            mono_item_graph_hash: mir_json
+                .get("mono_item_graph_hash")
+                .and_then(serde_json::Value::as_str)
+                .expect("dynamic MIR payload must emit mono item graph hash")
+                .to_owned(),
+            mono_items,
+        };
+        let report = load_codegen_backend_payload(&request).expect("codegen payload must execute");
+
+        let debug_report = || serde_json::to_string_pretty(&report).unwrap_or_default();
+        assert!(report.linker_handoff_created, "{}", debug_report());
+        assert!(report.runtime_proof_attempted, "{}", debug_report());
+        assert!(report.runtime_proof_passed, "{}", debug_report());
+        assert!(report.final_module_sha256.is_some(), "{}", debug_report());
     }
 }

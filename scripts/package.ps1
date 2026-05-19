@@ -188,6 +188,23 @@ function Invoke-CommandChecked {
     }
 }
 
+function Convert-CommandJsonObject {
+    param([object[]]$Lines)
+
+    $textLines = @($Lines | ForEach-Object { $_.ToString() })
+    $jsonStart = -1
+    for ($i = 0; $i -lt $textLines.Count; $i++) {
+        if ($textLines[$i].TrimStart().StartsWith("{")) {
+            $jsonStart = $i
+            break
+        }
+    }
+    if ($jsonStart -lt 0) {
+        throw "Command did not emit a JSON object"
+    }
+    return (($textLines[$jsonStart..($textLines.Count - 1)]) -join "`n") | ConvertFrom-Json
+}
+
 function To-JsonArray {
     param([object]$Value)
 
@@ -283,6 +300,141 @@ function Ensure-CodegenPayload {
         sha256 = $identity.sha256
         size_bytes = $identity.size_bytes
         generation_command = "powershell -ExecutionPolicy Bypass -File bootstrap/rustc-codegen-llvm-probe/run-wasm-target-check.ps1"
+    }
+}
+
+function Invoke-SourceFaithfulFixtureGate {
+    param(
+        [string]$Name,
+        [string]$FixtureRelativePath,
+        [string]$WasmPath,
+        [string]$ExpectedStdoutContains
+    )
+
+    $fixtureRoot = Join-Path $RepoRoot $FixtureRelativePath
+    $sourcePath = Join-Path $fixtureRoot "src\main.rs"
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Fixture $Name is missing source file: $sourcePath"
+    }
+    $sourceIdentity = Get-ArtifactIdentity -Path $sourcePath
+    $workspaceManifest = Join-Path $RepoRoot "Cargo.toml"
+
+    Push-Location $fixtureRoot
+    try {
+        Write-Host "running source-faithful fixture $Name through dist/rouwdi.wasm"
+        $output = & cargo run -q --manifest-path $workspaceManifest -p rouwdi -- run-wasm $WasmPath build rouwdi.toml 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($exitCode -ne 0) {
+        $outputText = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+        throw "Fixture $Name failed through dist/rouwdi.wasm with exit code ${exitCode}: $outputText"
+    }
+
+    $report = Convert-CommandJsonObject -Lines $output
+    if ([string]$report.status -ne "succeeded") {
+        throw "Fixture $Name build status was $($report.status), expected succeeded"
+    }
+    $runRoot = Join-Path $fixtureRoot ([string]$report.run_root)
+    $manifestPath = Join-Path $fixtureRoot ([string]$report.manifest_path)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Fixture $Name manifest is missing: $manifestPath"
+    }
+
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $artifacts = @($manifest.artifacts)
+    if ($artifacts.Count -le 0) {
+        throw "Fixture $Name emitted no artifacts"
+    }
+    $artifact = $artifacts | Where-Object { $_.target_triple -eq "wasm32-wasip1" } | Select-Object -First 1
+    if ($null -eq $artifact) {
+        throw "Fixture $Name did not emit a wasm32-wasip1 artifact"
+    }
+
+    foreach ($field in @("source_sha256", "codegen_input_sha256", "codegen_input_source_sha256", "codegen_input_source_bytes_sha256", "sha256", "final_artifact_sha256", "mir_hash", "mono_graph_hash", "object_hash", "linker_payload_sha256", "runtime_proof_hash", "artifact_kind", "path")) {
+        if ([string]::IsNullOrWhiteSpace([string]$artifact.$field)) {
+            throw "Fixture $Name artifact is missing required field $field"
+        }
+    }
+    if ([string]$artifact.source_path -ne "src/main.rs") {
+        throw "Fixture $Name artifact source_path was $($artifact.source_path), expected src/main.rs"
+    }
+    if ([string]$artifact.source_sha256 -ne $sourceIdentity.sha256) {
+        throw "Fixture $Name source hash mismatch: manifest $($artifact.source_sha256), actual $($sourceIdentity.sha256)"
+    }
+    if ([string]$artifact.codegen_input_sha256 -ne $sourceIdentity.sha256 `
+        -or [string]$artifact.codegen_input_source_sha256 -ne $sourceIdentity.sha256 `
+        -or [string]$artifact.codegen_input_source_bytes_sha256 -ne $sourceIdentity.sha256 `
+        -or [string]$artifact.mir_source_hash -ne $sourceIdentity.sha256 `
+        -or [string]$artifact.mono_source_hash -ne $sourceIdentity.sha256 `
+        -or [string]$artifact.codegen_source_hash -ne $sourceIdentity.sha256) {
+        throw "Fixture $Name source hash invariant failed across MIR/mono/codegen/artifact"
+    }
+    if ([string]$artifact.codegen_input_source_origin -ne "vfs_compile_unit_source") {
+        throw "Fixture $Name codegen input origin was $($artifact.codegen_input_source_origin)"
+    }
+    if ([string]$artifact.sha256 -ne [string]$artifact.final_artifact_sha256) {
+        throw "Fixture $Name final artifact hash alias does not match sha256"
+    }
+    if ([string]$artifact.runtime_proof_status -ne "Succeeded") {
+        throw "Fixture $Name runtime proof status was $($artifact.runtime_proof_status)"
+    }
+
+    $artifactPath = Join-Path $fixtureRoot ([string]$artifact.path)
+    if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+        throw "Fixture $Name artifact path is missing: $artifactPath"
+    }
+    $artifactIdentity = Get-ArtifactIdentity -Path $artifactPath
+    if ($artifactIdentity.sha256 -ne [string]$artifact.sha256 -or [int64]$artifact.byte_length -le 0) {
+        throw "Fixture $Name artifact identity does not match manifest"
+    }
+
+    $interfacePath = Join-Path $runRoot "proofs\interface-wasi.json"
+    $runtimePath = Join-Path $runRoot "proofs\runtime-wasi.json"
+    if (-not (Test-Path -LiteralPath $interfacePath -PathType Leaf)) {
+        throw "Fixture $Name interface proof is missing"
+    }
+    if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+        throw "Fixture $Name runtime proof is missing"
+    }
+    $interface = Get-Content -Raw -LiteralPath $interfacePath | ConvertFrom-Json
+    $runtime = Get-Content -Raw -LiteralPath $runtimePath | ConvertFrom-Json
+    if ([string]$interface.status -ne "Succeeded" -or $interface.artifact_built -ne $true) {
+        throw "Fixture $Name interface proof did not pass"
+    }
+    if ([string]$runtime.status -ne "Succeeded" -or $runtime.executed -ne $true -or [int]$runtime.actual_exit_code -ne 0) {
+        throw "Fixture $Name runtime proof did not pass with exit 0"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedStdoutContains) -and -not ([string]$runtime.stdout).Contains($ExpectedStdoutContains)) {
+        throw "Fixture $Name runtime stdout did not contain $ExpectedStdoutContains"
+    }
+
+    $monoPath = Join-Path $runRoot "proofs\monomorphization.json"
+    if (-not (Test-Path -LiteralPath $monoPath -PathType Leaf)) {
+        throw "Fixture $Name monomorphization proof is missing"
+    }
+    $monoProofs = @(Get-Content -Raw -LiteralPath $monoPath | ConvertFrom-Json)
+    if ($monoProofs.Count -le 0) {
+        throw "Fixture $Name monomorphization proof list is empty"
+    }
+    $mono = $monoProofs[0]
+    if ([string]$mono.source_hash -ne $sourceIdentity.sha256) {
+        throw "Fixture $Name mono source hash does not match actual source hash"
+    }
+    if ($Name -eq "function_call" -and [int64]$mono.mono_item_count -lt 2) {
+        throw "Fixture function_call must collect more than one mono item or a recorded upstream elision proof"
+    }
+
+    return [ordered]@{
+        name = $Name
+        fixture = $FixtureRelativePath
+        source_sha256 = $sourceIdentity.sha256
+        artifact_sha256 = [string]$artifact.sha256
+        artifact_path = [string]$artifact.path
+        artifact_size = [int64]$artifact.byte_length
+        runtime_stdout = [string]$runtime.stdout
+        mono_item_count = [int64]$mono.mono_item_count
     }
 }
 
@@ -636,12 +788,23 @@ try {
         throw "Canonical MIR payload execution claimed MIR body state without a MIR body identity"
     }
     Write-Host "executing embedded codegen payload through dist/rouwdi.wasm"
-    $codegenPayloadExecutionJsonLines = & cargo run -q -p rouwdi -- run-wasm $canonicalArtifact codegen-payloads
+    $diagnosticCodegenSource = "fixtures/no_deps_empty_main/src/main.rs"
+    $codegenPayloadExecutionJsonLines = & cargo run -q -p rouwdi -- run-wasm $canonicalArtifact codegen-payloads $diagnosticCodegenSource
     if ($LASTEXITCODE -ne 0) {
         throw "dist/rouwdi.wasm embedded codegen payload execution failed with exit code $LASTEXITCODE"
     }
     $codegenPayloadExecutionJson = $codegenPayloadExecutionJsonLines -join "`n"
     $codegenPayloadExecution = $codegenPayloadExecutionJson | ConvertFrom-Json
+    $diagnosticSourceIdentity = Get-ArtifactIdentity -Path (Join-Path $RepoRoot $diagnosticCodegenSource)
+    if ([string]$codegenPayloadExecution.source_path -ne $diagnosticCodegenSource) {
+        throw "Canonical codegen payload source path was $($codegenPayloadExecution.source_path), expected $diagnosticCodegenSource"
+    }
+    if ([string]$codegenPayloadExecution.source_sha256 -ne $diagnosticSourceIdentity.sha256 `
+        -or [string]$codegenPayloadExecution.output_json.codegen_input_source_sha256 -ne $diagnosticSourceIdentity.sha256 `
+        -or [string]$codegenPayloadExecution.output_json.codegen_input_source_bytes_sha256 -ne $diagnosticSourceIdentity.sha256 `
+        -or [string]$codegenPayloadExecution.output_json.codegen_input_source_origin -ne "vfs_compile_unit_source") {
+        throw "Canonical codegen payload did not bind its input to the diagnostic VFS source bytes"
+    }
     if ($codegenPayloadExecution.execution_source -ne "embedded_registry") {
         throw "Canonical codegen payload execution source must be embedded_registry; got $($codegenPayloadExecution.execution_source)"
     }
@@ -748,8 +911,8 @@ try {
             if ($codegenPayloadExecution.object_symbol_table_contains_codegened_symbol -ne $true) {
                 throw "Canonical mono-item object success requires a parsed object symbol/export matching a codegened mono item symbol"
             }
-            if ([string]$codegenPayloadExecution.object_codegen_source -ne "mono_item_graph") {
-                throw "Canonical mono-item object success must be sourced from the mono item graph"
+            if ([string]$codegenPayloadExecution.object_codegen_source -ne "vfs_compile_unit_source") {
+                throw "Canonical mono-item object success must be sourced from the VFS compile unit source"
             }
         } else {
             if ($codegenPayloadExecution.linker_handoff_created -eq $true) {
@@ -1013,6 +1176,13 @@ try {
         }
     }
 
+    $sourceFaithfulFixtures = @(
+        (Invoke-SourceFaithfulFixtureGate -Name "no_deps_empty_main" -FixtureRelativePath "fixtures/no_deps_empty_main" -WasmPath $canonicalArtifact -ExpectedStdoutContains ""),
+        (Invoke-SourceFaithfulFixtureGate -Name "function_call" -FixtureRelativePath "fixtures/function_call" -WasmPath $canonicalArtifact -ExpectedStdoutContains ""),
+        (Invoke-SourceFaithfulFixtureGate -Name "module_path" -FixtureRelativePath "fixtures/module_path" -WasmPath $canonicalArtifact -ExpectedStdoutContains ""),
+        (Invoke-SourceFaithfulFixtureGate -Name "stdout_hello" -FixtureRelativePath "fixtures/stdout_hello" -WasmPath $canonicalArtifact -ExpectedStdoutContains "rouwdi")
+    )
+
     $embeddedPayload = [ordered]@{
         name = "rouwdi-mir-handoff-payload"
         kind = "compiler_payload"
@@ -1205,6 +1375,11 @@ try {
         interface_proof = $interfaceProofRoot
         runtime_proof_attempted = [bool]$runtimeProofRoot.attempted
         runtime_proof = $runtimeProofRoot
+        source_faithful_fixture_suite = [ordered]@{
+            required = $true
+            passed = ($sourceFaithfulFixtures.Count -eq 4)
+            fixtures = @($sourceFaithfulFixtures)
+        }
         next_frontier = if ([bool]$runtimeProofRoot.passed) { "dependency_crate_graph" } else { $nextFrontier }
         artifact = $canonicalIdentity
         source_build_artifact = $sourceIdentity

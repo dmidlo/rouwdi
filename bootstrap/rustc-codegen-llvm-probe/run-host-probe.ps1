@@ -8,6 +8,8 @@ $targetDir = Join-Path $repo ".rouwdi\codegen-llvm-probe\host-target"
 $reportDir = Join-Path $repo ".rouwdi\codegen-llvm-probe"
 $reportPath = Join-Path $reportDir "host-probe-report.json"
 $logPath = Join-Path $reportDir "host-probe.log"
+$sourceRelativePath = "fixtures/no_deps_empty_main/src/main.rs"
+$sourcePath = Join-Path $repo $sourceRelativePath
 $llvmConfig = Join-Path $repo "third_party\rust\build\x86_64-pc-windows-msvc\ci-llvm\bin\llvm-config.exe"
 $wrapperCandidates = @(
     (Join-Path $repo "third_party\rust\build\x86_64-pc-windows-msvc\stage1-rustc\x86_64-pc-windows-msvc\release\build\rustc_llvm-0d4f61ce596f94b4\out"),
@@ -107,6 +109,9 @@ if (!(Test-Path $stage1Rustc)) {
 if (!(Test-Path $llvmConfig)) {
     throw "llvm-config not found at $llvmConfig; run python x.py check compiler/rustc_codegen_llvm --stage 1 -v first"
 }
+if (!(Test-Path $sourcePath)) {
+    throw "source fixture not found at $sourcePath"
+}
 New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
 $wrapperDir = $wrapperCandidates | Where-Object { Test-Path (Join-Path $_ "llvm-wrapper.lib") } | Select-Object -First 1
 if (!$wrapperDir) {
@@ -145,9 +150,20 @@ Write-Host "LLVM libraries from llvm-config: $($llvmLibNames.Count)"
 Write-Host "MSVC system libraries from llvm-config: $($llvmSystemLibs -join ' ')"
 $env:RUSTFLAGS = (@("-L native=$wrapperDir", "-L native=$llvmLibDir") + ($linkArgs | ForEach-Object { "-C link-arg=$_" })) -join " "
 
+$sourceBytes = [System.IO.File]::ReadAllBytes($sourcePath)
+$sourceSha256 = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceHex = -join ($sourceBytes | ForEach-Object { $_.ToString("x2") })
+
 $probeArgs = @(
     "--json",
     "--compile-unit-id", "app:rust:app:wasm32-wasip1",
+    "--package", "app",
+    "--target", "wasi",
+    "--target-kind", "Bin",
+    "--profile", "release",
+    "--source-path", $sourceRelativePath,
+    "--source-sha256", $sourceSha256,
+    "--source-hex", $sourceHex,
     "--crate-identity", "rouwdi_payload",
     "--target-triple", "wasm32-wasip1",
     "--target-spec", "rustc_target::spec::wasm32_wasip1",

@@ -4,7 +4,7 @@ host_triple = "x86_64-pc-windows-msvc"
 status = "ready_bridge_mono_items_collected"
 milestone_state = "bridge_wasm_mir_payload_module_emitted"
 route_decision = "bridge_wasm_mir_payload_module_emitted"
-exact_blocker = "The direct pack builder consumed this manifest and built the listed rustc-private closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route. The real rouwdi-mir-adapter-probe bridge emitted `.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm` (sha256 b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54, 88495302 bytes) with ABI v1 exports. The embedded-registry loader instantiated that module, called ABI v1 exports, passed a valid MIR handoff input contract, created real SourceMap, ParseSess, parser, AST, rustc_interface::Config, TyCtxt, and HIR state, invoked TyCtxt::optimized_mir, emitted MIR body identity/hash a5e137ef6793c0b8, and recorded rustc_middle::ty::TyCtxt::collect_and_partition_mono_items output. It does not fabricate HIR, TyCtxt, Providers, Body<'tcx>, MIR, or mono items."
+exact_blocker = "The direct pack builder consumed this manifest and built the listed rustc-private closure for wasm32-wasip1 without invoking the stage2 wasm-host LLVM route. The real rouwdi-mir-adapter-probe bridge emitted `.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm` (sha256 274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9, 88623078 bytes) with ABI v1 exports. The embedded-registry loader instantiated that module, called ABI v1 exports, passed a valid MIR handoff input contract, created real SourceMap, ParseSess, parser, AST, rustc_interface::Config, TyCtxt, and HIR state, invoked TyCtxt::optimized_mir, emitted MIR body identity/hash a5e137ef6793c0b8, and recorded rustc_middle::ty::TyCtxt::collect_and_partition_mono_items output. It does not fabricate HIR, TyCtxt, Providers, Body<'tcx>, MIR, or mono items."
 next_command = "Advance from the MIR body proof to the upstream rustc_middle::ty::TyCtxt::collect_and_partition_mono_items query without fabricating mono items."
 
 [upstream_context_handle_v1]
@@ -25,7 +25,7 @@ raw_pointers_allowed = false
 
 [wasm_runtime_execution]
 tool_command = "cargo run -p rouwdi-rustc-upstream --bin mir-payload-loader -- --json"
-artifact_sha256 = "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
+artifact_sha256 = "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9"
 module_instantiated = true
 abi_exports_called = true
 descriptor_bytes_read = true
@@ -728,7 +728,7 @@ hash_list = [
   "dbfbab75ecb37363dace86ed95617e20e26d7d29e42a3592e9c62e8b5e69702d",
   "0451cdd955ce0cab301c37c9c121581f5e29fd273a31d01390a6a0c24aae615d",
   "470e5387d9bc9291140728b4c47f1052c7241320384cd938e9a8e7d07ec32c56",
-  "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54",
+  "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9",
 ]
 target_triple = "wasm32-wasip1"
 all_required_roots_target_loadable = true
@@ -888,8 +888,8 @@ loadable_by_rouwdi_wasm = true
 role = "direct_rustc_private_mir_adapter_wasm"
 artifact_format = "wasm_module"
 path = ".rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
-sha256 = "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
-size_bytes = 88495302
+sha256 = "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9"
+size_bytes = 88623078
 target_triple = "wasm32-wasip1"
 loadable_by_rouwdi_wasm = true
 

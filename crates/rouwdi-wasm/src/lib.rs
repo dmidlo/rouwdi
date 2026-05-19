@@ -38,13 +38,13 @@ pub extern "C" fn rouwdi_mir_payload_embedded_hash_verified() -> u32 {
 }
 
 pub fn build_with_storage(storage: &mut dyn Storage, contract_path: &str) -> i32 {
-    let Some(execution) = payloads::mir_payload_execution_for_engine() else {
-        return 1;
-    };
-    let mut engine = RouwdiEngine::default().with_embedded_mir_payload_execution(execution);
-    if let Some(linked_module) = payloads::linked_wasi_module_artifact_for_engine() {
-        engine = engine.with_embedded_linked_wasi_module(linked_module);
-    }
+    let engine = RouwdiEngine::default()
+        .with_embedded_mir_payload_execution_provider(
+            payloads::mir_payload_execution_for_engine_request,
+        )
+        .with_embedded_linked_wasi_module_provider(
+            payloads::linked_wasi_module_artifact_for_engine,
+        );
     match engine.build(
         storage,
         BuildRequest {
@@ -68,14 +68,13 @@ pub fn cli_main() -> i32 {
             let contract_path = args.next().unwrap_or_else(|| "rouwdi.toml".to_owned());
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let mut storage = HostStorage::new(cwd);
-            let Some(execution) = payloads::mir_payload_execution_for_engine() else {
-                eprintln!("embedded MIR payload execution failed");
-                return 1;
-            };
-            let mut engine = RouwdiEngine::default().with_embedded_mir_payload_execution(execution);
-            if let Some(linked_module) = payloads::linked_wasi_module_artifact_for_engine() {
-                engine = engine.with_embedded_linked_wasi_module(linked_module);
-            }
+            let engine = RouwdiEngine::default()
+                .with_embedded_mir_payload_execution_provider(
+                    payloads::mir_payload_execution_for_engine_request,
+                )
+                .with_embedded_linked_wasi_module_provider(
+                    payloads::linked_wasi_module_artifact_for_engine,
+                );
             match engine.build(&mut storage, BuildRequest { contract_path }) {
                 Ok(report) => {
                     println!(
@@ -142,41 +141,77 @@ pub fn cli_main() -> i32 {
                 1
             }
         },
-        "codegen-payloads" => match payloads::load_codegen_backend_payload() {
-            Ok(report) => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).unwrap_or_default()
-                );
-                if report.hash_verified
-                    && report.size_verified
-                    && report.module_instantiated
-                    && report.start_called
-                    && report.execution_source == "embedded_registry"
-                    && !report.external
-                    && report.backend_constructed
-                    && report.llvm_module_created
-                    && report.target_machine_created
-                    && report.llvm_ir_emitted
-                    && report.object_emission_attempted
-                    && (!report.linker_handoff_created
-                        || (report.wasm_object_bytes_emitted
-                            && report.final_module_sha256.is_some()
-                            && report.final_module_size_bytes.is_some()
-                            && report.final_module_artifact_path.is_some()
-                            && report.runtime_proof_attempted
-                            && report.runtime_proof_passed))
-                {
-                    0
-                } else {
+        "codegen-payloads" => {
+            let source_path = args.next().unwrap_or_else(|| "src/main.rs".to_owned());
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let source_bytes = match std::fs::read(cwd.join(&source_path)) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!("failed to read codegen payload source {source_path}: {err}");
+                    return 1;
+                }
+            };
+            let source_sha256 = {
+                use sha2::{Digest, Sha256};
+                let digest = Sha256::digest(&source_bytes);
+                let mut out = String::with_capacity(digest.len() * 2);
+                for byte in digest {
+                    use std::fmt::Write as _;
+                    let _ = write!(&mut out, "{byte:02x}");
+                }
+                out
+            };
+            let request = rouwdi_engine::EmbeddedLinkedWasiModuleRequest {
+                compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+                package: "app".to_owned(),
+                target: "wasi".to_owned(),
+                cargo_target_kind: "Bin".to_owned(),
+                source_path,
+                source_bytes,
+                source_sha256,
+                profile: "release".to_owned(),
+                target_triple: "wasm32-wasip1".to_owned(),
+                crate_name: "rouwdi_payload".to_owned(),
+                mir_body_hash: "diagnostic-codegen-payload".to_owned(),
+                mono_item_graph_hash: "diagnostic-codegen-payload".to_owned(),
+                mono_items: vec!["fn:rouwdi_payload::main".to_owned()],
+            };
+            match payloads::load_codegen_backend_payload(&request) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).unwrap_or_default()
+                    );
+                    if report.hash_verified
+                        && report.size_verified
+                        && report.module_instantiated
+                        && report.start_called
+                        && report.execution_source == "embedded_registry"
+                        && !report.external
+                        && report.backend_constructed
+                        && report.llvm_module_created
+                        && report.target_machine_created
+                        && report.llvm_ir_emitted
+                        && report.object_emission_attempted
+                        && (!report.linker_handoff_created
+                            || (report.wasm_object_bytes_emitted
+                                && report.final_module_sha256.is_some()
+                                && report.final_module_size_bytes.is_some()
+                                && report.final_module_artifact_path.is_some()
+                                && report.runtime_proof_attempted
+                                && report.runtime_proof_passed))
+                    {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Err(err) => {
+                    println!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
                     1
                 }
             }
-            Err(err) => {
-                println!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
-                1
-            }
-        },
+        }
         _ => {
             eprintln!("unknown rouwdi command: {command}");
             64
@@ -266,13 +301,13 @@ version = "0.1.0"
             .unwrap();
         storage.write("src/main.rs", b"fn main() {}\n").unwrap();
 
-        let execution =
-            payloads::mir_payload_execution_for_engine().expect("embedded MIR payload executes");
-        let linked_module = payloads::linked_wasi_module_artifact_for_engine()
-            .expect("embedded codegen payload exposes a linked WASI module artifact");
         let report = RouwdiEngine::default()
-            .with_embedded_mir_payload_execution(execution)
-            .with_embedded_linked_wasi_module(linked_module)
+            .with_embedded_mir_payload_execution_provider(
+                payloads::mir_payload_execution_for_engine_request,
+            )
+            .with_embedded_linked_wasi_module_provider(
+                payloads::linked_wasi_module_artifact_for_engine,
+            )
             .build(
                 &mut storage,
                 BuildRequest {

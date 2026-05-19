@@ -53,7 +53,7 @@ pub const MIR_HANDOFF_BLOCKER_KIND_HIR_TYCX: &str = MIR_HANDOFF_BLOCKER_KIND_MIR
 pub const MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_HIR_TYCX: &str =
     MIR_HANDOFF_NEXT_ARTIFACT_FORMAT_MIR_LANG_ITEMS;
 pub const MIR_HANDOFF_BRIDGE_WASM_SHA256: &str =
-    "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54";
+    "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9";
 pub const MIR_HANDOFF_BRIDGE_WASM_SIZE_BYTES: u64 = 88_495_302;
 pub const MIR_HANDOFF_CONTEXT_STATE_SOURCE_MAP_CREATED: &str =
     MIR_HANDOFF_CONTEXT_STATE_CRATE_AST_CREATED;
@@ -2795,7 +2795,7 @@ pub fn rustc_codegen_llvm_backend_probe() -> RustcCodegenLlvmBackendProbe {
         object_derived_from:
             "rustc_codegen_llvm::base::compile_codegen_unit + LLVMTargetMachineEmitToMemoryBuffer"
                 .to_owned(),
-        object_codegen_source: "mono_item_graph".to_owned(),
+        object_codegen_source: "vfs_compile_unit_source".to_owned(),
         object_artifact_kind: Some("wasm_object".to_owned()),
         object_artifact_sha256: Some(
             "6ff56e5fcf2cddc10ef8f2dca4905386365f8217703bbbf4eff9627e61fdbec4"
@@ -3933,21 +3933,21 @@ mod tests {
         assert!(artifact.path.ends_with("rouwdi_mir_adapter_probe.wasm"));
         assert_eq!(
             artifact.sha256,
-            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
+            "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9"
         );
-        assert_eq!(artifact.size_bytes, 88495302);
+        assert_eq!(artifact.size_bytes, 88623078);
         assert!(artifact.loadable_by_rouwdi_wasm);
         let metadata_artifact = carrier.metadata_artifact.as_ref().unwrap();
         assert_eq!(metadata_artifact.artifact_kind, "rustc_metadata");
         assert_eq!(metadata_artifact.artifact_format, "rmeta");
         assert!(metadata_artifact
             .path
-            .ends_with("librouwdi_mir_adapter_probe-444a985972f2f985.rmeta"));
+            .ends_with("librouwdi_mir_adapter_probe-b2e61987a41c697d.rmeta"));
         assert_eq!(
             metadata_artifact.sha256,
-            "3df87cffb6d91e9b84993ebb85298c3467491ccf28523861338afa4178ecf952"
+            "29d717d1fbb0164c97819d725e7e715f87bee99139d0fb107d938d5d8d41172b"
         );
-        assert_eq!(metadata_artifact.size_bytes, 213323);
+        assert_eq!(metadata_artifact.size_bytes, 348042);
         assert!(!metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(carrier.load_blocker_kind.as_deref(), Some("none"));
         assert_eq!(
@@ -4000,8 +4000,8 @@ mod tests {
             manifest.exported_payload.path,
             manifest.metadata_artifact.path
         );
-        assert_eq!(manifest.exported_payload.size_bytes, 88495302);
-        assert_eq!(manifest.metadata_artifact.size_bytes, 213323);
+        assert_eq!(manifest.exported_payload.size_bytes, 88623078);
+        assert_eq!(manifest.metadata_artifact.size_bytes, 348042);
         assert!(manifest.exported_payload.loadable_by_rouwdi_wasm);
         assert!(!manifest.metadata_artifact.loadable_by_rouwdi_wasm);
         assert_eq!(manifest.loader_blocker_kind.as_deref(), Some("none"));
@@ -4233,7 +4233,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .sha256,
-            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
+            "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9"
         );
         assert!(direct_bridge
             .exports
@@ -4519,7 +4519,7 @@ mod tests {
         assert_eq!(output.artifact_format, "wasm_module");
         assert_eq!(
             output.sha256,
-            "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54"
+            "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9"
         );
         assert!(output.loadable_by_rouwdi_wasm);
 
@@ -4708,7 +4708,7 @@ mod tests {
         assert_eq!(probe.object_symbol_count, Some(1));
         assert_eq!(probe.object_is_empty, Some(false));
         assert_eq!(probe.object_has_code_bearing_content, Some(true));
-        assert_eq!(probe.object_codegen_source, "mono_item_graph");
+        assert_eq!(probe.object_codegen_source, "vfs_compile_unit_source");
         assert_eq!(probe.object_artifact_kind.as_deref(), Some("wasm_object"));
         assert_eq!(
             probe.object_artifact_sha256.as_deref(),

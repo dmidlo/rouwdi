@@ -12,8 +12,8 @@ pub(super) const MIR_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasm_module";
 pub(super) const MIR_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
 pub(super) const MIR_PAYLOAD_STATE: &str = "embedded_payload";
 pub(super) const MIR_PAYLOAD_SHA256: &str =
-    "b9ae49950e1f1f12768211d4b5f8fa9f6a8ebb52cacafe2bb701688db59f7c54";
-pub(super) const MIR_PAYLOAD_SIZE_BYTES: u64 = 88495302;
+    "274c096ee655396249883e0fd4080eae0f9fa1300259e556473fc1f6cd68abf9";
+pub(super) const MIR_PAYLOAD_SIZE_BYTES: u64 = 88623078;
 pub(super) const MIR_PAYLOAD_BYTES: &[u8] = include_bytes!(
     "../../../../.rouwdi/direct-rustc-private-pack/target/wasm32-wasip1/release/rouwdi_mir_adapter_probe.wasm"
 );
@@ -31,8 +31,8 @@ pub(super) const CODEGEN_PAYLOAD_LOAD_STRATEGY: &str = "instantiate_wasi_cli_mod
 pub(super) const CODEGEN_PAYLOAD_EMBEDDING_METHOD: &str = "raw_include_bytes";
 pub(super) const CODEGEN_PAYLOAD_STATE: &str = "embedded_payload";
 pub(super) const CODEGEN_PAYLOAD_SHA256: &str =
-    "af633c955f340166cbb3dae414a665e773036d4c8765258e6d5d55a0f5dff91a";
-pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 144100142;
+    "b95c2ebb89fce004315207534a5aad4553d20e32fc979b9d85b561333cac7a99";
+pub(super) const CODEGEN_PAYLOAD_SIZE_BYTES: u64 = 144125994;
 pub(super) const CODEGEN_PAYLOAD_BYTES: &[u8] = include_bytes!(
     "../../../../.rouwdi/codegen-llvm-probe/wasm-target/wasm32-wasip1/release/deps/rouwdi_rustc_codegen_llvm_probe-c3347eb5e6bcbfc2.wasm"
 );

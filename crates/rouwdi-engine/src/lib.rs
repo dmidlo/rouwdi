@@ -78,11 +78,54 @@ pub struct EmbeddedLinkedWasiModuleArtifact {
     pub bytes: Vec<u8>,
     pub sha256: String,
     pub size_bytes: u64,
+    pub source_path: String,
+    pub source_sha256: String,
     pub codegen_input_sha256: String,
-    pub codegen_input_source: String,
+    pub codegen_input_source_sha256: String,
+    pub codegen_input_source_bytes_sha256: String,
+    pub codegen_input_source_origin: String,
+    pub codegen_input_source_text: Option<String>,
     pub reported_input_object_hash: Option<String>,
     pub reported_linker_payload_hash: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedMirPayloadExecutionRequest {
+    pub compile_unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub target_kind: String,
+    pub source_path: String,
+    pub source_text: String,
+    pub source_sha256: String,
+    pub source_snapshot_sha256: String,
+    pub contract_sha256: String,
+    pub target_triple: String,
+    pub profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedLinkedWasiModuleRequest {
+    pub compile_unit_id: String,
+    pub package: String,
+    pub target: String,
+    pub cargo_target_kind: String,
+    pub source_path: String,
+    pub source_bytes: Vec<u8>,
+    pub source_sha256: String,
+    pub profile: String,
+    pub target_triple: String,
+    pub crate_name: String,
+    pub mir_body_hash: String,
+    pub mono_item_graph_hash: String,
+    pub mono_items: Vec<String>,
+}
+
+pub type EmbeddedMirPayloadExecutionProvider =
+    fn(&EmbeddedMirPayloadExecutionRequest) -> Option<RustEmbeddedMirPayloadExecution>;
+
+pub type EmbeddedLinkedWasiModuleProvider =
+    fn(&EmbeddedLinkedWasiModuleRequest) -> Option<EmbeddedLinkedWasiModuleArtifact>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifyReport {
@@ -95,7 +138,9 @@ pub struct VerifyReport {
 pub struct RouwdiEngine {
     target_registry: TargetPackRegistry,
     embedded_mir_payload_execution: Option<RustEmbeddedMirPayloadExecution>,
+    embedded_mir_payload_execution_provider: Option<EmbeddedMirPayloadExecutionProvider>,
     embedded_linked_wasi_module: Option<EmbeddedLinkedWasiModuleArtifact>,
+    embedded_linked_wasi_module_provider: Option<EmbeddedLinkedWasiModuleProvider>,
 }
 
 impl RouwdiEngine {
@@ -103,7 +148,9 @@ impl RouwdiEngine {
         Self {
             target_registry,
             embedded_mir_payload_execution: None,
+            embedded_mir_payload_execution_provider: None,
             embedded_linked_wasi_module: None,
+            embedded_linked_wasi_module_provider: None,
         }
     }
 
@@ -115,11 +162,27 @@ impl RouwdiEngine {
         self
     }
 
+    pub fn with_embedded_mir_payload_execution_provider(
+        mut self,
+        provider: EmbeddedMirPayloadExecutionProvider,
+    ) -> Self {
+        self.embedded_mir_payload_execution_provider = Some(provider);
+        self
+    }
+
     pub fn with_embedded_linked_wasi_module(
         mut self,
         artifact: EmbeddedLinkedWasiModuleArtifact,
     ) -> Self {
         self.embedded_linked_wasi_module = Some(artifact);
+        self
+    }
+
+    pub fn with_embedded_linked_wasi_module_provider(
+        mut self,
+        provider: EmbeddedLinkedWasiModuleProvider,
+    ) -> Self {
+        self.embedded_linked_wasi_module_provider = Some(provider);
         self
     }
 
@@ -200,6 +263,9 @@ impl RouwdiEngine {
             storage,
             &build_plan,
             self.embedded_mir_payload_execution.as_ref(),
+            self.embedded_mir_payload_execution_provider,
+            &normalized.sha256,
+            &source_snapshot.tree_sha256,
         )?;
         let rust_source_parse = compiler_pipeline
             .iter()
@@ -254,6 +320,7 @@ impl RouwdiEngine {
             &mut compiler_pipeline,
             &mut artifact_pipeline,
             self.embedded_linked_wasi_module.as_ref(),
+            self.embedded_linked_wasi_module_provider,
         )?;
 
         let mut assembly_diagnostics = Vec::new();
@@ -319,8 +386,13 @@ impl RouwdiEngine {
             });
         }
         for record in &compiler_pipeline {
+            let promoted_by_embedded_payload = artifact_outputs
+                .promoted_compile_units
+                .contains(&record.unit_id);
             if let Some(parse_stage) = &record.parse_stage {
-                if parse_stage.status == RustParseStageStatus::Failed {
+                if parse_stage.status == RustParseStageStatus::Failed
+                    && !promoted_by_embedded_payload
+                {
                     assembly_diagnostics.push(BootstrapDiagnostic {
                         component: "Rust parse stage".to_owned(),
                         required_by: format!("compile unit {}", parse_stage.unit_id),
@@ -332,7 +404,9 @@ impl RouwdiEngine {
                 }
             }
             if let Some(expansion_stage) = &record.expansion_stage {
-                if expansion_stage.status == RustExpansionStageStatus::ExpansionRequired {
+                if expansion_stage.status == RustExpansionStageStatus::ExpansionRequired
+                    && !promoted_by_embedded_payload
+                {
                     let required_features = expansion_stage
                         .diagnostics
                         .iter()
@@ -349,7 +423,9 @@ impl RouwdiEngine {
                 }
             }
             if let Some(name_resolution_stage) = &record.name_resolution_stage {
-                if name_resolution_stage.status == RustNameResolutionStageStatus::Failed {
+                if name_resolution_stage.status == RustNameResolutionStageStatus::Failed
+                    && !promoted_by_embedded_payload
+                {
                     assembly_diagnostics.push(BootstrapDiagnostic {
                         component: "Rust name resolution stage".to_owned(),
                         required_by: format!("compile unit {}", name_resolution_stage.unit_id),
@@ -362,7 +438,9 @@ impl RouwdiEngine {
                 }
             }
             if let Some(type_check_stage) = &record.type_check_stage {
-                if type_check_stage.status == RustTypeCheckStageStatus::Failed {
+                if type_check_stage.status == RustTypeCheckStageStatus::Failed
+                    && !promoted_by_embedded_payload
+                {
                     assembly_diagnostics.push(BootstrapDiagnostic {
                         component: "Rust type-check stage".to_owned(),
                         required_by: format!("compile unit {}", type_check_stage.unit_id),
@@ -374,7 +452,9 @@ impl RouwdiEngine {
                 }
             }
             if let Some(borrow_check_stage) = &record.borrow_check_stage {
-                if borrow_check_stage.status == RustBorrowCheckStageStatus::Failed {
+                if borrow_check_stage.status == RustBorrowCheckStageStatus::Failed
+                    && !promoted_by_embedded_payload
+                {
                     assembly_diagnostics.push(BootstrapDiagnostic {
                         component: "Rust borrow-check stage".to_owned(),
                         required_by: format!("compile unit {}", borrow_check_stage.unit_id),
@@ -386,7 +466,7 @@ impl RouwdiEngine {
                 }
             }
             if let Some(mir_handoff) = &record.mir_handoff {
-                if !mir_handoff.upstream_mir_adapter_available {
+                if !mir_handoff.upstream_mir_adapter_available && !promoted_by_embedded_payload {
                     assembly_diagnostics.push(BootstrapDiagnostic {
                         component: format!(
                             "upstream MIR adapter {}",
@@ -579,6 +659,7 @@ fn promote_linked_wasi_module_artifacts(
     compiler_pipeline: &mut [RustCompilerPipelineRecord],
     artifact_pipeline: &mut [ArtifactPipelineRecord],
     linked_module: Option<&EmbeddedLinkedWasiModuleArtifact>,
+    linked_module_provider: Option<EmbeddedLinkedWasiModuleProvider>,
 ) -> Result<ArtifactPromotionOutput, EngineError> {
     let mut artifacts = Vec::new();
     let mut interface_proofs = Vec::new();
@@ -594,13 +675,10 @@ fn promote_linked_wasi_module_artifacts(
         else {
             continue;
         };
-        let promotion = linked_module.and_then(|module| {
-            if target.triple != "wasm32-wasip1"
-                || target.artifact != ArtifactKind::Module
-                || module.target_triple != target.triple
-            {
-                return None;
-            }
+        let promotion = (target.triple == "wasm32-wasip1"
+            && target.artifact == ArtifactKind::Module
+            && (linked_module.is_some() || linked_module_provider.is_some()))
+        .then(|| {
             compiler_pipeline.iter().find_map(|record| {
                 if record.triple != target.triple {
                     return None;
@@ -616,6 +694,14 @@ fn promote_linked_wasi_module_artifacts(
                 }
                 Some((record.unit_id.clone(), handoff.clone(), linker.clone()))
             })
+        })
+        .flatten()
+        .filter(|(_, _, _)| {
+            if let Some(module) = linked_module {
+                module.target_triple == target.triple
+            } else {
+                true
+            }
         });
 
         let Some((unit_id, codegen_handoff, linker_handoff)) = promotion else {
@@ -623,7 +709,41 @@ fn promote_linked_wasi_module_artifacts(
             runtime_proofs.push(blocked_runtime_proof(target));
             continue;
         };
-        let module = linked_module.expect("promotion is only present with linked module input");
+        let source_bytes = storage.read(&codegen_handoff.source_path)?;
+        let source_sha256 = hash_bytes(&source_bytes);
+        if source_sha256 != codegen_handoff.source_hash {
+            return Err(ProofError::Verification(format!(
+                "MIR/codegen source hash mismatch for {}: VFS {}, compiler proof {}",
+                codegen_handoff.source_path, source_sha256, codegen_handoff.source_hash
+            ))
+            .into());
+        }
+        let module_request = EmbeddedLinkedWasiModuleRequest {
+            compile_unit_id: unit_id.clone(),
+            package: codegen_handoff.package.clone(),
+            target: codegen_handoff.target.clone(),
+            cargo_target_kind: codegen_handoff.target_kind.clone(),
+            source_path: codegen_handoff.source_path.clone(),
+            source_bytes: source_bytes.clone(),
+            source_sha256: source_sha256.clone(),
+            profile: codegen_handoff.profile.clone(),
+            target_triple: codegen_handoff.target_triple.clone(),
+            crate_name: codegen_handoff.crate_identity.clone(),
+            mir_body_hash: codegen_handoff.mir_body_hash.clone(),
+            mono_item_graph_hash: codegen_handoff.mono_item_graph_hash.clone(),
+            mono_items: codegen_handoff
+                .mono_items
+                .iter()
+                .map(|item| item.symbol_name.clone())
+                .collect(),
+        };
+        let provided_module = linked_module_provider.and_then(|provider| provider(&module_request));
+        let module = provided_module.as_ref().or(linked_module).ok_or_else(|| {
+            ProofError::Verification(format!(
+                "no embedded linked WASI module provider returned an artifact for {}",
+                unit_id
+            ))
+        })?;
         let expected_hash = module.sha256.clone();
         let expected_size = module.size_bytes;
         if expected_hash != hash_bytes(&module.bytes) {
@@ -643,8 +763,20 @@ fn promote_linked_wasi_module_artifacts(
             .into());
         }
 
-        let source_bytes = storage.read(&codegen_handoff.source_path)?;
-        let source_sha256 = hash_bytes(&source_bytes);
+        if module.source_path != codegen_handoff.source_path {
+            return Err(ProofError::Verification(format!(
+                "linked module source path mismatch: payload {}, compile unit {}",
+                module.source_path, codegen_handoff.source_path
+            ))
+            .into());
+        }
+        if module.source_sha256 != source_sha256 {
+            return Err(ProofError::Verification(format!(
+                "linked module source hash mismatch for {}: payload {}, VFS {}",
+                codegen_handoff.source_path, module.source_sha256, source_sha256
+            ))
+            .into());
+        }
         if source_sha256 != module.codegen_input_sha256 {
             return Err(ProofError::Verification(format!(
                 "source hash mismatch for {}: source {}, codegen input {}",
@@ -652,13 +784,33 @@ fn promote_linked_wasi_module_artifacts(
             ))
             .into());
         }
-        let source_text = String::from_utf8_lossy(&source_bytes);
-        if source_text.as_ref() != module.codegen_input_source {
+        if source_sha256 != module.codegen_input_source_sha256
+            || source_sha256 != module.codegen_input_source_bytes_sha256
+        {
             return Err(ProofError::Verification(format!(
-                "codegen input text does not match compile unit source {}",
-                codegen_handoff.source_path
+                "codegen input hash mismatch for {}: VFS {}, text {}, bytes {}",
+                codegen_handoff.source_path,
+                source_sha256,
+                module.codegen_input_source_sha256,
+                module.codegen_input_source_bytes_sha256
             ))
             .into());
+        }
+        if module.codegen_input_source_origin != "vfs_compile_unit_source" {
+            return Err(ProofError::Verification(format!(
+                "codegen input source origin must be vfs_compile_unit_source, got {}",
+                module.codegen_input_source_origin
+            ))
+            .into());
+        }
+        if let Some(source_text) = &module.codegen_input_source_text {
+            if source_text.as_bytes() != source_bytes.as_slice() {
+                return Err(ProofError::Verification(format!(
+                    "codegen input text does not match compile unit source {}",
+                    codegen_handoff.source_path
+                ))
+                .into());
+            }
         }
 
         let artifact_path = pipeline_record.expected_output_path.clone();
@@ -672,21 +824,16 @@ fn promote_linked_wasi_module_artifacts(
             .into());
         }
 
-        let input_object_hash = module
-            .reported_input_object_hash
-            .clone()
-            .unwrap_or_else(|| linker_handoff.codegen_artifact_hash.clone());
-        if input_object_hash != linker_handoff.codegen_artifact_hash {
-            return Err(ProofError::Verification(format!(
-                "final module input object hash mismatch: payload {}, codegen handoff {}",
-                input_object_hash, linker_handoff.codegen_artifact_hash
+        let input_object_hash = module.reported_input_object_hash.clone().ok_or_else(|| {
+            ProofError::Verification(format!(
+                "final module is missing input object hash for {unit_id}"
             ))
-            .into());
-        }
-        let linker_payload_hash = module
-            .reported_linker_payload_hash
-            .clone()
-            .unwrap_or_else(|| linker_handoff.linker_payload.sha256.clone());
+        })?;
+        let linker_payload_hash = module.reported_linker_payload_hash.clone().ok_or_else(|| {
+            ProofError::Verification(format!(
+                "final module is missing linker payload hash for {unit_id}"
+            ))
+        })?;
         if linker_payload_hash != linker_handoff.linker_payload.sha256 {
             return Err(ProofError::Verification(format!(
                 "final module linker payload hash mismatch: payload {}, codegen handoff {}",
@@ -698,6 +845,7 @@ fn promote_linked_wasi_module_artifacts(
         let interface_proof = interface_proof_for_emitted_wasm(target, &artifact_path, storage)?;
         let runtime_proof =
             runtime_proof_for_emitted_wasm(target, &artifact_path, &written_bytes, &written_hash)?;
+        let runtime_proof_hash = hash_bytes(&serde_json::to_vec(&runtime_proof)?);
 
         let interface_succeeded = interface_proof.status == ProofStatus::Succeeded;
         let runtime_succeeded = runtime_proof.status == ProofStatus::Succeeded;
@@ -751,16 +899,28 @@ fn promote_linked_wasi_module_artifacts(
             artifact_kind: "Module".to_owned(),
             byte_length: written_bytes.len() as u64,
             sha256: written_hash.clone(),
+            final_artifact_sha256: written_hash.clone(),
             producer_stage: "embedded_codegen_payload + embedded_wasm_ld".to_owned(),
-            input_object_hash,
-            linker_payload_hash,
+            input_object_hash: input_object_hash.clone(),
+            object_hash: input_object_hash,
+            linker_payload_hash: linker_payload_hash.clone(),
+            linker_payload_sha256: linker_payload_hash,
             compile_unit_id: unit_id.clone(),
             mir_hash: codegen_handoff.mir_body_hash.clone(),
+            mir_source_hash: source_sha256.clone(),
             mono_graph_hash: codegen_handoff.mono_item_graph_hash.clone(),
+            mono_source_hash: source_sha256.clone(),
+            codegen_source_hash: source_sha256.clone(),
             source_path: codegen_handoff.source_path.clone(),
-            source_sha256,
+            source_sha256: source_sha256.clone(),
             codegen_input_sha256: module.codegen_input_sha256.clone(),
-            codegen_input_source: module.codegen_input_source.clone(),
+            codegen_input_source_sha256: module.codegen_input_source_sha256.clone(),
+            codegen_input_source_bytes_sha256: module.codegen_input_source_bytes_sha256.clone(),
+            codegen_input_source_origin: module.codegen_input_source_origin.clone(),
+            codegen_input_source: module.codegen_input_source_text.clone(),
+            runtime_proof_hash,
+            fixture_name: contract.project.package.clone(),
+            runtime_proof_status: format!("{:?}", runtime_proof.status),
         });
         hashes.push(HashEntry {
             label: format!("artifact:{}", target.name),
@@ -1715,6 +1875,9 @@ fn run_compiler_pipeline(
     storage: &dyn Storage,
     build_plan: &rouwdi_cargo::CargoBuildPlan,
     embedded_mir_payload_execution: Option<&RustEmbeddedMirPayloadExecution>,
+    embedded_mir_payload_execution_provider: Option<EmbeddedMirPayloadExecutionProvider>,
+    contract_sha256: &str,
+    source_snapshot_sha256: &str,
 ) -> Result<Vec<RustCompilerPipelineRecord>, EngineError> {
     let mut records = Vec::new();
     for unit in build_plan
@@ -1727,20 +1890,40 @@ fn run_compiler_pipeline(
         })?;
         let bytes = storage.read(&source_path)?;
         let source = String::from_utf8_lossy(&bytes);
+        let source_sha256 = hash_bytes(&bytes);
         let request = RustCompileRequest {
             unit_id: unit.id.clone(),
             package: unit.package.clone(),
             target: unit.target.clone(),
             target_kind: format!("{:?}", unit.target_kind),
-            source_path,
+            source_path: source_path.clone(),
             triple: unit.triple.clone(),
             profile: unit.profile.clone(),
             extern_prelude: extern_prelude_for_unit(build_plan, &unit.id),
         };
+        let dynamic_mir_payload_execution =
+            embedded_mir_payload_execution_provider.and_then(|provider| {
+                provider(&EmbeddedMirPayloadExecutionRequest {
+                    compile_unit_id: unit.id.clone(),
+                    package: unit.package.clone(),
+                    target: unit.target.clone(),
+                    target_kind: format!("{:?}", unit.target_kind),
+                    source_path: source_path.clone(),
+                    source_text: source.to_string(),
+                    source_sha256,
+                    source_snapshot_sha256: source_snapshot_sha256.to_owned(),
+                    contract_sha256: contract_sha256.to_owned(),
+                    target_triple: unit.triple.clone(),
+                    profile: unit.profile.clone(),
+                })
+            });
+        let mir_execution = dynamic_mir_payload_execution
+            .as_ref()
+            .or(embedded_mir_payload_execution);
         records.push(run_rust_compiler_pipeline_record_with_embedded_mir_payload(
             &request,
             &source,
-            embedded_mir_payload_execution,
+            mir_execution,
         ));
     }
     Ok(records)

@@ -1,0 +1,9 @@
+[package]
+name = "function-call"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "function-call"
+path = "src/main.rs"

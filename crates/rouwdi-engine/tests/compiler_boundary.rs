@@ -97,8 +97,13 @@ fn synthetic_linked_wasi_module_artifact(
         sha256: hash_bytes(&bytes),
         size_bytes: bytes.len() as u64,
         bytes,
+        source_path: "src/main.rs".to_owned(),
+        source_sha256: hash_bytes(source.as_bytes()),
         codegen_input_sha256: hash_bytes(source.as_bytes()),
-        codegen_input_source: source,
+        codegen_input_source_sha256: hash_bytes(source.as_bytes()),
+        codegen_input_source_bytes_sha256: hash_bytes(source.as_bytes()),
+        codegen_input_source_origin: "vfs_compile_unit_source".to_owned(),
+        codegen_input_source_text: Some(source),
         reported_input_object_hash: Some(input_object_hash),
         reported_linker_payload_hash: Some(linker_payload_hash),
     }
@@ -164,7 +169,7 @@ fn synthetic_embedded_mir_payload_execution() -> RustEmbeddedMirPayloadExecution
 }
 
 fn synthetic_embedded_mir_payload_success_execution() -> RustEmbeddedMirPayloadExecution {
-    let output_json = r#"{"code":"mir_body_hash_emitted","kind":"context_attempt_succeeded","message":"real upstream MIR body observed and rustc_monomorphize contacted","blocker_kind":"none","blocker_component":"none","context_state":"mir_body_hash_emitted","compile_unit_id":"app:rust:app:wasm32-wasip1","package":"app","target":"wasi","target_kind":"bin","target_triple":"wasm32-wasip1","profile":"release","source_path":"src/main.rs","source_hash":"8fd8d3f8a05c9b7b","crate_name":"rouwdi_payload","crate_hash":"0123456789abcdef","item_path":"rouwdi_payload::main","local_def_id":"LocalDefId(0)","def_id":"DefId(0:3 ~ rouwdi_payload[0000]::main)","def_path_hash":"DefPathHash(0123456789abcdef)","mir_provider":"rustc_mir_build","mir_query":"rustc_middle::ty::TyCtxt::optimized_mir","mir_stage":"optimized","mir_body_identity":"def_id=DefId(0:3 ~ rouwdi_payload[0000]::main);phase=optimized;basic_blocks=1;locals=1;source_path=src/main.rs","mir_body_hash":"feedfacecafebeef","body_basic_block_count":1,"body_local_count":1,"body_statement_count":0,"provider_query":"rustc_middle::ty::TyCtxt::optimized_mir","upstream_crates":["core","alloc","std"],"payload_artifact_hash":"recorded-by-host-loader-sha256","payload_sha256":"recorded-by-host-loader-sha256","input_contract_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","core_metadata_loaded":true,"alloc_metadata_loaded":true,"std_metadata_loaded":true,"mir_provider_invoked":true,"real_mir_body_observed":true,"rustc_monomorphize_imported":true,"rustc_monomorphize_invoked":true,"monomorphization_query":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_status":"rustc_monomorphize_invoked_blocked_at_codegen_backend_not_ready","monomorphization_blocker_kind":"codegen_backend_not_ready","monomorphization_blocker_component":"rustc_monomorphize/rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_blocker_reason":"synthetic test blocker after real MIR proof","mono_item_count":0,"codegen_unit_count":0,"mono_item_graph_hash":null,"fabricated_ast":false,"fabricated_hir":false,"fabricated_tyctx":false,"fabricated_providers":false,"fabricated_body":false,"fabricated_mir":false,"fabricated_mono_items":false}"#;
+    let output_json = r#"{"code":"mir_body_hash_emitted","kind":"context_attempt_succeeded","message":"real upstream MIR body observed and rustc_monomorphize contacted","blocker_kind":"none","blocker_component":"none","context_state":"mir_body_hash_emitted","compile_unit_id":"app:rust:app:wasm32-wasip1","package":"app","target":"wasi","target_kind":"bin","target_triple":"wasm32-wasip1","profile":"release","source_path":"src/main.rs","source_hash":"536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4","crate_name":"rouwdi_payload","crate_hash":"0123456789abcdef","item_path":"rouwdi_payload::main","local_def_id":"LocalDefId(0)","def_id":"DefId(0:3 ~ rouwdi_payload[0000]::main)","def_path_hash":"DefPathHash(0123456789abcdef)","mir_provider":"rustc_mir_build","mir_query":"rustc_middle::ty::TyCtxt::optimized_mir","mir_stage":"optimized","mir_body_identity":"def_id=DefId(0:3 ~ rouwdi_payload[0000]::main);phase=optimized;basic_blocks=1;locals=1;source_path=src/main.rs","mir_body_hash":"feedfacecafebeef","body_basic_block_count":1,"body_local_count":1,"body_statement_count":0,"provider_query":"rustc_middle::ty::TyCtxt::optimized_mir","upstream_crates":["core","alloc","std"],"payload_artifact_hash":"recorded-by-host-loader-sha256","payload_sha256":"recorded-by-host-loader-sha256","input_contract_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","core_metadata_loaded":true,"alloc_metadata_loaded":true,"std_metadata_loaded":true,"mir_provider_invoked":true,"real_mir_body_observed":true,"rustc_monomorphize_imported":true,"rustc_monomorphize_invoked":true,"monomorphization_query":"rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_status":"rustc_monomorphize_invoked_blocked_at_codegen_backend_not_ready","monomorphization_blocker_kind":"codegen_backend_not_ready","monomorphization_blocker_component":"rustc_monomorphize/rustc_middle::ty::TyCtxt::collect_and_partition_mono_items","monomorphization_blocker_reason":"synthetic test blocker after real MIR proof","mono_item_count":0,"codegen_unit_count":0,"mono_item_graph_hash":null,"fabricated_ast":false,"fabricated_hir":false,"fabricated_tyctx":false,"fabricated_providers":false,"fabricated_body":false,"fabricated_mir":false,"fabricated_mono_items":false}"#;
     RustEmbeddedMirPayloadExecution {
         execute_status: 0,
         execute_trapped: false,
@@ -326,7 +331,7 @@ fn mark_handoff_as_mono_item_wasm_object(
         parse_errors: Vec::new(),
     });
     handoff.object_derived_from = "rustc_codegen_llvm::LlvmCodegenBackend".to_owned();
-    handoff.object_codegen_source = "mono_item_graph".to_owned();
+    handoff.object_codegen_source = "vfs_compile_unit_source".to_owned();
     handoff.object_path = Some("vfs:/workspace/app.wasm.o".to_owned());
     handoff.object_sha256 = Some(object_sha256.clone());
     handoff.object_artifact_kind = Some("wasm_object".to_owned());
@@ -961,7 +966,10 @@ fn mono_item_graph_success_writes_mono_proof_and_blocks_probe_only_object() {
         .contains(&"env::__stack_pointer".to_owned()));
     assert!(!object_inspection.object_is_empty);
     assert!(object_inspection.object_has_code_bearing_content);
-    assert_eq!(codegen_handoff.object_codegen_source, "mono_item_graph");
+    assert_eq!(
+        codegen_handoff.object_codegen_source,
+        "vfs_compile_unit_source"
+    );
     assert!(codegen_handoff.llvm_ir_emitted);
     assert_eq!(
         codegen_handoff.llvm_ir_sha256.as_deref(),
@@ -1091,7 +1099,10 @@ fn linked_mono_item_wasi_module_is_promoted_to_engine_artifact_and_runtime_prove
     assert_eq!(artifact.source_path, "src/main.rs");
     assert_eq!(artifact.source_sha256, source_hash);
     assert_eq!(artifact.codegen_input_sha256, source_hash);
-    assert_eq!(artifact.codegen_input_source, "fn main() {}\n");
+    assert_eq!(
+        artifact.codegen_input_source.as_deref(),
+        Some("fn main() {}\n")
+    );
     assert_eq!(
         hash_bytes(&storage.read(&artifact.path).unwrap()),
         artifact.sha256

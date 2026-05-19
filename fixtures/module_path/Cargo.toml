@@ -1,0 +1,9 @@
+[package]
+name = "module-path"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "module-path"
+path = "src/main.rs"

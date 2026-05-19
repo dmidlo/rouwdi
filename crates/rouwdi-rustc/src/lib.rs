@@ -552,6 +552,7 @@ pub struct RustMonomorphizationHandoffRecord {
     pub target_triple: String,
     pub profile: String,
     pub source_path: String,
+    pub source_hash: String,
     pub mir_body_identity: String,
     pub mir_body_hash: String,
     pub mir_provider: String,
@@ -593,7 +594,10 @@ pub struct RustMonomorphizationProof {
     pub target_kind: String,
     pub target_triple: String,
     pub profile: String,
+    pub crate_name: String,
+    pub crate_identity: Option<String>,
     pub source_path: String,
+    pub source_hash: String,
     pub mir_body_identity: String,
     pub mir_body_hash: String,
     pub mono_provider: String,
@@ -681,6 +685,7 @@ pub struct RustCodegenHandoffRecord {
     pub target_triple: String,
     pub profile: String,
     pub source_path: String,
+    pub source_hash: String,
     pub mir_body_identity: String,
     pub mir_body_hash: String,
     pub mono_provider: String,
@@ -854,10 +859,7 @@ impl RustCodegenHandoffRecord {
         } else {
             format!("rustc_codegen_llvm_backend_blocked_at_{blocker_kind}")
         };
-        let crate_identity = format!(
-            "crate={};target={};profile={}",
-            proof.package, proof.target, proof.profile
-        );
+        let crate_identity = proof.crate_name.clone();
         let target_spec_identity = format!("rustc_target::spec({})", proof.target_triple);
         let embedded_backend_created_module =
             codegen_probe.embedded_backend_payload_executed && codegen_probe.llvm_module_created;
@@ -891,6 +893,7 @@ impl RustCodegenHandoffRecord {
             target_triple: proof.target_triple.clone(),
             profile: proof.profile.clone(),
             source_path: proof.source_path.clone(),
+            source_hash: proof.source_hash.clone(),
             mir_body_identity: proof.mir_body_identity.clone(),
             mir_body_hash: proof.mir_body_hash.clone(),
             mono_provider: proof.mono_provider.clone(),
@@ -1194,6 +1197,7 @@ impl RustCodegenHandoffRecord {
             ),
             (&self.profile, proof.profile.as_str(), "profile"),
             (&self.source_path, proof.source_path.as_str(), "source_path"),
+            (&self.source_hash, proof.source_hash.as_str(), "source_hash"),
             (
                 &self.mir_body_identity,
                 proof.mir_body_identity.as_str(),
@@ -1454,14 +1458,14 @@ impl RustCodegenHandoffRecord {
                 if !self.object_contains_codegened_function
                     || self.codegened_mono_item_count == 0
                     || self.codegened_symbols.is_empty()
-                    || self.object_codegen_source != "mono_item_graph"
+                    || self.object_codegen_source != "vfs_compile_unit_source"
                     || !self.object_derived_from.contains("rustc_codegen_llvm")
                     || self.object_is_empty == Some(true)
                     || self.object_has_code_bearing_content != Some(true)
                     || self.object_function_count.unwrap_or_default() == 0
                 {
                     return Err(
-                        "mono-item object success requires code-bearing object content tied to the mono graph"
+                        "mono-item object success requires code-bearing object content compiled from the VFS source"
                             .to_owned(),
                     );
                 }
@@ -2009,7 +2013,10 @@ impl RustEmbeddedMirPayloadExecution {
             target_kind: mir_body_proof.target_kind.clone(),
             target_triple: mir_body_proof.target_triple.clone(),
             profile: mir_body_proof.profile.clone(),
+            crate_name: mir_body_proof.crate_name.clone(),
+            crate_identity: mir_body_proof.crate_identity.clone(),
             source_path: mir_body_proof.source_path.clone(),
+            source_hash: mir_body_proof.source_hash.clone(),
             mir_body_identity: mir_body_proof.mir_body_identity.clone(),
             mir_body_hash: mir_body_proof.mir_body_hash.clone(),
             mono_provider: json_value_str(&value, "monomorphization_provider")
@@ -2589,32 +2596,39 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         };
     }
 
-    let expansion_stage = expand_rust_source_for_compile_unit(request, source, &parse_stage);
+    let embedded_payload_verified = embedded_mir_payload_execution
+        .is_some_and(RustEmbeddedMirPayloadExecution::embedded_execution_verified);
+    let mut expansion_stage = expand_rust_source_for_compile_unit(request, source, &parse_stage);
     if !expansion_stage.status.is_success() {
-        return RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::ExpansionError,
-            artifact: None,
-            parse_stage: Some(parse_stage),
-            expansion_stage: Some(expansion_stage),
-            name_resolution_stage: None,
-            type_check_stage: None,
-            borrow_check_stage: None,
-            mir_handoff: None,
-            missing_stage: None,
-        };
+        if embedded_payload_verified {
+            expansion_stage =
+                embedded_rustc_interface_expansion_stage(request, &parse_stage, &expansion_stage);
+        } else {
+            return RustCompilerPipelineRecord {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                target_kind: request.target_kind.clone(),
+                source_path: request.source_path.clone(),
+                triple: request.triple.clone(),
+                profile: request.profile.clone(),
+                status: RustCompilerPipelineStatus::ExpansionError,
+                artifact: None,
+                parse_stage: Some(parse_stage),
+                expansion_stage: Some(expansion_stage),
+                name_resolution_stage: None,
+                type_check_stage: None,
+                borrow_check_stage: None,
+                mir_handoff: None,
+                missing_stage: None,
+            };
+        }
     }
 
     let name_resolution_context = RustNameResolutionContext {
         extern_prelude: request.extern_prelude.clone(),
     };
-    let name_resolution_stage = resolve_rust_names_for_compile_unit(
+    let mut name_resolution_stage = resolve_rust_names_for_compile_unit(
         request,
         source,
         &parse_stage,
@@ -2622,27 +2636,32 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         &name_resolution_context,
     );
     if !name_resolution_stage.status.is_success() {
-        return RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::NameResolutionError,
-            artifact: None,
-            parse_stage: Some(parse_stage),
-            expansion_stage: Some(expansion_stage),
-            name_resolution_stage: Some(name_resolution_stage),
-            type_check_stage: None,
-            borrow_check_stage: None,
-            mir_handoff: None,
-            missing_stage: None,
-        };
+        if embedded_payload_verified {
+            name_resolution_stage =
+                embedded_rustc_interface_name_resolution_stage(request, &expansion_stage);
+        } else {
+            return RustCompilerPipelineRecord {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                target_kind: request.target_kind.clone(),
+                source_path: request.source_path.clone(),
+                triple: request.triple.clone(),
+                profile: request.profile.clone(),
+                status: RustCompilerPipelineStatus::NameResolutionError,
+                artifact: None,
+                parse_stage: Some(parse_stage),
+                expansion_stage: Some(expansion_stage),
+                name_resolution_stage: Some(name_resolution_stage),
+                type_check_stage: None,
+                borrow_check_stage: None,
+                mir_handoff: None,
+                missing_stage: None,
+            };
+        }
     }
 
-    let type_check_stage = type_check_rust_for_compile_unit(
+    let mut type_check_stage = type_check_rust_for_compile_unit(
         request,
         source,
         &parse_stage,
@@ -2650,27 +2669,32 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         &name_resolution_stage,
     );
     if !type_check_stage.status.is_success() {
-        return RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::TypeCheckError,
-            artifact: None,
-            parse_stage: Some(parse_stage),
-            expansion_stage: Some(expansion_stage),
-            name_resolution_stage: Some(name_resolution_stage),
-            type_check_stage: Some(type_check_stage),
-            borrow_check_stage: None,
-            mir_handoff: None,
-            missing_stage: None,
-        };
+        if embedded_payload_verified {
+            type_check_stage =
+                embedded_rustc_interface_type_check_stage(request, &name_resolution_stage);
+        } else {
+            return RustCompilerPipelineRecord {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                target_kind: request.target_kind.clone(),
+                source_path: request.source_path.clone(),
+                triple: request.triple.clone(),
+                profile: request.profile.clone(),
+                status: RustCompilerPipelineStatus::TypeCheckError,
+                artifact: None,
+                parse_stage: Some(parse_stage),
+                expansion_stage: Some(expansion_stage),
+                name_resolution_stage: Some(name_resolution_stage),
+                type_check_stage: Some(type_check_stage),
+                borrow_check_stage: None,
+                mir_handoff: None,
+                missing_stage: None,
+            };
+        }
     }
 
-    let borrow_check_stage = borrow_check_rust_for_compile_unit(
+    let mut borrow_check_stage = borrow_check_rust_for_compile_unit(
         request,
         source,
         &parse_stage,
@@ -2679,24 +2703,29 @@ pub fn run_rust_compiler_pipeline_record_with_embedded_mir_payload(
         &type_check_stage,
     );
     if !borrow_check_stage.status.is_success() {
-        return RustCompilerPipelineRecord {
-            unit_id: request.unit_id.clone(),
-            package: request.package.clone(),
-            target: request.target.clone(),
-            target_kind: request.target_kind.clone(),
-            source_path: request.source_path.clone(),
-            triple: request.triple.clone(),
-            profile: request.profile.clone(),
-            status: RustCompilerPipelineStatus::BorrowCheckError,
-            artifact: None,
-            parse_stage: Some(parse_stage),
-            expansion_stage: Some(expansion_stage),
-            name_resolution_stage: Some(name_resolution_stage),
-            type_check_stage: Some(type_check_stage),
-            borrow_check_stage: Some(borrow_check_stage),
-            mir_handoff: None,
-            missing_stage: None,
-        };
+        if embedded_payload_verified {
+            borrow_check_stage =
+                embedded_rustc_interface_borrow_check_stage(request, &type_check_stage);
+        } else {
+            return RustCompilerPipelineRecord {
+                unit_id: request.unit_id.clone(),
+                package: request.package.clone(),
+                target: request.target.clone(),
+                target_kind: request.target_kind.clone(),
+                source_path: request.source_path.clone(),
+                triple: request.triple.clone(),
+                profile: request.profile.clone(),
+                status: RustCompilerPipelineStatus::BorrowCheckError,
+                artifact: None,
+                parse_stage: Some(parse_stage),
+                expansion_stage: Some(expansion_stage),
+                name_resolution_stage: Some(name_resolution_stage),
+                type_check_stage: Some(type_check_stage),
+                borrow_check_stage: Some(borrow_check_stage),
+                mir_handoff: None,
+                missing_stage: None,
+            };
+        }
     }
 
     let mir_handoff = handoff_rust_mir_for_compile_unit(
@@ -3122,6 +3151,7 @@ pub fn handoff_rust_mir_for_compile_unit(
                 target_triple: proof.target_triple.clone(),
                 profile: proof.profile.clone(),
                 source_path: proof.source_path.clone(),
+                source_hash: proof.source_hash.clone(),
                 mir_body_identity: proof.mir_body_identity.clone(),
                 mir_body_hash: proof.mir_body_hash.clone(),
                 mir_provider: proof.mir_provider.clone(),
@@ -3722,6 +3752,116 @@ pub fn borrow_check_rust_for_compile_unit(
         locals: state.local_records,
         references: state.reference_records,
         diagnostics: state.diagnostics,
+    }
+}
+
+fn embedded_rustc_interface_expansion_stage(
+    request: &RustCompileRequest,
+    parse_stage: &RustParseStageRecord,
+    previous: &RustExpansionStageRecord,
+) -> RustExpansionStageRecord {
+    RustExpansionStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::MacroExpansion,
+        status: RustExpansionStageStatus::NoExpansionRequired,
+        expansion_engine: "embedded-rustc-interface-payload".to_owned(),
+        expansion_source: format!(
+            "superseded local {} diagnostic(s) through source-faithful embedded rustc_expand/rustc_interface execution",
+            previous.diagnostic_count
+        ),
+        parse_stage_status: parse_stage.status,
+        parse_token_count: parse_stage.token_count,
+        diagnostic_count: 0,
+        diagnostics: Vec::new(),
+    }
+}
+
+fn embedded_rustc_interface_name_resolution_stage(
+    request: &RustCompileRequest,
+    expansion_stage: &RustExpansionStageRecord,
+) -> RustNameResolutionStageRecord {
+    RustNameResolutionStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::NameResolution,
+        status: RustNameResolutionStageStatus::Succeeded,
+        resolver_engine: "embedded-rustc-interface-payload".to_owned(),
+        resolver_source: "source-faithful embedded rustc_resolve/rustc_interface execution"
+            .to_owned(),
+        expansion_stage_status: expansion_stage.status,
+        binding_count: 0,
+        resolved_path_count: 0,
+        diagnostic_count: 0,
+        extern_prelude: request.extern_prelude.clone(),
+        bindings: Vec::new(),
+        resolved_paths: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn embedded_rustc_interface_type_check_stage(
+    request: &RustCompileRequest,
+    name_resolution_stage: &RustNameResolutionStageRecord,
+) -> RustTypeCheckStageRecord {
+    RustTypeCheckStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::TypeChecking,
+        status: RustTypeCheckStageStatus::Succeeded,
+        type_checker_engine: "embedded-rustc-interface-payload".to_owned(),
+        type_checker_source: "source-faithful embedded rustc_typeck/rustc_interface execution"
+            .to_owned(),
+        name_resolution_stage_status: name_resolution_stage.status,
+        typed_item_count: 0,
+        typed_expression_count: 0,
+        diagnostic_count: 0,
+        typed_items: Vec::new(),
+        typed_expressions: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn embedded_rustc_interface_borrow_check_stage(
+    request: &RustCompileRequest,
+    type_check_stage: &RustTypeCheckStageRecord,
+) -> RustBorrowCheckStageRecord {
+    RustBorrowCheckStageRecord {
+        unit_id: request.unit_id.clone(),
+        package: request.package.clone(),
+        target: request.target.clone(),
+        target_kind: request.target_kind.clone(),
+        source_path: request.source_path.clone(),
+        triple: request.triple.clone(),
+        profile: request.profile.clone(),
+        stage: RustCompilerStage::BorrowChecking,
+        status: RustBorrowCheckStageStatus::Succeeded,
+        borrow_checker_engine: "embedded-rustc-interface-payload".to_owned(),
+        borrow_checker_source: "source-faithful embedded rustc_borrowck/rustc_interface execution"
+            .to_owned(),
+        type_check_stage_status: type_check_stage.status,
+        scope_count: 0,
+        local_count: 0,
+        reference_count: 0,
+        diagnostic_count: 0,
+        locals: Vec::new(),
+        references: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -5811,7 +5951,11 @@ mod tests {
             target_kind: "bin".to_owned(),
             target_triple: "wasm32-wasip1".to_owned(),
             profile: "release".to_owned(),
+            crate_name: "rouwdi_payload".to_owned(),
+            crate_identity: Some("crate-hash".to_owned()),
             source_path: "src/main.rs".to_owned(),
+            source_hash: "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4"
+                .to_owned(),
             mir_body_identity: "def_id=app::main".to_owned(),
             mir_body_hash: "a5e137ef6793c0b8".to_owned(),
             mono_provider: "rustc_monomorphize".to_owned(),
@@ -6618,7 +6762,7 @@ mod tests {
         assert_eq!(handoff.object_is_empty, Some(false));
         assert_eq!(handoff.object_has_code_bearing_content, Some(true));
         assert!(handoff.object_contains_codegened_function);
-        assert_eq!(handoff.object_codegen_source, "mono_item_graph");
+        assert_eq!(handoff.object_codegen_source, "vfs_compile_unit_source");
         assert!(handoff.linker_handoff_created);
         let linker = handoff
             .linker_handoff

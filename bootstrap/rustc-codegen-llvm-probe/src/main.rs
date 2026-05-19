@@ -15,6 +15,13 @@ use std::sync::atomic::AtomicBool;
 struct ProbeInput {
     json: bool,
     compile_unit_id: String,
+    package: String,
+    target: String,
+    target_kind: String,
+    profile: String,
+    source_path: String,
+    source_bytes: Vec<u8>,
+    source_sha256: String,
     crate_identity: String,
     target_triple: String,
     target_spec: String,
@@ -29,6 +36,13 @@ impl Default for ProbeInput {
         Self {
             json: false,
             compile_unit_id: "app:rust:app:wasm32-wasip1".to_owned(),
+            package: "app".to_owned(),
+            target: "wasi".to_owned(),
+            target_kind: "Bin".to_owned(),
+            profile: "release".to_owned(),
+            source_path: String::new(),
+            source_bytes: Vec::new(),
+            source_sha256: String::new(),
             crate_identity: "rouwdi_payload".to_owned(),
             target_triple: "wasm32-wasip1".to_owned(),
             target_spec: "rustc_target::spec::wasm32_wasip1".to_owned(),
@@ -137,7 +151,6 @@ type LLVMTargetMachineRef = *mut c_void;
 type LLVMMemoryBufferRef = *mut c_void;
 
 const LLVM_OBJECT_FILE: c_uint = 1;
-const CODEGEN_SOURCE_PATH: &str = "rouwdi-codegen-input.rs";
 const OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1.o";
 const ALLOCATOR_OBJECT_ARTIFACT_PATH: &str = "rouwdi-codegen-wasm32-wasip1-allocator.o";
 const FINAL_WASI_MODULE_PATH: &str = "rouwdi-codegen-wasm32-wasip1-linked.wasm";
@@ -478,6 +491,11 @@ fn main() -> ExitCode {
             "sha256": object_emission.artifact_sha256,
             "producer_backend": "rustc_codegen_llvm",
             "target_triple": object_emission.target_triple,
+            "source_path": input.source_path,
+            "source_sha256": input.source_sha256,
+            "codegen_input_source_sha256": input.source_sha256,
+            "codegen_input_source_bytes_sha256": input.source_sha256,
+            "codegen_input_source_origin": "vfs_compile_unit_source",
             "mir_body_hash": input.mir_body_hash,
             "mono_item_graph_hash": input.mono_item_graph_hash,
             "llvm_module_identity_hash": module_setup.module_identity_hash,
@@ -516,6 +534,11 @@ fn main() -> ExitCode {
             serde_json::json!({
                 "artifact_kind": "wasm32_wasip1_module",
                 "target_triple": input.target_triple,
+                "source_path": input.source_path,
+                "source_sha256": input.source_sha256,
+                "codegen_input_source_sha256": input.source_sha256,
+                "codegen_input_source_bytes_sha256": input.source_sha256,
+                "codegen_input_source_origin": "vfs_compile_unit_source",
                 "size_bytes": size,
                 "sha256": hash,
                 "producer_linker": "rouwdi-wasm-ld",
@@ -596,6 +619,15 @@ fn main() -> ExitCode {
         "backend_name": backend_name,
         "codegen_contact_state": codegen_contact_state,
         "compile_unit_id": input.compile_unit_id,
+        "package": input.package,
+        "target": input.target,
+        "target_kind": input.target_kind,
+        "profile": input.profile,
+        "source_path": input.source_path,
+        "source_sha256": input.source_sha256,
+        "codegen_input_source_sha256": input.source_sha256,
+        "codegen_input_source_bytes_sha256": input.source_sha256,
+        "codegen_input_source_origin": "vfs_compile_unit_source",
         "crate_identity": input.crate_identity,
         "target_triple": input.target_triple,
         "target_spec": input.target_spec,
@@ -706,6 +738,15 @@ fn parse_input() -> Result<ProbeInput, String> {
         match arg.as_str() {
             "--json" => input.json = true,
             "--compile-unit-id" => input.compile_unit_id = next_value(&mut args, &arg)?,
+            "--package" => input.package = next_value(&mut args, &arg)?,
+            "--target" => input.target = next_value(&mut args, &arg)?,
+            "--target-kind" => input.target_kind = next_value(&mut args, &arg)?,
+            "--profile" => input.profile = next_value(&mut args, &arg)?,
+            "--source-path" => input.source_path = next_value(&mut args, &arg)?,
+            "--source-sha256" => input.source_sha256 = next_value(&mut args, &arg)?,
+            "--source-hex" => {
+                input.source_bytes = decode_hex(&next_value(&mut args, &arg)?)?;
+            }
             "--crate-identity" => input.crate_identity = next_value(&mut args, &arg)?,
             "--target-triple" => input.target_triple = next_value(&mut args, &arg)?,
             "--target-spec" => input.target_spec = next_value(&mut args, &arg)?,
@@ -723,12 +764,49 @@ fn parse_input() -> Result<ProbeInput, String> {
     if input.mono_items.is_empty() {
         input.mono_items.push("fn:rouwdi_payload::main".to_owned());
     }
+    if input.source_path.trim().is_empty() {
+        return Err("--source-path is required".to_owned());
+    }
+    if input.source_bytes.is_empty() {
+        return Err("--source-hex is required and must not be empty".to_owned());
+    }
+    let actual_source_sha256 = sha256_hex(&input.source_bytes);
+    if input.source_sha256.trim().is_empty() {
+        input.source_sha256 = actual_source_sha256;
+    } else if input.source_sha256 != actual_source_sha256 {
+        return Err(format!(
+            "--source-sha256 does not match --source-hex bytes: expected {}, got {}",
+            input.source_sha256, actual_source_sha256
+        ));
+    }
     Ok(input)
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<String, String> {
     args.next()
         .ok_or_else(|| format!("{option} requires a value"))
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("--source-hex must have an even number of digits".to_owned());
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for chunk in value.as_bytes().chunks_exact(2) {
+        let hi = hex_digit(chunk[0])?;
+        let lo = hex_digit(chunk[1])?;
+        bytes.push((hi << 4) | lo);
+    }
+    Ok(bytes)
+}
+
+fn hex_digit(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(format!("invalid hex digit in --source-hex: {}", byte as char)),
+    }
 }
 
 fn attempt_llvm_module_setup(input: &ProbeInput) -> ModuleSetup {
@@ -969,7 +1047,7 @@ fn attempt_object_emission(input: &ProbeInput) -> ObjectEmissionSetup {
                 object_derived_from: "rustc_codegen_llvm::LlvmCodegenBackend::codegen_crate"
                     .to_owned(),
                 object_codegen_source: if object_contains_codegened_function {
-                    "mono_item_graph".to_owned()
+                    "vfs_compile_unit_source".to_owned()
                 } else {
                     "rustc_codegen_llvm_lowering_without_matching_mono_symbol".to_owned()
                 },
@@ -1007,7 +1085,15 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
     let _ = std::fs::remove_file(OBJECT_ARTIFACT_PATH);
 
     eprintln!("rouwdi-codegen-progress: rustc-interface-config-start");
-    let source = source_for_mono_item_graph(input).to_owned();
+    let source = String::from_utf8(input.source_bytes.clone())
+        .map_err(|error| format!("codegen input source is not valid UTF-8: {error}"))?;
+    let actual_source_sha256 = sha256_hex(source.as_bytes());
+    if actual_source_sha256 != input.source_sha256 {
+        return Err(format!(
+            "codegen input source hash mismatch: expected {}, got {}",
+            input.source_sha256, actual_source_sha256
+        ));
+    }
     let mut opts = rustc_session::config::Options::default();
     let sysroot_path = PathBuf::from(sysroot_path());
     let target_libdir = sysroot_path
@@ -1056,7 +1142,7 @@ fn emit_object_with_upstream_rustc_codegen(input: &ProbeInput) -> Result<Lowered
         crate_cfg: Vec::new(),
         crate_check_cfg: Vec::new(),
         input: rustc_session::config::Input::Str {
-            name: rustc_span::FileName::Custom(CODEGEN_SOURCE_PATH.to_owned()),
+            name: rustc_span::FileName::Custom(input.source_path.clone()),
             input: source,
         },
         output_dir: None,
@@ -1424,26 +1510,12 @@ fn sanitize_crate_name(crate_identity: &str) -> String {
     sanitized
 }
 
-fn source_for_mono_item_graph(input: &ProbeInput) -> &'static str {
-    if input
-        .mono_items
-        .iter()
-        .any(|item| item.contains("rouwdi_entry"))
-    {
-        "#![no_main]\n#[no_mangle]\npub extern \"C\" fn rouwdi_entry() {}\n"
-    } else {
-        "fn main() {}\n"
-    }
-}
-
 fn expected_codegened_symbols(input: &ProbeInput) -> Vec<String> {
     let mut symbols = input
         .mono_items
         .iter()
         .filter_map(|item| {
-            if item.contains("rouwdi_entry") {
-                Some("rouwdi_entry".to_owned())
-            } else if item.contains("::main") || item.ends_with(":main") {
+            if item.contains("::main") || item.ends_with(":main") {
                 Some("main".to_owned())
             } else {
                 item.rsplit("::")

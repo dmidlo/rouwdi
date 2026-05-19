@@ -1,0 +1,9 @@
+[package]
+name = "no-deps-empty-main"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "no-deps-empty-main"
+path = "src/main.rs"

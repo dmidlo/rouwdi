@@ -196,6 +196,66 @@ fn canonical_manifest_policy_error(manifest: &Value) -> Option<String> {
         if manifest["runtime_proof"]["passed"] != Value::Bool(true) {
             return Some("root runtime proof must pass".to_owned());
         }
+        let fixture_suite = &manifest["source_faithful_fixture_suite"];
+        if fixture_suite["required"] != Value::Bool(true) {
+            return Some("source-faithful fixture suite must be required".to_owned());
+        }
+        if fixture_suite["passed"] != Value::Bool(true) {
+            return Some("source-faithful fixture suite must pass".to_owned());
+        }
+        let Some(fixtures) = fixture_suite["fixtures"].as_array() else {
+            return Some("source-faithful fixture suite must list fixtures".to_owned());
+        };
+        let required_fixtures = [
+            "no_deps_empty_main",
+            "function_call",
+            "module_path",
+            "stdout_hello",
+        ];
+        for fixture_name in required_fixtures {
+            let Some(fixture) = fixtures
+                .iter()
+                .find(|entry| entry["name"] == Value::String(fixture_name.to_owned()))
+            else {
+                return Some(format!(
+                    "source-faithful fixture suite is missing {fixture_name}"
+                ));
+            };
+            if fixture["source_sha256"]
+                .as_str()
+                .is_none_or(|hash| hash.len() != 64)
+            {
+                return Some(format!("{fixture_name} fixture must record source hash"));
+            }
+            if fixture["artifact_sha256"]
+                .as_str()
+                .is_none_or(|hash| hash.len() != 64)
+            {
+                return Some(format!("{fixture_name} fixture must record artifact hash"));
+            }
+            if fixture["artifact_size"]
+                .as_u64()
+                .is_none_or(|size| size == 0)
+            {
+                return Some(format!(
+                    "{fixture_name} fixture must emit a nonempty module"
+                ));
+            }
+            if fixture_name == "function_call"
+                && fixture["mono_item_count"]
+                    .as_u64()
+                    .is_none_or(|count| count < 2)
+            {
+                return Some("function_call fixture must collect multiple mono items".to_owned());
+            }
+            if fixture_name == "stdout_hello"
+                && !fixture["runtime_stdout"]
+                    .as_str()
+                    .is_some_and(|stdout| stdout.contains("rouwdi"))
+            {
+                return Some("stdout_hello fixture must prove stdout contains rouwdi".to_owned());
+            }
+        }
         if manifest["next_frontier"] != Value::String("dependency_crate_graph".to_owned()) {
             return Some("root next_frontier must advance past runtime proof".to_owned());
         }
@@ -487,7 +547,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
             assert_eq!(
                 payload["llvm_module_identity_hash"],
                 Value::String(
-                    "23e20683dffb9b3b673ff866ace8826b8c6a933ef27e138f4e09f3e0a9d19e70".to_owned()
+                    "681dd4cdea3b1a2089f1af561aa9e15c636ccdf2f0e5e3393f1d1ed537253c92".to_owned()
                 )
             );
             assert_eq!(payload["target_machine_setup_invoked"], Value::Bool(true));
@@ -685,7 +745,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                     .is_some_and(|count| count > 0));
                 assert_eq!(
                     payload["object_codegen_source"],
-                    Value::String("mono_item_graph".to_owned())
+                    Value::String("vfs_compile_unit_source".to_owned())
                 );
                 assert_eq!(payload["linker_handoff_created"], Value::Bool(true));
                 let linker_handoff = &payload["codegen_payloads"][0]["linker_handoff"];
@@ -886,7 +946,7 @@ fn dist_rouwdi_wasm_is_the_canonical_assembly_checkpoint() {
                             .as_u64()
                             .is_some_and(|count| count > 0)
                         && entry["object_codegen_source"]
-                            == Value::String("mono_item_graph".to_owned())
+                            == Value::String("vfs_compile_unit_source".to_owned())
                         && entry["linker_handoff_created"] == Value::Bool(true)
                         && linked_runtime_proof_complete(
                             &entry["linker_handoff"],

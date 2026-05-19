@@ -1,0 +1,9 @@
+[package]
+name = "stdout-hello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "stdout-hello"
+path = "src/main.rs"
